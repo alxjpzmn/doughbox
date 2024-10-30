@@ -1,0 +1,11 @@
+{
+  "name": "@doughbox/core",
+  "version": "0.0.1",
+  "private": true,
+  "license": "MIT",
+  "scripts": {
+    "dev": "RUST_BACKTRACE=1 cargo watch -x 'run -- api'",
+    "update": "cargo update && cargo upgrade",
+    "lint": "cargo clippy"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "name": "@doughbox/monorepo",
+  "version": "0.0.1",
+  "repository": "https://github.com/alxjpzmn/doughbox",
+  "author": "alxjpzmn",
+  "license": "MIT",
+  "scripts": {
+    "core": "pnpm --filter @doughbox/core --",
+    "web": "pnpm --filter @doughbox/web --",
+    "dev": "concurrently -n \"@doughbox/core,@doughbox/web\" -c \"blue,green\" \"pnpm core dev\" \"pnpm web dev\"",
+    "update": "pnpm web update && pnpm core update"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.1",
+    "cross-var": "^1.1.0",
+    "dotenv-cli": "^7.4.2"
+  }
+}

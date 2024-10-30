@@ -1,0 +1,42 @@
+# Custom, for Rust-based core app
+core/target
+core/input
+core/output
+node_modules
+*.csv
+*.db
+*.pdf
+.env*
+.DS_Store
+
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.js
+
+# testing
+/coverage
+
+# production
+apps/web/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# local env files
+.env*.local
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+dist
+dev-dist
