@@ -1,9 +1,9 @@
 .dockerignore
 npm-debug.log
 node_modules
-target
-input
-output
+core/target
+core/input
+core/output
 dist
 *.csv
 *.db
