@@ -56,13 +56,21 @@ In order for Doughbox to run, you need a running Postgres instance and a polygon
 
 ### Docker
 
-`docker pull ...`
+```bash
+  docker run -d \
+  -e POSTGRES_URL="your_postgres_url_here" \
+  -e POLYGON_TOKEN="your_polygon_token_here" \
+  -p 8084:8084 \
+  -v /path/to/your/input-directory:/app/input \
+  -v /path/to/your/output-directory:/app/output \
+  ghcr.io/alxjpzmn/doughbox:latest
+```
 
 Once the app runs, the Web UI will be available. If you've also set an environment variable for `API_TOKEN`, you can use the API too.
 
 First, you need to import your trades. To do so, move your brokerage statements (PDF or CSV, depending on the broker) into a folder. Please beware that Doughbox doesn't work with nested folders yet, so place all files directly inside the input folder. Then run `./doughbox import foldername`.
 
-If you run Dougbox inside Docker, the directory path needs to correspond to to the path inside the container, so `./input`. The full command for importing then becomes: `docker container exec -it doughbox ./doughbox import ./input`. The first import will likely be a bit slower than subsequent ones, since Doughbox will fetch historic FX rates.
+If you run Dougbox inside Docker, the directory path needs to correspond to to the path inside the container, so `./input`. The full command for importing then becomes: `docker container exec -i doughbox ./doughbox import ./input`. The first import will likely be a bit slower than subsequent ones, since Doughbox will fetch historic FX rates.
 
 After the first import, you will be prompted to run housekeeping and some portfolio and PL calculations, unless you called the import command with `--silent`. Especially on the first run it's highly recommended to run at least `housekeeping` (which will e.g. fetch data on past stock splits based on your holdings).
 
