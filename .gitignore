@@ -31,12 +31,8 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# local env files
-.env*.local
-
 # typescript
 *.tsbuildinfo
-next-env.d.ts
 
 dist
 dev-dist

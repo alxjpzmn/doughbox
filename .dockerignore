@@ -1,3 +1,12 @@
 .dockerignore
 npm-debug.log
 node_modules
+target
+input
+output
+dist
+*.csv
+*.db
+*.pdf
+.env*
+.DS_Store
