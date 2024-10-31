@@ -56,7 +56,7 @@ async fn run_portfolio_tracker() -> anyhow::Result<()> {
         // fetch new fx rates when older than 4 days
         let four_days_ago = Utc::now().naive_utc().date() - Duration::days(4);
         let most_recent_fx_rate = get_most_recent_rate().await?;
-        if most_recent_fx_rate < four_days_ago && confirm_action("fetch updated exchange rates?") {
+        if most_recent_fx_rate < four_days_ago && confirm_action("fetch updated exchange rates") {
             fetch_historic_ecb_rates().await?;
         }
     };
