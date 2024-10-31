@@ -7,6 +7,7 @@ RUN cd /app/web && pnpm i && pnpm run build:docker
 FROM rust:latest AS backend
 WORKDIR /app
 COPY core /app
+COPY --from=frontend /app/web/dist /app/dist
 RUN cd /app && cargo build --release
 
 
