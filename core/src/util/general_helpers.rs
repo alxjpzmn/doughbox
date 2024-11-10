@@ -114,6 +114,7 @@ pub fn parse_timestamp(timestamp_str: &str) -> anyhow::Result<DateTime<Utc>> {
         "%d-%m-%Y %H:%M:%S",
         "%Y-%m-%d %H:%M:%S",
         "%Y-%m-%dT%H:%M:%S%.3f",
+        "%d.%m.%Y %H:%M:%S:%f",
     ];
     for format in formats.iter() {
         if let Ok(timestamp) = NaiveDateTime::parse_from_str(timestamp_str, format) {

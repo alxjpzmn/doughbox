@@ -13,7 +13,6 @@ use crate::util::{
 
 pub async fn housekeeping() -> anyhow::Result<()> {
     seed_fx_conversion_db().await?;
-    fetch_historic_ecb_rates().await?;
     seed_fx_rates_db().await?;
     seed_ticker_conversion_db().await?;
     let existing_splits = get_stock_splits().await?;

@@ -31,7 +31,8 @@ pub async fn extract_scalable_record(text: &str, file_path: &str) -> anyhow::Res
 
     match record_type {
         RecordType::EquityTrade => {
-            let date_match = return_first_match(r"(..\...\.....\n..:..:..)", text)?;
+            let date_match =
+                return_first_match(r"(\d{2}\.\d{2}\.\d{4})\s+(\d{2}:\d{2}:\d{2}:\d{2})", text)?;
             let date_string_to_parse = date_match;
             let date = parse_timestamp(&date_string_to_parse)?;
 
@@ -40,13 +41,13 @@ pub async fn extract_scalable_record(text: &str, file_path: &str) -> anyhow::Res
                 &text.replace('\n', ""),
             )?;
 
-            let avg_price_per_unit = return_first_match(r"EUR \d+,*\d{0,6}\n\nVerwahrart", text)?
-                .replace("EUR", "")
-                .replace(",", ".")
-                .replace("\n", "")
-                .replace(" ", "")
-                .replace("Verwahrart", "")
-                .parse::<Decimal>()?;
+            let avg_price_per_unit =
+                return_first_match(r"EUR\s+(\d{1,3}(?:\.\d{3})*,\d{2})", text)?
+                    .replace("EUR", "")
+                    .replace(",", ".")
+                    .replace("\n", "")
+                    .replace(" ", "")
+                    .parse::<Decimal>()?;
 
             let no_units = return_first_match(r"STK \d+,*\d{0,}", text)?
                 .replace("STK", "")

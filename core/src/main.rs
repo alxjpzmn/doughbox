@@ -69,16 +69,16 @@ async fn run_portfolio_tracker() -> anyhow::Result<()> {
             import(&path).await?;
 
             if !silent {
-                if confirm_action("run housekeeping (1/5)") {
+                if confirm_action("run housekeeping (1/4)") {
                     housekeeping().await?;
                 }
-                if confirm_action("run portfolio calculation (3/5)") {
+                if confirm_action("run portfolio calculation (2/4)") {
                     portfolio().await?;
                 }
-                if confirm_action("run P&L calculation (4/5)") {
+                if confirm_action("run P&L calculation (3/4)") {
                     pl().await?;
                 }
-                if confirm_action("run tax calculation (5/5)") {
+                if confirm_action("run tax calculation (4/4)") {
                     calculate_taxes().await?;
                 }
             }
