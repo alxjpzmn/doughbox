@@ -8,6 +8,7 @@ use crate::util::{
 };
 use chrono::prelude::*;
 
+#[derive(Debug)]
 enum RecordType {
     EquityTrade,
     Dividend,
@@ -49,12 +50,16 @@ pub async fn extract_erste_bank_record(text: &str, file_path: &str) -> anyhow::R
                 .replace(',', ".")
                 .parse::<Decimal>()?;
 
-            let no_units =
-                return_first_match(r"\d{1,},(\d+(?:,\d{3})*(?:\.\d{1,2})?)\s(?=STK)", text)?
-                    .replace("STK", "")
-                    .replace(" ", "")
-                    .replace(',', ".")
-                    .parse::<Decimal>()?;
+            let no_units = return_first_match(
+                r"(?:\d{2}\.\d{2}\.\d{4})\s*,?\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?)\s*STK",
+                text,
+            )?
+            .split_off(10)
+            .replace("STK", "")
+            .replace(" ", "")
+            .replace(".", "")
+            .replace(',', ".")
+            .parse::<Decimal>()?;
 
             let order_type = if does_match_exist(r"\sKauf", text) {
                 "Buy"
@@ -63,7 +68,11 @@ pub async fn extract_erste_bank_record(text: &str, file_path: &str) -> anyhow::R
             };
 
             let mut fees = dec!(0.0);
-            if does_match_exist(r"Summe der Dienstleistungskosten", text) {
+            if !does_match_exist(
+                r"Fur diese Transaktion fielen keine Dienstleistungskosten an.",
+                text,
+            ) && !does_match_exist("Es sind keine Kosten angefallen.", text)
+            {
                 fees =
                     return_first_match(r"Summe der Dienstleistungskosten EUR \d{1,},\d{1,}", text)?
                         .replace(',', ".")
