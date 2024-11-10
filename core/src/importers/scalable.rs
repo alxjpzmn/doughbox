@@ -42,8 +42,9 @@ pub async fn extract_scalable_record(text: &str, file_path: &str) -> anyhow::Res
             )?;
 
             let avg_price_per_unit =
-                return_first_match(r"EUR\s+(\d{1,3}(?:\.\d{3})*,\d{2})", text)?
+                return_first_match(r"EUR\s+(\d{1,3}(?:\.\d{3})*,\d{0,})Verwahrart", text)?
                     .replace("EUR", "")
+                    .replace("Verwahrart", "")
                     .replace(",", ".")
                     .replace("\n", "")
                     .replace(" ", "")
