@@ -5,9 +5,7 @@ use crate::util::{
         add_stock_split_to_db, get_stock_splits, get_used_isins, seed_fx_conversion_db,
         seed_fx_rates_db, seed_ticker_conversion_db,
     },
-    market_data_helpers::{
-        fetch_historic_ecb_rates, get_stock_split_information, get_symbol_from_isin,
-    },
+    market_data_helpers::{get_stock_split_information, get_symbol_from_isin},
     taxation_helpers::query_for_oekb_funds_data,
 };
 
