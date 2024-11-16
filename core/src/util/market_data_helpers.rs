@@ -193,22 +193,6 @@ pub async fn convert_amount(
     if currency_from == "EUR" && currency_to == "EUR" {
         return Ok(amount);
     }
-    let amount = if currency_from == "GBX" {
-        amount * dec!(100.0)
-    } else {
-        amount
-    };
-
-    let currency_to = if currency_to == "GBX" {
-        "GBP"
-    } else {
-        currency_to
-    };
-    let currency_from = if currency_from == "GBX" {
-        "GBP"
-    } else {
-        currency_from
-    };
 
     let fx_rate = get_exchange_rate(currency_from, currency_to, date).await?;
 
@@ -216,13 +200,25 @@ pub async fn convert_amount(
 }
 
 pub async fn get_exchange_rate(
-    currency_from: &str,
-    currency_to: &str,
+    mut currency_from: &str,
+    mut currency_to: &str,
     date: &NaiveDate,
 ) -> anyhow::Result<Decimal> {
     let client = seed_fx_rates_db().await?;
     if currency_from != "EUR" && currency_to != "EUR" {
         return Err(anyhow!("At least one leg needs to be EUR denominated"));
+    }
+
+    let mut gbx_fx_rate_adjustment_needed: bool = false;
+
+    if currency_to == "GBX" {
+        currency_to = "GBP";
+        gbx_fx_rate_adjustment_needed = true;
+    }
+
+    if currency_from == "GBX" {
+        currency_from = "GBP";
+        gbx_fx_rate_adjustment_needed = true;
     }
 
     let query = if currency_from != "EUR" {
@@ -246,7 +242,11 @@ pub async fn get_exchange_rate(
         ));
     }
 
-    let rate: Decimal = rows[0].get(0);
+    let mut rate: Decimal = rows[0].get(0);
+
+    if gbx_fx_rate_adjustment_needed {
+        rate *= dec!(100);
+    }
 
     if currency_from != "EUR" {
         Ok(dec!(1.0) / rate)

@@ -133,16 +133,14 @@ pub async fn calculate_taxes() -> anyhow::Result<()> {
         // get all tax relevant events for the current year, ordered by date
         let tax_relevant_events = get_tax_relevant_events(year).await?;
         for event in tax_relevant_events {
-            println!("calculating tax for event: {:?}", event);
+            println!("Calculating tax for event: {:?}", event);
             match event.event_type {
                 TaxEventType::CashInterest => {
-                    println!("calculating tax for cash interest");
                     // ======== CASH INTEREST =========
                     // IF not in EUR, add units to fx pool (basically, you've gotten them for exactly the cost of the
                     // current WAC of said currency, they neither reduce nor increase the currency WAC)
                     // apply the difference of withholding tax in EUR and 25% on those
                     if event.currency != *"EUR" {
-                        println!("currency wacs: {:?}", currency_wacs);
                         currency_wacs
                             .entry(event.currency.clone())
                             .and_modify(|entry: &mut Wac| {
@@ -156,7 +154,6 @@ pub async fn calculate_taxes() -> anyhow::Result<()> {
                                 average_cost: event.applied_fx_rate.unwrap(),
                             });
                     };
-                    println!("calculating tax for event: {:?}", event.applied_fx_rate);
 
                     let taxable_remainder = event.units * event.price_unit;
 
@@ -192,7 +189,6 @@ pub async fn calculate_taxes() -> anyhow::Result<()> {
                         .and_modify(|year: &mut AnnualTaxableAmounts| {
                             year.withheld_tax_interest += withheld_tax_eur
                         });
-                    println!("done with cash interest");
                 }
                 TaxEventType::ShareInterest => {
                     // ======== SHARE LENDING INTEREST =========
