@@ -2,7 +2,7 @@ use chrono::{DateTime, NaiveDate, Utc};
 use reqwest::Client;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::util::db_helpers::add_fund_report_to_db;
 
@@ -10,7 +10,7 @@ use super::{db_helpers::{
     get_listing_changes, get_stock_splits, seed_dividends_db, seed_fx_conversion_db, seed_interest_db, seed_trades_db, FundTaxReport
 }, general_helpers::parse_timestamp, market_data_helpers::{get_changed_identifier, get_split_adjusted_price_per_unit, get_split_adjusted_units}};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub enum TaxEventType {
     CashInterest,
     ShareInterest,
@@ -20,13 +20,13 @@ pub enum TaxEventType {
     DividendAequivalent
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub enum TradeDirection {
     Buy,
     Sell,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct TaxRelevantEvent {
     pub date: DateTime<Utc>,
     pub event_type: TaxEventType,
@@ -39,15 +39,8 @@ pub struct TaxRelevantEvent {
     pub withholding_tax_percent: Option<Decimal>,
 }
 
-pub async fn get_tax_relevant_events(year: i32) -> anyhow::Result<Vec<TaxRelevantEvent>> {
-    println!("getting tax relevant events for {:?}", year);
-    seed_dividends_db().await?;
-    seed_interest_db().await?;
-    seed_fx_conversion_db().await?;
-    let client = seed_trades_db().await?;
-
-    let mut events = Vec::new();
-
+pub async fn get_tax_relevant_events(year: i32)->
+ anyhow::Result<Vec<TaxRelevantEvent>>  {
     let year_start_date_str = format!("{}-01-01", year);
     let year_start_timestamp = DateTime::<Utc>::from_naive_utc_and_offset(
         NaiveDate::parse_from_str(&year_start_date_str, "%Y-%m-%d")?
@@ -65,15 +58,25 @@ pub async fn get_tax_relevant_events(year: i32) -> anyhow::Result<Vec<TaxRelevan
         Utc,
     );
 
+    get_events(year_start_timestamp, year_end_timestamp).await
+}
+
+pub async fn get_events(start_date: DateTime::<Utc>, end_date: DateTime::<Utc>) -> anyhow::Result<Vec<TaxRelevantEvent>> {
+    seed_dividends_db().await?;
+    seed_interest_db().await?;
+    seed_fx_conversion_db().await?;
+    let client = seed_trades_db().await?;
+
+    let mut events = Vec::new();
+
     // Query the interest table
     for row in client
         .query(
             "SELECT date, amount, currency, principal, withholding_tax, witholding_tax_currency, amount_eur FROM interest WHERE date >= $1 AND date < $2",
-            &[&year_start_timestamp, &year_end_timestamp],
+            &[&start_date, &end_date],
         )
         .await?
     {
-        println!("interest: {:?}", row.get::<usize, DateTime<Utc>>(0));
         if row.get::<usize, Decimal>(4) != dec!(0.0) && row.get::<usize, String>(5) != row.get::<usize, String>(2) {
             panic!("Currency for withholding tax doesn't match event currency: {}, for {}", row.get::<usize, DateTime<Utc>>(0), row.get::<usize, Decimal>(1))
         }
@@ -93,7 +96,6 @@ pub async fn get_tax_relevant_events(year: i32) -> anyhow::Result<Vec<TaxRelevan
             applied_fx_rate: Some(row.get::<usize, Decimal>(1) / row.get::<usize, Decimal>(6)),
             withholding_tax_percent: Some(row.get::<usize, Option<Decimal>>(4).unwrap_or(dec!(0.0)) / row.get::<usize, Decimal>(1)),
         };
-        println!("event: {:?}", event.clone());
         events.push(event);
     }
 
@@ -101,12 +103,11 @@ pub async fn get_tax_relevant_events(year: i32) -> anyhow::Result<Vec<TaxRelevan
     for row in client
         .query(
             "SELECT date, id, currency FROM fund_reports WHERE date >= $1 AND date < $2",
-            &[&year_start_timestamp, &year_end_timestamp],
+            &[&start_date, &end_date],
         )
         .await
     ?
     {
-        println!("dividend aequivalent: {:?}", row.get::<usize, DateTime<Utc>>(0));
         // since dividend aequivalents have a couple of fields to consider, I just want the event
         // in the timeline, and will fetch everything based on the report id
         let event = TaxRelevantEvent {
@@ -120,19 +121,17 @@ pub async fn get_tax_relevant_events(year: i32) -> anyhow::Result<Vec<TaxRelevan
             applied_fx_rate: None, 
             withholding_tax_percent: None,
         };
-        println!("event: {:?}", event.clone());
         events.push(event);
     }
 
     for row in client
         .query(
             "SELECT date, amount, currency, isin, withholding_tax, witholding_tax_currency, amount_eur FROM dividends WHERE date >= $1 AND date < $2",
-            &[&year_start_timestamp, &year_end_timestamp],
+            &[&start_date, &end_date],
         )
         .await
     ?
     {
-        println!("dividend: {:?}", row.get::<usize, DateTime<Utc>>(0));
         if row.get::<usize, Decimal>(4) != dec!(0.0) && row.get::<usize, String>(5) != row.get::<usize, String>(2) {
             panic!("Currency for withholding tax doesn't match event currency: {}, for {}", row.get::<usize, DateTime<Utc>>(0), row.get::<usize, String>(3))
         }
@@ -147,16 +146,14 @@ pub async fn get_tax_relevant_events(year: i32) -> anyhow::Result<Vec<TaxRelevan
             applied_fx_rate: Some(row.get::<usize, Decimal>(1) / row.get::<usize, Decimal>(6)),
             withholding_tax_percent: Some(row.get::<usize, Option<Decimal>>(4).unwrap_or(dec!(0.0)) / row.get::<usize, Decimal>(1)),
         };
-        println!("event: {:?}", event.clone());
         events.push(event);
     }
 
     // Query the trades table
-    for row in client.query("SELECT date, no_units, avg_price_per_unit, currency_denomination, isin, direction, withholding_tax, witholding_tax_currency, eur_avg_price_per_unit FROM trades WHERE date >= $1 AND date < $2", &[&year_start_timestamp, &year_end_timestamp]).await? {
+    for row in client.query("SELECT date, no_units, avg_price_per_unit, currency_denomination, isin, direction, withholding_tax, witholding_tax_currency, eur_avg_price_per_unit FROM trades WHERE date >= $1 AND date < $2", &[&start_date, &end_date]).await? {
         if row.get::<usize, Decimal>(6) != dec!(0.0) && row.get::<usize, String>(7) != row.get::<usize, String>(3) {
             panic!("Currency for withholding tax doesn't match event currency: {}, for {}", row.get::<usize, DateTime<Utc>>(0), row.get::<usize, String>(4))
         }
-        println!("trade: {:?}", row.get::<usize, DateTime<Utc>>(0));
     let mut stock_split_information = get_stock_splits().await?;
         // adjust for stock splits
         let split_adjusted_units = get_split_adjusted_units(
@@ -189,7 +186,6 @@ pub async fn get_tax_relevant_events(year: i32) -> anyhow::Result<Vec<TaxRelevan
             applied_fx_rate: Some(applied_fx_rate),
             withholding_tax_percent: Some(row.get::<usize, Option<Decimal>>(6).unwrap_or(dec!(0.00)) / (row.get::<usize, Decimal>(1) *  if row.get::<usize, Decimal>(2) == dec!(0.0) {dec!(1)} else {row.get::<usize, Decimal>(2) })),
         };
-        println!("event: {:?}", event.clone());
         events.push(event);
     }
 
@@ -197,12 +193,11 @@ pub async fn get_tax_relevant_events(year: i32) -> anyhow::Result<Vec<TaxRelevan
     for row in client
         .query(
             "SELECT date, from_amount, to_amount, from_currency, to_currency FROM fx_conversions WHERE date >= $1 AND date < $2",
-            &[&year_start_timestamp, &year_end_timestamp],
+            &[&start_date, &end_date],
         )
         .await
     ?
     {
-        println!("trade: {:?}", row.get::<usize, DateTime<Utc>>(0));
         let event = TaxRelevantEvent {
             date: row.get(0),
             event_type: TaxEventType::FxConversion,
@@ -214,7 +209,6 @@ pub async fn get_tax_relevant_events(year: i32) -> anyhow::Result<Vec<TaxRelevan
             price_unit: row.get::<usize, Decimal>(2) / row.get::<usize, Decimal>(1),
             withholding_tax_percent: None,
         };
-        println!("event: {:?}", event.clone());
         events.push(event);
     }
 
