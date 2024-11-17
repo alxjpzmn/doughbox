@@ -2,6 +2,7 @@ use crate::util::{
     constants::{OUT_DIR, SESSION_TOKEN_KEY},
     db_helpers::{get_all_total_active_unit_counts, get_dividends, get_performance_signals},
     general_helpers::{get_env_variable, parse_timestamp},
+    taxation_helpers::get_events,
 };
 use axum::{
     extract::{Json, Query, Request},
@@ -11,7 +12,7 @@ use axum::{
     routing::{get, get_service, post},
     Router,
 };
-use chrono::{Datelike, Utc};
+use chrono::{DateTime, Datelike, NaiveDate, Utc};
 use serde::Deserialize;
 use std::net::SocketAddr;
 use tower_cookies::cookie::time::Duration;
@@ -124,6 +125,28 @@ async fn performance() -> anyhow::Result<impl IntoResponse, StatusCode> {
     json_response(&performance)
 }
 
+#[derive(Debug, Deserialize)]
+struct TimelineQuery {
+    start_date: String,
+}
+
+async fn timeline(query: Query<TimelineQuery>) -> anyhow::Result<impl IntoResponse, StatusCode> {
+    let year_start_timestamp = DateTime::<Utc>::from_naive_utc_and_offset(
+        NaiveDate::parse_from_str(&query.start_date, "%Y-%m-%d")
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .and_hms_opt(0, 0, 0)
+            .unwrap(),
+        Utc,
+    );
+
+    let end_date = Utc::now();
+
+    let timeline = get_events(year_start_timestamp, end_date)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    json_response(&timeline)
+}
+
 async fn dividends() -> anyhow::Result<impl IntoResponse, StatusCode> {
     let dividends = get_dividends()
         .await
@@ -179,6 +202,7 @@ pub async fn api() -> anyhow::Result<()> {
         .route("/portfolio", get(portfolio))
         .route("/pl", get(pl))
         .route("/performance", get(performance))
+        .route("/timeline", get(timeline))
         .route("/dividends", get(dividends))
         .route("/taxation", get(taxation))
         .route("/active_units", get(active_units))

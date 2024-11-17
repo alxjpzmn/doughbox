@@ -4,7 +4,7 @@
   "private": true,
   "license": "MIT",
   "scripts": {
-    "dev": "RUST_BACKTRACE=1 cargo watch -x 'run -- api'",
+    "dev": "RUST_BACKTRACE=1 cargo watch -x 'run -- api --silent'",
     "update": "cargo update && cargo upgrade",
     "lint": "cargo clippy"
   }

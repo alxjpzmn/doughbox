@@ -5,6 +5,7 @@ import Dividends from "./Dividends";
 import ActiveUnits from "./ActiveUnits";
 import Taxation from "./Taxation";
 import useAuth from "../../hooks/useAuth";
+import Timeline from "./Timeline";
 
 const Dashboard = () => {
   const { logout } = useAuth();
@@ -17,9 +18,11 @@ const Dashboard = () => {
             <Tab className="flex-shrink-0" value={1}>
               Positions
             </Tab>
-
             <Tab className="flex-shrink-0" value={2}>
               Profit & Loss
+            </Tab>
+            <Tab className="flex-shrink-0" value={2}>
+              Timeline
             </Tab>
             <Tab className="flex-shrink-0" value={3}>
               Dividends
@@ -41,6 +44,9 @@ const Dashboard = () => {
           </TabPanel>
           <TabPanel>
             <PL />
+          </TabPanel>
+          <TabPanel>
+            <Timeline />
           </TabPanel>
           <TabPanel>
             <Dividends />
