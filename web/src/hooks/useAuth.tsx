@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import useSWR, { useSWRConfig } from "swr";
 import { useLocation } from "wouter";
 import { BASE_URL, clearSWRCache, fetcher, sendMutateRequest } from "@/util";
+import { navigate } from "wouter/use-browser-location";
 
 const useAuth = () => {
   const { cache } = useSWRConfig();
@@ -43,7 +44,7 @@ const useAuth = () => {
     if (res.ok) {
       mutate();
       clearSWRCache(cache);
-      setLocation("/login");
+      navigate("/login", { replace: true });
     }
   };
 
