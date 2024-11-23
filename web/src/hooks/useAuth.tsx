@@ -25,12 +25,12 @@ const useAuth = () => {
   const loggedOut = !!error && error.status === 401;
   const loggedIn = !loggedOut;
 
-  if (!isLoading && loggedIn && location === "/login") {
-    setLocation("/dashboard/positions")
+  if (!isLoading && loggedIn && (location === "/login" || location === '/')) {
+    setLocation("/dashboard/positions");
   }
 
-  if (!isLoading && loggedOut && location.includes("/dashboard")) {
-    setLocation("/login")
+  if (!isLoading && loggedOut && (location.includes("/dashboard") || location === '/')) {
+    setLocation("/login");
   }
 
   useEffect(() => {
