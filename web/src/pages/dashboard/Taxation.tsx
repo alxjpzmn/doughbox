@@ -1,12 +1,9 @@
-// @ts-nocheck
-import React from "react";
 import useSwr from "swr";
-import { BASE_URL, fetcher, formatCurrency, formatDate } from "../../util";
-import { format } from "date-fns";
-import { Card, Flex, Title, Text, List, ListItem, Grid } from "@tremor/react";
+import { Card, Title, Text, List, ListItem, Grid } from "@tremor/react";
+import { BASE_URL, fetcher, formatCurrency, formatDate } from "@/util";
 
-const Taxation = (props: {}) => {
-  const { data, isLoading } = useSwr(`${BASE_URL}/taxation`, fetcher);
+const Taxation = () => {
+  const { data } = useSwr(`${BASE_URL}/taxation`, fetcher);
 
   return (
     <div>
@@ -20,7 +17,7 @@ const Taxation = (props: {}) => {
               <Card key={year}>
                 <Title>{year}</Title>
                 <List>
-                  {Object.entries(taxItems)?.map(([key, value]) => (
+                  {Object.entries(taxItems as any)?.map(([key, value]) => (
                     <ListItem key={`${key}`}>
                       {key}
                       <span className="font-bold">

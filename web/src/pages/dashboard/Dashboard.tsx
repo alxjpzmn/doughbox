@@ -1,11 +1,11 @@
 import { Tab, TabList, TabGroup, TabPanels, TabPanel } from "@tremor/react";
-import Positions from "./Positions";
-import PL from "./PL";
-import Dividends from "./Dividends";
-import ActiveUnits from "./ActiveUnits";
-import Taxation from "./Taxation";
-import useAuth from "../../hooks/useAuth";
-import Timeline from "./Timeline";
+import useAuth from "@/hooks/useAuth";
+import Positions from "@/pages/dashboard/Positions";
+import PL from "@/pages/dashboard/PL";
+import Dividends from "@/pages/dashboard/Dividends";
+import ActiveUnits from "@/pages/dashboard/ActiveUnits";
+import Taxation from "@/pages/dashboard/Taxation";
+import Timeline from "@/pages/dashboard/Timeline";
 
 const Dashboard = () => {
   const { logout } = useAuth();

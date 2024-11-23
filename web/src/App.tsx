@@ -1,16 +1,16 @@
 import "./index.css";
 
-import useAuth from "./hooks/useAuth";
+import useAuth from "@/hooks/useAuth";
 import { Link, Route, Switch, useLocation } from "wouter";
 import { SWRConfig } from "swr";
-import Login from "./pages/Login";
-import Positions from "./pages/dashboard/Positions";
-import PL from "./pages/dashboard/PL";
-import Timeline from "./pages/dashboard/Timeline";
-import Dividends from "./pages/dashboard/Dividends";
-import ActiveUnits from "./pages/dashboard/ActiveUnits";
-import Taxation from "./pages/dashboard/Taxation";
-import { TabNavigation, TabNavigationLink } from "./components/TabNavigation";
+import Login from "@/pages/Login";
+import Positions from "@/pages/dashboard/Positions";
+import PL from "@/pages/dashboard/PL";
+import Timeline from "@/pages/dashboard/Timeline";
+import Dividends from "@/pages/dashboard/Dividends";
+import ActiveUnits from "@/pages/dashboard/ActiveUnits";
+import Taxation from "@/pages/dashboard/Taxation";
+import { TabNavigation, TabNavigationLink } from "@/components/TabNavigation";
 
 
 export default function App() {

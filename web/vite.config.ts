@@ -1,8 +1,14 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
+import path from "path";
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      "@": path.resolve(__dirname, "src"),
+    },
+  },
   plugins: [
     react(),
     VitePWA({
@@ -23,7 +29,7 @@ export default defineConfig({
           proxy.on("error", (err, _req, _res) => {
             console.error("Proxy error", err);
           });
-          proxy.on("proxyReq", (proxyReq, req, _res) => {
+          proxy.on("proxyReq", (_proxyReq, req, _res) => {
             console.log("Sending request:", req.method, req.url);
           });
           proxy.on("proxyRes", (proxyRes, req, _res) => {

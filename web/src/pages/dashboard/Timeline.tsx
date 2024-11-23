@@ -1,8 +1,8 @@
 import useSWR from "swr";
-import { BASE_URL, fetcher, formatCurrency, formatDate } from "../../util";
 import { useState } from "react";
 import { format } from "date-fns";
 import { Card, DatePicker, Table, TableBody, TableCell, TableHead, TableHeaderCell, TableRow, Text, Title } from "@tremor/react";
+import { BASE_URL, fetcher, formatCurrency, formatDate } from "@/util";
 
 export const Timeline = () => {
 

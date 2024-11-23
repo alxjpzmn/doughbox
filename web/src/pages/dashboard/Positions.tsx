@@ -18,7 +18,7 @@ import {
   fetcher,
   formatUnixTimestampRelative,
   getDeltaType,
-} from '../../util';
+} from '@/util';
 
 interface PositionsProps { }
 

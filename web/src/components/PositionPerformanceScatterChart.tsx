@@ -10,7 +10,7 @@ import {
   Cell,
 } from "recharts";
 import useSwr from "swr";
-import { BASE_URL, formatCurrency, fetcher } from "../../util";
+import { BASE_URL, formatCurrency, fetcher } from "@/util";
 
 interface PositionPerformanceScatterChartProps { }
 

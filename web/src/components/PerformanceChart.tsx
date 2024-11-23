@@ -1,7 +1,7 @@
 import { AreaChart } from "@tremor/react";
 import React from "react";
 import useSwr from "swr";
-import { BASE_URL, fetcher, formatDate, formatRelativeAmount } from "../../util";
+import { BASE_URL, fetcher, formatDate, formatRelativeAmount } from "@/util";
 
 interface PerformanceChartProps { }
 
