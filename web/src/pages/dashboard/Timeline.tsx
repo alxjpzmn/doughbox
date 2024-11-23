@@ -1,14 +1,16 @@
 import useSWR from "swr";
 import { useState } from "react";
 import { format } from "date-fns";
-import { Card, DatePicker, Table, TableBody, TableCell, TableHead, TableHeaderCell, TableRow, Text, Title } from "@tremor/react";
-import { BASE_URL, fetcher, formatCurrency, formatDate } from "@/util";
+import { Card, DatePicker, Title } from "@tremor/react";
+import { BASE_URL, fetcher } from "@/util";
+import { DividendCard, FxCard, InterestCard, TradeCard } from "@/components/TimelineEventCard";
+import { TaxEventType, TaxRelevantEvent } from "@/types/core";
 
 export const Timeline = () => {
 
 
   const [selectedDate, setSelectedDate] = useState<Date>(new Date(new Date().setMonth(new Date().getMonth() - 3)));
-  const { data, isLoading: loading } = useSWR(
+  const { data } = useSWR(
     `${BASE_URL}/timeline?start_date=${format(selectedDate, "yyyy-LL-dd")}`,
     fetcher,
   );
@@ -26,47 +28,40 @@ export const Timeline = () => {
           enableClear={false}
         />
       </Card>
-      {loading ? <Text>Loading...</Text> : <Table className="mt-4">
-        <TableHead>
-          <TableRow>
-            <TableHeaderCell>Date</TableHeaderCell>
-            <TableHeaderCell>Type</TableHeaderCell>
-            <TableHeaderCell>Identifier</TableHeaderCell>
-            <TableHeaderCell>Direction</TableHeaderCell>
-            <TableHeaderCell>Price / Unit</TableHeaderCell>
-            <TableHeaderCell>Units</TableHeaderCell>
-          </TableRow>
-        </TableHead>
-        <TableBody>
-          {data?.sort((a: any, b: any) => {
-            a = new Date(a.date);
-            b = new Date(b.date);
-            return b - a;
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {data?.sort((a: any, b: any) => {
+          a = new Date(a.date);
+          b = new Date(b.date);
+          return b - a;
+        }).map((timelineEvent: TaxRelevantEvent) => {
+          let eventComponent;
+          switch (timelineEvent.event_type) {
+            case TaxEventType.Trade:
+              eventComponent = <TradeCard timelineEvent={timelineEvent} />;
+              break;
+            case TaxEventType.CashInterest:
+              eventComponent = <InterestCard timelineEvent={timelineEvent} />;
+              break;
+            case TaxEventType.ShareInterest:
+              eventComponent = <InterestCard timelineEvent={timelineEvent} />;
+              break;
+            case TaxEventType.Dividend:
+              eventComponent = <DividendCard timelineEvent={timelineEvent} />;
+              break;
+            case TaxEventType.DividendAequivalent:
+              eventComponent = <DividendCard timelineEvent={timelineEvent} />;
+              break;
+            case TaxEventType.FxConversion:
+              eventComponent = <FxCard timelineEvent={timelineEvent} />;
+              break;
+            default:
+              eventComponent = null;
+          }
+          return eventComponent;
 
-          }).map((event: any) => (
-            <TableRow key={event.date + event.units}>
-              <TableCell>
-                {formatDate(new Date(event.date))}
-              </TableCell>
-              <TableCell>
-                {event.event_type}
-              </TableCell>
-              <TableCell>
-                {event.identifier}
-              </TableCell>
-              <TableCell>
-                {event.direction}
-              </TableCell>
-              <TableCell>
-                {formatCurrency(event.price_unit, event.currency)}
-              </TableCell>
-              <TableCell>
-                {event.units}
-              </TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>}
+        }
+        )}
+      </div>
     </div>
   )
 }

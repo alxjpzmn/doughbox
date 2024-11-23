@@ -4,6 +4,7 @@ use rust_decimal_macros::dec;
 use serde::{Deserialize, Serialize};
 use tokio::try_join;
 use tokio_postgres::{Client, Row};
+use typeshare::typeshare;
 
 use crate::util::db_helpers::add_fund_report_to_db;
 
@@ -15,6 +16,7 @@ use super::{
     },
 };
 
+#[typeshare]
 #[derive(Debug, Clone, Serialize)]
 pub enum TaxEventType {
     CashInterest,
@@ -25,12 +27,14 @@ pub enum TaxEventType {
     DividendAequivalent,
 }
 
+#[typeshare]
 #[derive(Debug, Clone, Serialize)]
 pub enum TradeDirection {
     Buy,
     Sell,
 }
 
+#[typeshare]
 #[derive(Debug, Clone, Serialize)]
 pub struct TaxRelevantEvent {
     pub date: DateTime<Utc>,

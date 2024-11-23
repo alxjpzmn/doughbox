@@ -1,0 +1,5 @@
+[typescript.type_mappings]
+"Decimal" = "number"
+"Uuid" = "string"
+"DateTime" = "Date"
+"NaiveDateTime" = "Date"

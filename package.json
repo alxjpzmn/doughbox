@@ -8,7 +8,8 @@
     "core": "pnpm --filter @doughbox/core --",
     "web": "pnpm --filter @doughbox/web --",
     "dev": "concurrently -n \"@doughbox/core,@doughbox/web\" -c \"blue,green\" \"pnpm core dev\" \"pnpm web dev\"",
-    "update": "pnpm web update && pnpm core update"
+    "update": "pnpm web update && pnpm core update",
+    "typeshare": "typeshare ./core --lang=typescript --output-file=./web/src/types/core.ts"
   },
   "devDependencies": {
     "concurrently": "^9.0.1",
