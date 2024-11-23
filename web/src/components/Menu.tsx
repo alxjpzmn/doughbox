@@ -21,7 +21,7 @@ const Menu = () => {
   return <TabNavigation className="mb-10 flex items-center justify-between">
     <div className="flex">
       {menuItems.map(menuItem =>
-        <TabNavigationLink asChild active={location === `${menuItem.route}`}>
+        <TabNavigationLink asChild active={location === `${menuItem.route}`} key={menuItem.route}>
           <Link href={menuItem.route}>{menuItem.text}</Link>
         </TabNavigationLink>
       )}
@@ -48,17 +48,15 @@ const MobileMenu = () => {
           </DrawerHeader>
           <DrawerBody className="flex flex-col">
             <Text className="grid grid-cols-1 gap-6 text-lg font-bold">
-              {menuItems.map(menuItem => <>
-                <div className="flex items-center">{location === `${menuItem.route}` && <span className="w-2 h-2 mr-2 bg-green-400 rounded-full" />}<Link href={menuItem.route}><DrawerClose>{menuItem.text}</DrawerClose></Link></div>
-              </>)}
+              {menuItems.map(menuItem =>
+                <span className="flex items-center" key={menuItem.route}>{location === `${menuItem.route}` && <span className="w-2 h-2 mr-2 bg-green-400 rounded-full" />}<Link href={menuItem.route}><DrawerClose>{menuItem.text}</DrawerClose></Link></span>
+              )}
             </Text>
           </DrawerBody>
           <DrawerFooter className="mt-6">
-            <DrawerClose>
-              <button className="text-red-400 text-lg pb-2 font-bold" onClick={async () => {
-                await logout()
-              }} type='button'>Logout</button>
-            </DrawerClose>
+            <DrawerClose className="text-red-400 text-lg pb-2 font-bold" onClick={async () => {
+              await logout()
+            }} type='button'>Logout</DrawerClose>
           </DrawerFooter>
         </DrawerContent>
       </Drawer>

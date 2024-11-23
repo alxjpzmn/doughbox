@@ -1,4 +1,4 @@
-# Custom, for Rust-based core app
+# custom, for Rust-based core app
 core/target
 core/input
 core/output
@@ -20,6 +20,8 @@ node_modules
 
 # production
 apps/web/build
+dist
+dev-dist
 
 # misc
 .DS_Store
@@ -34,5 +36,24 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 
-dist
-dev-dist
+# logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+*.local
+
+# editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

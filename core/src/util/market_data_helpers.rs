@@ -37,12 +37,12 @@ struct PolygonSplitResponse {
 }
 
 use crate::util::{
-    db_helpers::{get_used_currencies, seed_fx_rates_db, seed_ticker_conversion_db},
+    db_helpers::get_used_currencies,
     general_helpers::{get_env_variable, rem_first_and_last},
 };
 
 use super::{
-    db_helpers::{get_instrument_by_id, ListingChange, StockSplit},
+    db_helpers::{db_client, get_instrument_by_id, ListingChange, StockSplit},
     general_helpers::{hash_string, parse_timestamp},
 };
 
@@ -126,7 +126,7 @@ pub fn get_split_adjusted_price_per_unit(
 pub async fn fetch_historic_ecb_rates() -> anyhow::Result<()> {
     let mut sp = Spinner::new(Spinners::Point, "Fetching historic FX rates from ECB");
     sp.start();
-    let db = seed_fx_rates_db().await?;
+    let db = db_client().await?;
     let used_currencies = get_used_currencies().await?;
 
     for used_currency in used_currencies {
@@ -173,8 +173,9 @@ pub async fn fetch_historic_ecb_rates() -> anyhow::Result<()> {
     Ok(())
 }
 pub async fn get_most_recent_rate() -> anyhow::Result<NaiveDate> {
-    let db = seed_fx_rates_db().await?;
-    let rows = db
+    let client = db_client().await?;
+
+    let rows = client
         .query("SELECT date FROM fx_rates ORDER BY date DESC LIMIT 1", &[])
         .await?;
     if rows.is_empty() {
@@ -204,7 +205,8 @@ pub async fn get_exchange_rate(
     mut currency_to: &str,
     date: &NaiveDate,
 ) -> anyhow::Result<Decimal> {
-    let client = seed_fx_rates_db().await?;
+    let client = db_client().await?;
+
     if currency_from != "EUR" && currency_to != "EUR" {
         return Err(anyhow!("At least one leg needs to be EUR denominated"));
     }
@@ -331,7 +333,7 @@ pub async fn get_fred_value_for_date(
 pub async fn get_isin_from_symbol(symbol: &str) -> anyhow::Result<String> {
     println!("Getting ISIN for symbol {}...", &symbol);
 
-    let client = seed_ticker_conversion_db().await?;
+    let client = db_client().await?;
 
     let statement = format!(
         "SELECT isin from ticker_conversions where ticker = '{}'",
