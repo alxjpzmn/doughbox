@@ -13,6 +13,7 @@
   "dependencies": {
     "@headlessui/tailwindcss": "^0.2.1",
     "@radix-ui/react-label": "^2.1.0",
+    "@radix-ui/react-navigation-menu": "^1.2.1",
     "@radix-ui/react-switch": "^1.1.1",
     "@remixicon/react": "^4.4.0",
     "@tremor/react": "^3.18.3",
