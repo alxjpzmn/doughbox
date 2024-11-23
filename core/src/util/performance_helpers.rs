@@ -132,7 +132,7 @@ pub fn override_positions_below_threshold(no_units: Decimal) -> Decimal {
 }
 
 pub fn round_to_decimals(input: Decimal) -> Decimal {
-    (input * dec!(100.0)).round() / dec!(100.0)
+    input.round_dp(2)
 }
 
 pub async fn simulate_alternate_purchase(

@@ -45,6 +45,7 @@ struct FormattedEquityAllocationItem {
 pub struct PositionOverview {
     pub generated_at: i64,
     pub total_value: Decimal,
+    pub total_sell_value: Decimal,
     pub total_roe_abs: Decimal,
     pub total_roe_rel: Decimal,
     pub positions: Vec<EquityAllocationItem>,
@@ -82,17 +83,15 @@ pub async fn get_position_overview() -> anyhow::Result<PositionOverview> {
         };
         positions_with_allocation.push(item);
     }
+    let total_roe_abs =
+        round_to_decimals((total_position + total_sell_value) - total_invested_value);
 
     Ok(PositionOverview {
         generated_at: Utc::now().timestamp(),
         total_value: round_to_decimals(total_position),
-        total_roe_abs: round_to_decimals(
-            (total_position + total_sell_value) - total_invested_value,
-        ),
-        total_roe_rel: round_to_decimals(
-            (((total_position + total_sell_value) - total_invested_value) / total_invested_value)
-                * dec!(100.0),
-        ),
+        total_roe_abs,
+        total_sell_value: round_to_decimals(total_sell_value),
+        total_roe_rel: round_to_decimals(total_roe_abs / total_invested_value * dec!(100.0)),
         positions: positions_with_allocation.clone(),
     })
 }

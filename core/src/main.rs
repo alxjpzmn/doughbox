@@ -6,8 +6,8 @@ use commands::portfolio::portfolio;
 use commands::taxation::calculate_taxes;
 use commands::{housekeeping::housekeeping, import::import};
 use util::db_helpers::{
-    seed_instruments_db, seed_listing_changes_db, seed_performance_db, seed_stock_splits_db,
-    seed_trades_db,
+    seed_dividends_db, seed_fund_reports_db, seed_instruments_db, seed_interest_db,
+    seed_listing_changes_db, seed_performance_db, seed_stock_splits_db, seed_trades_db,
 };
 use util::general_helpers::{
     check_for_env_variables, confirm_action, create_necessary_directories,
@@ -47,8 +47,11 @@ async fn run_portfolio_tracker() -> anyhow::Result<()> {
     check_for_env_variables();
     create_necessary_directories();
     seed_listing_changes_db().await?;
+    seed_fund_reports_db().await?;
     seed_stock_splits_db().await?;
     seed_trades_db().await?;
+    seed_dividends_db().await?;
+    seed_interest_db().await?;
     seed_performance_db().await?;
     seed_instruments_db().await?;
 

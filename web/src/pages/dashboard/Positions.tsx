@@ -25,6 +25,9 @@ interface PositionsProps { }
 const Positions: React.FC<PositionsProps> = ({ }) => {
   const { data, isLoading } = useSwr(`${BASE_URL}/portfolio`, fetcher);
 
+  console.log(data);
+
+
   let overviewData = {
     title: 'Current Portfolio Value',
     metric: `${formatCurrency(isLoading ? 0 : (data as any)?.total_value)}`,

@@ -149,7 +149,7 @@ impl FundTaxReport {
     }
 }
 
-pub async fn seed_trades_db() -> anyhow::Result<Client> {
+pub async fn db_client() -> anyhow::Result<Client> {
     let (client, connection) =
         tokio_postgres::connect(get_env_variable("POSTGRES_URL").unwrap().as_str(), NoTls).await?;
 
@@ -158,6 +158,11 @@ pub async fn seed_trades_db() -> anyhow::Result<Client> {
             eprintln!("connection error: {}", e);
         }
     });
+    Ok(client)
+}
+
+pub async fn seed_trades_db() -> anyhow::Result<Client> {
+    let client = db_client().await?;
 
     client
         .execute(
@@ -185,14 +190,7 @@ pub async fn seed_trades_db() -> anyhow::Result<Client> {
 }
 
 pub async fn seed_fund_reports_db() -> anyhow::Result<Client> {
-    let (client, connection) =
-        tokio_postgres::connect(get_env_variable("POSTGRES_URL").unwrap().as_str(), NoTls).await?;
-
-    tokio::spawn(async move {
-        if let Err(e) = connection.await {
-            eprintln!("connection error: {}", e);
-        }
-    });
+    let client = db_client().await?;
 
     client
         .execute(
@@ -215,14 +213,7 @@ pub async fn seed_fund_reports_db() -> anyhow::Result<Client> {
 }
 
 pub async fn seed_fx_rates_db() -> anyhow::Result<Client> {
-    let (client, connection) =
-        tokio_postgres::connect(get_env_variable("POSTGRES_URL").unwrap().as_str(), NoTls).await?;
-
-    tokio::spawn(async move {
-        if let Err(e) = connection.await {
-            eprintln!("connection error: {}", e);
-        }
-    });
+    let client = db_client().await?;
 
     client
         .execute(
@@ -241,17 +232,7 @@ pub async fn seed_fx_rates_db() -> anyhow::Result<Client> {
 }
 
 pub async fn seed_stock_splits_db() -> anyhow::Result<Client> {
-    let (client, connection) = tokio_postgres::connect(
-        { &get_env_variable("POSTGRES_URL").unwrap() }.as_str(),
-        NoTls,
-    )
-    .await?;
-
-    tokio::spawn(async move {
-        if let Err(e) = connection.await {
-            eprintln!("connection error: {}", e);
-        }
-    });
+    let client = db_client().await?;
 
     client
         .execute(
@@ -271,17 +252,7 @@ pub async fn seed_stock_splits_db() -> anyhow::Result<Client> {
 }
 
 pub async fn seed_fx_conversion_db() -> anyhow::Result<Client> {
-    let (client, connection) = tokio_postgres::connect(
-        { &get_env_variable("POSTGRES_URL").unwrap() }.as_str(),
-        NoTls,
-    )
-    .await?;
-
-    tokio::spawn(async move {
-        if let Err(e) = connection.await {
-            eprintln!("connection error: {}", e);
-        }
-    });
+    let client = db_client().await?;
 
     client
         .execute(
@@ -306,17 +277,7 @@ pub async fn seed_fx_conversion_db() -> anyhow::Result<Client> {
 }
 
 pub async fn seed_listing_changes_db() -> anyhow::Result<Client> {
-    let (client, connection) = tokio_postgres::connect(
-        { &get_env_variable("POSTGRES_URL").unwrap() }.as_str(),
-        NoTls,
-    )
-    .await?;
-
-    tokio::spawn(async move {
-        if let Err(e) = connection.await {
-            eprintln!("connection error: {}", e);
-        }
-    });
+    let client = db_client().await?;
 
     client
         .execute(
@@ -336,17 +297,7 @@ pub async fn seed_listing_changes_db() -> anyhow::Result<Client> {
 }
 
 pub async fn seed_instruments_db() -> anyhow::Result<Client> {
-    let (client, connection) = tokio_postgres::connect(
-        { &get_env_variable("POSTGRES_URL").unwrap() }.as_str(),
-        NoTls,
-    )
-    .await?;
-
-    tokio::spawn(async move {
-        if let Err(e) = connection.await {
-            eprintln!("connection error: {}", e);
-        }
-    });
+    let client = db_client().await?;
 
     client
         .execute(
@@ -364,14 +315,7 @@ pub async fn seed_instruments_db() -> anyhow::Result<Client> {
 }
 
 pub async fn seed_performance_db() -> anyhow::Result<Client> {
-    let (client, connection) =
-        tokio_postgres::connect(get_env_variable("POSTGRES_URL").unwrap().as_str(), NoTls).await?;
-
-    tokio::spawn(async move {
-        if let Err(e) = connection.await {
-            eprintln!("connection error: {}", e);
-        }
-    });
+    let client = db_client().await?;
 
     client
         .execute(
@@ -384,14 +328,7 @@ pub async fn seed_performance_db() -> anyhow::Result<Client> {
 }
 
 pub async fn seed_dividends_db() -> anyhow::Result<Client> {
-    let (client, connection) =
-        tokio_postgres::connect(get_env_variable("POSTGRES_URL").unwrap().as_str(), NoTls).await?;
-
-    tokio::spawn(async move {
-        if let Err(e) = connection.await {
-            eprintln!("connection error: {}", e);
-        }
-    });
+    let client = db_client().await?;
 
     client
         .execute(
@@ -414,14 +351,7 @@ pub async fn seed_dividends_db() -> anyhow::Result<Client> {
 }
 
 pub async fn seed_interest_db() -> anyhow::Result<Client> {
-    let (client, connection) =
-        tokio_postgres::connect(get_env_variable("POSTGRES_URL").unwrap().as_str(), NoTls).await?;
-
-    tokio::spawn(async move {
-        if let Err(e) = connection.await {
-            eprintln!("connection error: {}", e);
-        }
-    });
+    let client = db_client().await?;
 
     client
         .execute(
@@ -444,14 +374,7 @@ pub async fn seed_interest_db() -> anyhow::Result<Client> {
 }
 
 pub async fn seed_ticker_conversion_db() -> anyhow::Result<Client> {
-    let (client, connection) =
-        tokio_postgres::connect(get_env_variable("POSTGRES_URL").unwrap().as_str(), NoTls).await?;
-
-    tokio::spawn(async move {
-        if let Err(e) = connection.await {
-            eprintln!("connection error: {}", e);
-        }
-    });
+    let client = db_client().await?;
 
     client
         .execute(
@@ -468,7 +391,7 @@ pub async fn seed_ticker_conversion_db() -> anyhow::Result<Client> {
 }
 
 pub async fn add_trade_to_db(trade: Trade, id: Option<String>) -> anyhow::Result<()> {
-    let conn = seed_trades_db().await?;
+    let client = db_client().await?;
 
     let hash = if id.is_some() {
         hash_string(format!("{}{}", trade.broker, id.unwrap()).as_str())
@@ -486,7 +409,7 @@ pub async fn add_trade_to_db(trade: Trade, id: Option<String>) -> anyhow::Result
         )
     };
 
-    conn.execute(
+    client.execute(
         "INSERT INTO trades (hash, date, no_units, avg_price_per_unit, eur_avg_price_per_unit, security_type, direction, currency_denomination, isin, broker, date_added, fees, withholding_tax, witholding_tax_currency) values ($1, $2, $3, $4, $5, $6,$7, $8, $9, $10, $11, $12, $13, $14) ON CONFLICT(hash) DO NOTHING",
         &[&hash, &trade.date, &trade.no_units, &trade.avg_price_per_unit, &trade.eur_avg_price_per_unit, &trade.security_type, &trade.direction, &trade.currency_denomination, &trade.isin, &trade.broker, &Utc::now(), &trade.fees, &trade.withholding_tax, &trade.witholding_tax_currency],
         )
@@ -531,25 +454,26 @@ pub async fn add_trade_to_db(trade: Trade, id: Option<String>) -> anyhow::Result
 pub async fn add_performance_signal_to_db(
     performance_signal: PerformanceSignal,
 ) -> anyhow::Result<()> {
-    let conn = seed_trades_db().await?;
+    let client = db_client().await?;
 
-    conn.execute(
-        "INSERT INTO performance (date, total_value, total_invested) values ($1, $2, $3)",
-        &[
-            &performance_signal.date,
-            &performance_signal.total_value,
-            &performance_signal.total_invested,
-        ],
-    )
-    .await?;
+    client
+        .execute(
+            "INSERT INTO performance (date, total_value, total_invested) values ($1, $2, $3)",
+            &[
+                &performance_signal.date,
+                &performance_signal.total_value,
+                &performance_signal.total_invested,
+            ],
+        )
+        .await?;
 
     Ok(())
 }
 
 pub async fn add_fund_report_to_db(report: FundTaxReport) -> anyhow::Result<()> {
-    let conn = seed_fund_reports_db().await?;
+    let client = db_client().await?;
 
-    conn.execute(
+    client.execute(
         "INSERT INTO fund_reports (id, date, isin, currency, dividend, dividend_aequivalent, intermittent_dividend, withheld_dividend, wac_adjustment) values ($1, $2, $3, $4, $5, $6,$7, $8, $9) ON CONFLICT(id) DO NOTHING",
         &[&report.id, &report.date, &report.isin, &report.currency, &report.dividend, &report.dividend_aequivalent, &report.intermittent_dividends, &report.withheld_dividend, &report.wac_adjustment])
     .await?;
@@ -558,7 +482,7 @@ pub async fn add_fund_report_to_db(report: FundTaxReport) -> anyhow::Result<()> 
 }
 
 pub async fn get_performance_signals() -> anyhow::Result<Vec<PerformanceSignal>> {
-    let client = seed_performance_db().await?;
+    let client = db_client().await?;
 
     let statement: String =
         "SELECT DISTINCT ON (date_trunc('day', date)) date, total_value, total_invested
@@ -583,7 +507,7 @@ pub async fn get_performance_signals() -> anyhow::Result<Vec<PerformanceSignal>>
 }
 
 pub async fn get_used_currencies() -> anyhow::Result<Vec<String>> {
-    let client = seed_trades_db().await?;
+    let client = db_client().await?;
 
     let statement: String = "
 SELECT DISTINCT currency FROM (
@@ -608,7 +532,7 @@ SELECT DISTINCT currency FROM (
 }
 
 pub async fn get_dividends() -> anyhow::Result<Vec<Dividend>> {
-    let client = seed_dividends_db().await?;
+    let client = db_client().await?;
 
     let statement: String = "SELECT date, isin, amount, broker, currency, amount_eur, withholding_tax, witholding_tax_currency
     FROM dividends
@@ -636,8 +560,7 @@ pub async fn get_dividends() -> anyhow::Result<Vec<Dividend>> {
 }
 
 pub async fn add_dividend_to_db(dividend: Dividend) -> anyhow::Result<()> {
-    println!("Adding dividend to DB: {:?}", dividend);
-    let conn = seed_dividends_db().await?;
+    let client = db_client().await?;
 
     let hash = hash_string(
         format!(
@@ -647,8 +570,7 @@ pub async fn add_dividend_to_db(dividend: Dividend) -> anyhow::Result<()> {
         .as_str(),
     );
 
-    // generate id based on date, isin, broker and amount
-    conn.execute(
+    client.execute(
             "INSERT INTO dividends (id, isin, date, amount, broker, currency, amount_eur, withholding_tax, witholding_tax_currency) values ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT(id) DO NOTHING",
             &[&hash, &dividend.isin, &dividend.date, &dividend.amount, &dividend.broker, &dividend.currency, &dividend.amount_eur, &dividend.withholding_tax, &dividend.witholding_tax_currency],
         )
@@ -658,8 +580,7 @@ pub async fn add_dividend_to_db(dividend: Dividend) -> anyhow::Result<()> {
 }
 
 pub async fn add_interest_to_db(interest_payment: InterestPayment) -> anyhow::Result<()> {
-    println!("Adding interest payment to DB: {:?}", interest_payment);
-    let conn = seed_interest_db().await?;
+    let client = db_client().await?;
 
     let hash = hash_string(
         format!(
@@ -673,7 +594,7 @@ pub async fn add_interest_to_db(interest_payment: InterestPayment) -> anyhow::Re
     );
 
     // generate id based on date, isin, broker and amount
-    conn.execute(
+    client.execute(
             "INSERT INTO interest (id, date, amount, broker, principal, currency, amount_eur, withholding_tax, witholding_tax_currency) values ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT(id) DO NOTHING",
             &[&hash, &interest_payment.date, &interest_payment.amount, &interest_payment.broker, &interest_payment.principal, &interest_payment.currency, &interest_payment.amount_eur, &interest_payment.withholding_tax, &interest_payment.witholding_tax_currency],
         )
@@ -683,10 +604,9 @@ pub async fn add_interest_to_db(interest_payment: InterestPayment) -> anyhow::Re
 }
 
 pub async fn add_stock_split_to_db(stock_split: StockSplit) -> anyhow::Result<()> {
-    println!("Adding stock split to DB: {:?}", stock_split);
-    let conn = seed_stock_splits_db().await?;
+    let client = db_client().await?;
 
-    conn.execute(
+    client.execute(
             "INSERT INTO stock_splits (id, ex_date, from_factor, to_factor, isin, date_added) values ($1, $2, $3, $4, $5, $6) ON CONFLICT(id) DO NOTHING",
             &[&stock_split.id, &stock_split.ex_date, &stock_split.from_factor, &stock_split.to_factor, &stock_split.isin, &Utc::now()],
         )
@@ -696,8 +616,7 @@ pub async fn add_stock_split_to_db(stock_split: StockSplit) -> anyhow::Result<()
 }
 
 pub async fn add_fx_conversion_to_db(fx_conversion: FxConversion) -> anyhow::Result<()> {
-    println!("Adding FX conversion to DB: {:?}", fx_conversion);
-    let conn = seed_fx_conversion_db().await?;
+    let client = db_client().await?;
     let hash = hash_string(
         format!(
             "{}{}{}{}{}{}",
@@ -711,7 +630,7 @@ pub async fn add_fx_conversion_to_db(fx_conversion: FxConversion) -> anyhow::Res
         .as_str(),
     );
 
-    conn.execute(
+    client.execute(
             "INSERT INTO fx_conversions (id, date, broker, from_amount, to_amount, from_currency, to_currency, date_added, fees) values ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT(id) DO NOTHING",
             &[&hash, &fx_conversion.date, &fx_conversion.broker, &fx_conversion.from_amount, &fx_conversion.to_amount, &fx_conversion.from_currency, &fx_conversion.to_currency, &fx_conversion.date_added, &fx_conversion.fees],
         )
@@ -721,7 +640,7 @@ pub async fn add_fx_conversion_to_db(fx_conversion: FxConversion) -> anyhow::Res
 }
 
 pub async fn get_used_isins() -> anyhow::Result<Vec<String>> {
-    let client = seed_trades_db().await?;
+    let client = db_client().await?;
 
     let statement: String = "SELECT distinct(isin) from trades".to_string();
 
@@ -740,7 +659,7 @@ pub async fn get_used_isins() -> anyhow::Result<Vec<String>> {
 }
 
 pub async fn get_all_trades(count: Option<i32>) -> anyhow::Result<Vec<Trade>> {
-    let client = seed_trades_db().await?;
+    let client = db_client().await?;
 
     let mut statement: String = "SELECT * from trades order by date desc".to_string();
 
@@ -781,7 +700,7 @@ pub async fn get_all_trades(count: Option<i32>) -> anyhow::Result<Vec<Trade>> {
 }
 
 pub async fn get_current_positions() -> anyhow::Result<Vec<EquityPosition>> {
-    let client = seed_trades_db().await?;
+    let client = db_client().await?;
 
     let listing_changes = get_listing_changes().await?;
 
@@ -834,7 +753,7 @@ pub async fn get_current_positions() -> anyhow::Result<Vec<EquityPosition>> {
 }
 
 pub async fn get_total_sell_value() -> anyhow::Result<Decimal> {
-    let client = seed_trades_db().await?;
+    let client = db_client().await?;
 
     let result = client
         .query_one(
@@ -850,7 +769,7 @@ pub async fn get_total_active_unit_count(
     isin: &str,
     date: Option<DateTime<Utc>>,
 ) -> anyhow::Result<Decimal> {
-    let client = seed_trades_db().await?;
+    let client = db_client().await?;
 
     let date = if let Some(date) = date {
         date
@@ -879,7 +798,7 @@ pub struct ActiveUnits {
 pub async fn get_all_total_active_unit_counts(
     date: Option<DateTime<Utc>>,
 ) -> anyhow::Result<Vec<ActiveUnits>> {
-    let client = seed_trades_db().await?;
+    let client = db_client().await?;
 
     let date = if let Some(date) = date {
         date
@@ -935,7 +854,7 @@ pub async fn get_all_total_active_unit_counts(
 }
 
 pub async fn get_total_invested_value() -> anyhow::Result<Decimal> {
-    let client = seed_trades_db().await?;
+    let client = db_client().await?;
 
     let result = client
         .query_one(
@@ -948,7 +867,7 @@ pub async fn get_total_invested_value() -> anyhow::Result<Decimal> {
 }
 
 pub async fn get_fund_report_by_id(id: i32) -> anyhow::Result<FundTaxReport> {
-    let client = seed_trades_db().await?;
+    let client = db_client().await?;
 
     let row = client
         .query_one("SELECT * FROM fund_reports WHERE id = $1", &[&id])
@@ -958,7 +877,7 @@ pub async fn get_fund_report_by_id(id: i32) -> anyhow::Result<FundTaxReport> {
 }
 
 pub async fn get_instrument_by_id(id: &str) -> anyhow::Result<Option<Instrument>> {
-    let client = seed_trades_db().await?;
+    let client = db_client().await?;
 
     let row = client
         .query_opt("SELECT * FROM instruments WHERE id = $1", &[&id])
@@ -971,7 +890,7 @@ pub async fn get_instrument_by_id(id: &str) -> anyhow::Result<Option<Instrument>
 }
 
 pub async fn update_instrument_price(instrument: Instrument) -> anyhow::Result<()> {
-    let client = seed_trades_db().await?;
+    let client = db_client().await?;
 
     let query = "
         INSERT INTO instruments (id, last_price_update, price, name)
@@ -999,7 +918,7 @@ pub async fn update_instrument_price(instrument: Instrument) -> anyhow::Result<(
 }
 
 pub async fn get_stock_splits() -> anyhow::Result<Vec<StockSplit>> {
-    let client = seed_stock_splits_db().await?;
+    let client = db_client().await?;
 
     let rows = client.query(r#"select * from stock_splits"#, &[]).await?;
 
@@ -1021,7 +940,7 @@ pub async fn get_stock_splits() -> anyhow::Result<Vec<StockSplit>> {
 }
 
 pub async fn get_listing_changes() -> anyhow::Result<Vec<ListingChange>> {
-    let client = seed_listing_changes_db().await?;
+    let client = db_client().await?;
 
     let rows = client
         .query(r#"select * from listing_changes"#, &[])
@@ -1064,7 +983,7 @@ pub struct TradeWithHash {
 }
 
 pub async fn find_similar_trade(trade: &Trade) -> anyhow::Result<Option<TradeWithHash>> {
-    let client = seed_trades_db().await?;
+    let client = db_client().await?;
 
     let query = r#"
         SELECT broker, date, isin, avg_price_per_unit, eur_avg_price_per_unit, no_units, 
