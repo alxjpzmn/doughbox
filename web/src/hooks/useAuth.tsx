@@ -21,11 +21,15 @@ const useAuth = () => {
   );
 
   const loading = isLoading;
-  const loggedOut = error && error.status === 401;
+  const loggedOut = !!error && error.status === 401;
   const loggedIn = !loggedOut;
 
-  if (!loggedOut && !loading && location == "/login") {
-    setLocation("/dashboard")
+  if (!isLoading && loggedIn && location === "/login") {
+    setLocation("/dashboard/positions")
+  }
+
+  if (!isLoading && loggedOut && location.includes("/dashboard")) {
+    setLocation("/login")
   }
 
   useEffect(() => {
@@ -48,28 +52,14 @@ const useAuth = () => {
     if (res.ok) {
       mutate();
       clearSWRCache(cache);
-      setLocation("/dashboard");
+      setLocation("/dashboard/positions");
     }
   };
-
-  const redirect = () => {
-    if (!loading) {
-      if (
-        loggedIn &&
-        (location === "/login" || location === '/')
-      ) {
-        setLocation("/dashboard");
-      }
-      else { setLocation("/login") }
-    }
-  }
-
 
   return {
     loading,
     loggedIn,
     error,
-    redirect,
     logout,
     login,
     mutate,
