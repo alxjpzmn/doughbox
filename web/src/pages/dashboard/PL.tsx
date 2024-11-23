@@ -5,9 +5,9 @@ import {
   fetcher,
   formatUnixTimestampRelative,
   formatRelativeAmount,
-} from "../../util";
+} from "@/util";
 import useSwr from "swr";
-import PerformanceChart from "./PerformanceChart";
+import PerformanceChart from "@/components/PerformanceChart";
 import {
   Card,
   Flex,
@@ -21,9 +21,9 @@ import {
   TableRow,
   Text,
 } from "@tremor/react";
-import PositionPerformanceScatterChart from "./PositionPerformanceScatterChart";
-import { Switch } from "../../components/Switch";
-import { Label } from "../../components/Label";
+import PositionPerformanceScatterChart from "@/components/PositionPerformanceScatterChart";
+import { Switch } from "@/components/Switch";
+import { Label } from "@/components/Label";
 
 interface PLProps { }
 

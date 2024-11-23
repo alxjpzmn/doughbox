@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import useSWR, { useSWRConfig } from "swr";
 import { useLocation } from "wouter";
-import { BASE_URL, clearSWRCache, fetcher, sendMutateRequest } from "../util";
+import { BASE_URL, clearSWRCache, fetcher, sendMutateRequest } from "@/util";
 
 const useAuth = () => {
   const { cache } = useSWRConfig();

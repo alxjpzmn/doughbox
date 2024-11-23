@@ -1,6 +1,6 @@
-import { BASE_URL, formatCurrency, fetcher, formatDate } from "../../util";
 import useSwr from "swr";
 import { Card, Metric, Subtitle, List, ListItem } from "@tremor/react";
+import { BASE_URL, formatCurrency, fetcher, formatDate } from "@/util";
 
 const Dividends = ({ }) => {
   const { data, isLoading } = useSwr(`${BASE_URL}/dividends`, fetcher);

@@ -1,4 +1,4 @@
-import { BASE_URL, fetcher } from "../../util";
+import { BASE_URL, fetcher } from "@/util";
 import useSwr from "swr";
 import { Card, Title, List, ListItem } from "@tremor/react";
 import { useState } from "react";
