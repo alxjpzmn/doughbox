@@ -13,11 +13,12 @@ If you need to take care of capital gains taxes in Austria, you can use Doughbox
 - Self-hosted, with a Docker image for easy deployment.
 - Web interface, CLI and API.
 - Support for FX conversions and trades in non-Euro currencies with FX rates from the ECB.
-- Imports brokerage statements from various brokers, e.g. Trade Republic, Revolut, Trading 212, etc.
-- Displays Portfolio Allocation across brokerage accounts.
-- Displays returns over time for the portfolio and individual positions (both open and closed).
-- Displays past dividends.
-- Go back in time and view your portfolio's holdings over time.
+- Import brokerage statements from various brokers, e.g. Trade Republic, Revolut, Trading 212, etc.
+- Display Portfolio Allocation across brokerage accounts.
+- Display returns over time for the portfolio and individual positions (both open and closed).
+- Display a consolidated timeline across brokers of past trades, interest & dividend payments and fx conversions.
+- See the sum of past dividend payments and each individual payment.
+- Go back in time and view your past portfolio's holdings.
 - If a FRED (Federal Reserve Economic Data of the St. Louis Federal Reserve Bank) token is set, it also gives you a naive (e.g. no fees or taxes considered) benchmark against the S&P 500.
 - Fetches stock split data from polygon.io (hence, you will need an API token from Polygon).
 - (Naive, optional) password authentication for login to the web interface. Multi-user support is not planned for now.
