@@ -3,11 +3,11 @@ import "./index.css";
 import { Route, Switch } from "wouter";
 import { SWRConfig } from "swr";
 import Login from "@/pages/Login";
-import Positions from "@/pages/dashboard/Positions";
+import Portfolio from "@/pages/dashboard/Portfolio";
 import PL from "@/pages/dashboard/PL";
 import Timeline from "@/pages/dashboard/Timeline";
 import Dividends from "@/pages/dashboard/Dividends";
-import ActiveUnits from "@/pages/dashboard/ActiveUnits";
+import Positions from "@/pages/dashboard/Positions";
 import Taxation from "@/pages/dashboard/Taxation";
 import useIsMobile from "@/hooks/useIsMobile";
 import { Menu, MobileMenu } from "@/components/Menu";
@@ -37,11 +37,11 @@ export default function App() {
             <Route path="/login" component={Login} />
             <Route path="/dashboard" nest>
               {isMobile ? <MobileMenu /> : <Menu />}
-              <Route path="/positions" component={Positions} />
+              <Route path="/portfolio" component={Portfolio} />
               <Route path="/pl" component={PL} />
               <Route path="/timeline" component={Timeline} />
               <Route path="/dividends" component={Dividends} />
-              <Route path="/units" component={ActiveUnits} />
+              <Route path="/positions" component={Positions} />
               <Route path="/taxation" component={Taxation} />
             </Route>
           </Switch>

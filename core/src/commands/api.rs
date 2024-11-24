@@ -1,6 +1,6 @@
 use crate::util::{
     constants::{OUT_DIR, SESSION_TOKEN_KEY},
-    db_helpers::{get_all_total_active_unit_counts, get_dividends, get_performance_signals},
+    db_helpers::{get_dividends, get_performance_signals, get_positions},
     general_helpers::{get_env_variable, parse_timestamp},
     taxation_helpers::get_events,
 };
@@ -25,7 +25,7 @@ use tower_http::{
 };
 use tower_sessions::{Expiry, MemoryStore, Session, SessionManagerLayer};
 
-use super::portfolio::get_position_overview;
+use super::portfolio::get_portfolio_overview;
 
 fn json_response<T: serde::Serialize>(
     data: &T,
@@ -104,10 +104,10 @@ async fn logout(session: Session) -> anyhow::Result<impl IntoResponse, StatusCod
 }
 
 async fn portfolio() -> anyhow::Result<impl IntoResponse, StatusCode> {
-    let position_overview = get_position_overview()
+    let portfolio_overview = get_portfolio_overview()
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    json_response(&position_overview)
+    json_response(&portfolio_overview)
 }
 
 async fn pl() -> anyhow::Result<impl IntoResponse, StatusCode> {
@@ -163,12 +163,12 @@ async fn taxation() -> anyhow::Result<impl IntoResponse, StatusCode> {
 }
 
 #[derive(Debug, Deserialize)]
-struct ActiveUnitsQuery {
+struct PositionsQuery {
     date: Option<String>,
 }
 
-async fn active_units(
-    Query(query): Query<ActiveUnitsQuery>,
+async fn positions(
+    Query(query): Query<PositionsQuery>,
 ) -> anyhow::Result<impl IntoResponse, StatusCode> {
     let date = query.date.unwrap_or_else(|| {
         let now = Utc::now();
@@ -176,10 +176,10 @@ async fn active_units(
     });
     let timestamp = parse_timestamp(format!("{} 19:00:00", date).as_str())
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let active_units = get_all_total_active_unit_counts(Some(timestamp))
+    let positions = get_positions(Some(timestamp), None)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    json_response(&active_units)
+    json_response(&positions)
 }
 
 async fn auth_state() -> impl IntoResponse {
@@ -205,7 +205,7 @@ pub async fn api() -> anyhow::Result<()> {
         .route("/timeline", get(timeline))
         .route("/dividends", get(dividends))
         .route("/taxation", get(taxation))
-        .route("/active_units", get(active_units))
+        .route("/positions", get(positions))
         .route("/auth_state", get(auth_state))
         .layer(axum::middleware::from_fn(check_auth));
 

@@ -26,7 +26,7 @@ const useAuth = () => {
   const loggedIn = !loggedOut;
 
   if (!isLoading && loggedIn && (location === "/login" || location === '/')) {
-    setLocation("/dashboard/positions");
+    setLocation("/dashboard/portfolio");
   }
 
   if (!isLoading && loggedOut && (location.includes("/dashboard") || location === '/')) {
@@ -53,7 +53,7 @@ const useAuth = () => {
     if (res.ok) {
       mutate();
       clearSWRCache(cache);
-      setLocation("/dashboard/positions");
+      setLocation("/dashboard/portfolio");
     }
   };
 

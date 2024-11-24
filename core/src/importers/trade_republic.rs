@@ -4,12 +4,12 @@ use std::fs;
 use std::io;
 
 use crate::util::db_helpers::find_similar_trade;
+use crate::util::db_helpers::get_positions_for_isin;
 use crate::util::general_helpers::choose_match_from_regex;
 use crate::util::general_helpers::hash_string;
 use crate::util::{
     db_helpers::{
-        add_dividend_to_db, add_interest_to_db, add_trade_to_db, get_total_active_unit_count,
-        Dividend, InterestPayment, Trade,
+        add_dividend_to_db, add_interest_to_db, add_trade_to_db, Dividend, InterestPayment, Trade,
     },
     general_helpers::{does_match_exist, parse_timestamp, return_first_match},
 };
@@ -142,7 +142,7 @@ pub async fn extract_trade_republic_record(text: &str, file_path: &str) -> anyho
 
             let no_units;
             if is_bond_liquidation {
-                no_units = get_total_active_unit_count(&isin, None).await?;
+                no_units = get_positions_for_isin(&isin, None).await?;
                 if no_units == dec!(0) {
                     return Ok(());
                 }

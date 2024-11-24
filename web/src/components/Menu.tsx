@@ -6,11 +6,11 @@ import { Link, useLocation } from "wouter";
 import { TabNavigation, TabNavigationLink } from "@/components/TabNavigation";
 
 const menuItems = [
-  { text: 'Positions', route: '/positions' },
+  { text: 'Portfolio', route: '/portfolio' },
   { text: 'P&L', route: '/pl' },
   { text: 'Timeline', route: '/timeline' },
   { text: 'Dividends', route: '/dividends' },
-  { text: 'Units', route: '/units' },
+  { text: 'Positions', route: '/positions' },
   { text: 'Taxation', route: '/taxation' }
 ]
 
