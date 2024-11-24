@@ -66,6 +66,8 @@ const PL: React.FC<PLProps> = ({ }) => {
   const [sortBy, setSortBy] = useState<sortByMethods>("ascRoe");
   const [showOnlyActivePositions, setShowOnlyActivePositions] = useState(false);
   const [positions, setPositions] = useState([]);
+  console.log(positions);
+
 
   useEffect(() => {
     if (!isLoading) {
@@ -73,7 +75,7 @@ const PL: React.FC<PLProps> = ({ }) => {
         data?.position_pl
           ?.filter((item: any) => {
             if (showOnlyActivePositions) {
-              return item.unrealized_pl !== "0";
+              return parseFloat(item.unrealized_pl) !== 0;
             } else {
               return true;
             }
