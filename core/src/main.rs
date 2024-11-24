@@ -1,20 +1,21 @@
+mod api;
+mod cli;
+mod importers;
+mod services;
+mod util;
+
 use api::api;
 use chrono::{Duration, Utc};
 use clap::{Parser, Subcommand};
-use commands::pl::pl;
-use commands::portfolio::portfolio;
-use commands::taxation::calculate_taxes;
-use commands::{housekeeping::housekeeping, import::import};
+use cli::pl::pl;
+use cli::portfolio::portfolio;
+use cli::taxation::calculate_taxes;
+use cli::{housekeeping::housekeeping, import::import};
 use util::general_helpers::{
     check_for_env_variables, confirm_action, create_necessary_directories,
 };
 use util::market_data_helpers::{fetch_historic_ecb_rates, get_most_recent_rate};
 use util::migrations::run_migrations;
-
-mod api;
-mod commands;
-mod importers;
-mod util;
 
 #[derive(Parser, Debug)]
 struct Args {

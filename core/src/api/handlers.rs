@@ -1,5 +1,5 @@
 use crate::{
-    commands::portfolio::get_portfolio_overview,
+    cli::portfolio::get_portfolio_overview,
     util::{
         constants::{OUT_DIR, SESSION_TOKEN_KEY},
         db_helpers::{get_dividends, get_performance_signals, get_positions},
