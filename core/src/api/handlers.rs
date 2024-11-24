@@ -1,31 +1,23 @@
-use crate::util::{
-    constants::{OUT_DIR, SESSION_TOKEN_KEY},
-    db_helpers::{get_dividends, get_performance_signals, get_positions},
-    general_helpers::{get_env_variable, parse_timestamp},
-    taxation_helpers::get_events,
+use crate::{
+    commands::portfolio::get_portfolio_overview,
+    util::{
+        constants::{OUT_DIR, SESSION_TOKEN_KEY},
+        db_helpers::{get_dividends, get_performance_signals, get_positions},
+        general_helpers::{get_env_variable, parse_timestamp},
+        taxation_helpers::get_events,
+    },
 };
 use axum::{
     extract::{Json, Query, Request},
     http::{HeaderMap, HeaderValue, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
-    routing::{get, get_service, post},
-    Router,
 };
 use chrono::{DateTime, Datelike, NaiveDate, Utc};
 use serde::Deserialize;
-use std::net::SocketAddr;
-use tower_cookies::cookie::time::Duration;
 
 use tokio::fs;
-use tower_http::{
-    cors::{Any, CorsLayer},
-    services::ServeDir,
-    trace::TraceLayer,
-};
-use tower_sessions::{Expiry, MemoryStore, Session, SessionManagerLayer};
-
-use super::portfolio::get_portfolio_overview;
+use tower_sessions::Session;
 
 fn json_response<T: serde::Serialize>(
     data: &T,
@@ -36,7 +28,7 @@ fn json_response<T: serde::Serialize>(
     Ok((StatusCode::OK, headers, data))
 }
 
-async fn check_auth(
+pub async fn check_auth(
     session: Session,
     request: Request,
     next: Next,
@@ -66,18 +58,18 @@ async fn check_auth(
 }
 
 #[derive(Deserialize)]
-struct LoginRequestData {
-    password: String,
+pub struct LoginRequestData {
+    pub password: String,
 }
 
-async fn issue_session_cookie(session: Session) -> anyhow::Result<(), StatusCode> {
+pub async fn issue_session_cookie(session: Session) -> anyhow::Result<(), StatusCode> {
     session
         .insert(SESSION_TOKEN_KEY, "user")
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
-async fn login(
+pub async fn login(
     session: Session,
     Json(payload): Json<LoginRequestData>,
 ) -> anyhow::Result<impl IntoResponse, StatusCode> {
@@ -95,7 +87,7 @@ async fn login(
     }
 }
 
-async fn logout(session: Session) -> anyhow::Result<impl IntoResponse, StatusCode> {
+pub async fn logout(session: Session) -> anyhow::Result<impl IntoResponse, StatusCode> {
     session
         .delete()
         .await
@@ -103,14 +95,14 @@ async fn logout(session: Session) -> anyhow::Result<impl IntoResponse, StatusCod
     Ok(StatusCode::OK)
 }
 
-async fn portfolio() -> anyhow::Result<impl IntoResponse, StatusCode> {
+pub async fn portfolio() -> anyhow::Result<impl IntoResponse, StatusCode> {
     let portfolio_overview = get_portfolio_overview()
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     json_response(&portfolio_overview)
 }
 
-async fn pl() -> anyhow::Result<impl IntoResponse, StatusCode> {
+pub async fn pl() -> anyhow::Result<impl IntoResponse, StatusCode> {
     let path = format!("{}/pl.json", OUT_DIR);
     let data = fs::read_to_string(path).await.expect("Unable to read file");
     let mut headers = HeaderMap::new();
@@ -118,7 +110,7 @@ async fn pl() -> anyhow::Result<impl IntoResponse, StatusCode> {
     Ok((StatusCode::OK, headers, data))
 }
 
-async fn performance() -> anyhow::Result<impl IntoResponse, StatusCode> {
+pub async fn performance() -> anyhow::Result<impl IntoResponse, StatusCode> {
     let performance = get_performance_signals()
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -126,11 +118,13 @@ async fn performance() -> anyhow::Result<impl IntoResponse, StatusCode> {
 }
 
 #[derive(Debug, Deserialize)]
-struct TimelineQuery {
-    start_date: String,
+pub struct TimelineQuery {
+    pub start_date: String,
 }
 
-async fn timeline(query: Query<TimelineQuery>) -> anyhow::Result<impl IntoResponse, StatusCode> {
+pub async fn timeline(
+    query: Query<TimelineQuery>,
+) -> anyhow::Result<impl IntoResponse, StatusCode> {
     let year_start_timestamp = DateTime::<Utc>::from_naive_utc_and_offset(
         NaiveDate::parse_from_str(&query.start_date, "%Y-%m-%d")
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
@@ -147,14 +141,14 @@ async fn timeline(query: Query<TimelineQuery>) -> anyhow::Result<impl IntoRespon
     json_response(&timeline)
 }
 
-async fn dividends() -> anyhow::Result<impl IntoResponse, StatusCode> {
+pub async fn dividends() -> anyhow::Result<impl IntoResponse, StatusCode> {
     let dividends = get_dividends()
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     json_response(&dividends)
 }
 
-async fn taxation() -> anyhow::Result<impl IntoResponse, StatusCode> {
+pub async fn taxation() -> anyhow::Result<impl IntoResponse, StatusCode> {
     let path = format!("{}/taxation.json", OUT_DIR);
     let data = fs::read_to_string(path).await.expect("Unable to read file");
     let mut headers = HeaderMap::new();
@@ -163,11 +157,11 @@ async fn taxation() -> anyhow::Result<impl IntoResponse, StatusCode> {
 }
 
 #[derive(Debug, Deserialize)]
-struct PositionsQuery {
-    date: Option<String>,
+pub struct PositionsQuery {
+    pub date: Option<String>,
 }
 
-async fn positions(
+pub async fn positions(
     Query(query): Query<PositionsQuery>,
 ) -> anyhow::Result<impl IntoResponse, StatusCode> {
     let date = query.date.unwrap_or_else(|| {
@@ -182,62 +176,6 @@ async fn positions(
     json_response(&positions)
 }
 
-async fn auth_state() -> impl IntoResponse {
+pub async fn auth_state() -> impl IntoResponse {
     (StatusCode::OK, "authenticated")
-}
-
-pub async fn api() -> anyhow::Result<()> {
-    let session_store = MemoryStore::default();
-    let session_layer = SessionManagerLayer::new(session_store)
-        .with_secure(false)
-        .with_http_only(true)
-        // 90 days validity
-        .with_expiry(Expiry::OnInactivity(Duration::hours(24 * 90)));
-
-    let public_routes = Router::new()
-        .route("/login", post(login))
-        .route("/logout", post(logout));
-
-    let protected_routes = Router::new()
-        .route("/portfolio", get(portfolio))
-        .route("/pl", get(pl))
-        .route("/performance", get(performance))
-        .route("/timeline", get(timeline))
-        .route("/dividends", get(dividends))
-        .route("/taxation", get(taxation))
-        .route("/positions", get(positions))
-        .route("/auth_state", get(auth_state))
-        .layer(axum::middleware::from_fn(check_auth));
-
-    let cors_layer = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
-        .allow_headers([axum::http::header::CONTENT_TYPE]);
-
-    let app = Router::new()
-        .nest("/api", public_routes)
-        .nest("/api", protected_routes)
-        .layer(session_layer)
-        .layer(cors_layer)
-        .layer(TraceLayer::new_for_http())
-        .nest_service(
-            "/",
-            Router::new().fallback_service(
-                get_service(ServeDir::new("./dist").precompressed_gzip()).handle_error(
-                    |_| async move {
-                        (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "failed to serve static assets.",
-                        )
-                    },
-                ),
-            ),
-        );
-
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::DEBUG)
-        .init();
-    let addr = SocketAddr::from(([0, 0, 0, 0], 8084));
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
-    Ok(axum::serve(listener, app.into_make_service()).await?)
 }

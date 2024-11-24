@@ -1,6 +1,6 @@
+use api::api;
 use chrono::{Duration, Utc};
 use clap::{Parser, Subcommand};
-use commands::api::api;
 use commands::pl::pl;
 use commands::portfolio::portfolio;
 use commands::taxation::calculate_taxes;
@@ -11,6 +11,7 @@ use util::general_helpers::{
 use util::market_data_helpers::{fetch_historic_ecb_rates, get_most_recent_rate};
 use util::migrations::run_migrations;
 
+mod api;
 mod commands;
 mod importers;
 mod util;
@@ -38,7 +39,7 @@ enum Command {
     },
 }
 
-async fn run_portfolio_tracker() -> anyhow::Result<()> {
+async fn run_doughbox() -> anyhow::Result<()> {
     let args = Args::parse();
     let args = args.cmd;
     check_for_env_variables();
@@ -95,6 +96,6 @@ async fn run_portfolio_tracker() -> anyhow::Result<()> {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
-    run_portfolio_tracker().await?;
+    run_doughbox().await?;
     Ok(())
 }
