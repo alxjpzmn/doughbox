@@ -5,7 +5,6 @@ use crate::util::general_helpers::hash_string;
 use super::{
     general_helpers::get_env_variable,
     market_data_helpers::{get_changed_identifier, get_split_adjusted_units},
-    performance_helpers::position_size_over_threshold,
 };
 use chrono::prelude::*;
 
@@ -13,9 +12,7 @@ use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use serde::Serialize;
 use tabled::Tabled;
-use tokio_postgres::{Client, NoTls, Row};
-
-use itertools::Itertools;
+use tokio_postgres::{types::ToSql, Client, NoTls, Row};
 
 #[derive(Debug, Serialize)]
 pub struct PerformanceSignal {
@@ -39,11 +36,6 @@ pub struct Trade {
     pub fees: Decimal,
     pub withholding_tax: Decimal,
     pub witholding_tax_currency: String,
-}
-
-pub struct EquityPosition {
-    pub isin: String,
-    pub no_units: Decimal,
 }
 
 #[derive(Debug, Clone)]
@@ -158,235 +150,6 @@ pub async fn db_client() -> anyhow::Result<Client> {
             eprintln!("connection error: {}", e);
         }
     });
-    Ok(client)
-}
-
-pub async fn seed_trades_db() -> anyhow::Result<Client> {
-    let client = db_client().await?;
-
-    client
-        .execute(
-            "CREATE TABLE if not exists trades (
-          hash TEXT NOT NULL UNIQUE,
-          broker TEXT NOT NULL,
-          date TIMESTAMP WITH TIME ZONE NOT NULL,
-          no_units NUMERIC NOT NULL,
-          avg_price_per_unit NUMERIC NOT NULL,
-          eur_avg_price_per_unit NUMERIC NOT NULL,
-          security_type TEXT NOT NULL,
-          direction TEXT NOT NULL,
-          currency_denomination TEXT NOT NULL,
-          isin TEXT NOT NULL,
-          date_added TIMESTAMP WITH TIME ZONE NOT NULL,
-          fees NUMERIC NOT NULL DEFAULT 0.0,
-          withholding_tax NUMERIC,
-          witholding_tax_currency TEXT
-            )",
-            &[],
-        )
-        .await?;
-
-    Ok(client)
-}
-
-pub async fn seed_fund_reports_db() -> anyhow::Result<Client> {
-    let client = db_client().await?;
-
-    client
-        .execute(
-            "CREATE TABLE if not exists fund_reports (
-          id integer NOT NULL UNIQUE,
-          date TIMESTAMP WITH TIME ZONE NOT NULL,
-          isin TEXT NOT NULL,
-          currency TEXT NOT NULL,
-          dividend NUMERIC NOT NULL DEFAULT 0.0,
-          dividend_aequivalent NUMERIC NOT NULL DEFAULT 0.0,
-          withheld_dividend NUMERIC NOT NULL DEFAULT 0.0,
-          intermittent_dividend NUMERIC NOT NULL DEFAULT 0.0,
-          wac_adjustment NUMERIC NOT NULL DEFAULT 0.0
-            )",
-            &[],
-        )
-        .await?;
-
-    Ok(client)
-}
-
-pub async fn seed_fx_rates_db() -> anyhow::Result<Client> {
-    let client = db_client().await?;
-
-    client
-        .execute(
-            "CREATE TABLE if not exists fx_rates (
-            hash TEXT NOT NULL UNIQUE,
-            date date NOT NULL,
-            rate NUMERIC,
-            currency_from TEXT NOT NULL,
-            currency_to TEXT NOT NULL
-            )",
-            &[],
-        )
-        .await?;
-
-    Ok(client)
-}
-
-pub async fn seed_stock_splits_db() -> anyhow::Result<Client> {
-    let client = db_client().await?;
-
-    client
-        .execute(
-            "CREATE TABLE if not exists stock_splits (
-          id TEXT NOT NULL UNIQUE,
-          ex_date TIMESTAMP WITH TIME ZONE NOT NULL,
-          from_factor NUMERIC NOT NULL,
-          to_factor NUMERIC NOT NULL,
-          isin TEXT NOT NULL,
-          date_added TIMESTAMP WITH TIME ZONE NOT NULL
-            )",
-            &[],
-        )
-        .await?;
-
-    Ok(client)
-}
-
-pub async fn seed_fx_conversion_db() -> anyhow::Result<Client> {
-    let client = db_client().await?;
-
-    client
-        .execute(
-            "CREATE TABLE if not exists fx_conversions (
-          id TEXT NOT NULL UNIQUE,
-          date TIMESTAMP WITH TIME ZONE NOT NULL,
-          broker TEXT NOT NULL,
-          from_amount NUMERIC NOT NULL,
-          to_amount NUMERIC NOT NULL,
-          from_currency TEXT NOT NULL,
-          to_currency TEXT NOT NULL,
-          date_added TIMESTAMP WITH TIME ZONE NOT NULL,
-          fees NUMERIC,
-          withholding_tax NUMERIC,
-          witholding_tax_currency TEXT
-            )",
-            &[],
-        )
-        .await?;
-
-    Ok(client)
-}
-
-pub async fn seed_listing_changes_db() -> anyhow::Result<Client> {
-    let client = db_client().await?;
-
-    client
-        .execute(
-            "CREATE TABLE if not exists listing_changes (
-          id TEXT NOT NULL UNIQUE,
-          ex_date TIMESTAMP WITH TIME ZONE NOT NULL,
-          from_factor NUMERIC NOT NULL,
-          to_factor NUMERIC NOT NULL,
-          from_identifier TEXT NOT NULL,
-          to_identifier TEXT NOT NULL
-            )",
-            &[],
-        )
-        .await?;
-
-    Ok(client)
-}
-
-pub async fn seed_instruments_db() -> anyhow::Result<Client> {
-    let client = db_client().await?;
-
-    client
-        .execute(
-            "CREATE TABLE if not exists instruments (
-          id TEXT NOT NULL UNIQUE,
-          last_price_update TIMESTAMP WITH TIME ZONE NOT NULL,
-          price NUMERIC NOT NULL,
-          name TEXT NOT NULL
-            )",
-            &[],
-        )
-        .await?;
-
-    Ok(client)
-}
-
-pub async fn seed_performance_db() -> anyhow::Result<Client> {
-    let client = db_client().await?;
-
-    client
-        .execute(
-            "CREATE TABLE if not exists performance (date TIMESTAMP WITH TIME ZONE NOT NULL,total_value NUMERIC NOT NULL,total_invested NUMERIC NOT NULL)",
-            &[],
-        )
-        .await?;
-
-    Ok(client)
-}
-
-pub async fn seed_dividends_db() -> anyhow::Result<Client> {
-    let client = db_client().await?;
-
-    client
-        .execute(
-            "CREATE TABLE if not exists dividends (
-                id text PRIMARY KEY,
-                date TIMESTAMP WITH TIME ZONE NOT NULL,
-                isin text NOT NULL,
-                amount NUMERIC NOT NULL,
-                broker TEXT,
-                currency TEXT,
-                amount_eur NUMERIC NOT NULL,
-                withholding_tax NUMERIC,
-                witholding_tax_currency TEXT
-                )",
-            &[],
-        )
-        .await?;
-
-    Ok(client)
-}
-
-pub async fn seed_interest_db() -> anyhow::Result<Client> {
-    let client = db_client().await?;
-
-    client
-        .execute(
-            "CREATE TABLE if not exists interest (
-                id text PRIMARY KEY,
-                date TIMESTAMP WITH TIME ZONE NOT NULL,
-                amount NUMERIC NOT NULL,
-                broker TEXT,
-                principal TEXT,
-                currency TEXT NOT NULL,
-                amount_eur NUMERIC NOT NULL,
-                withholding_tax NUMERIC,
-                witholding_tax_currency TEXT
-                )",
-            &[],
-        )
-        .await?;
-
-    Ok(client)
-}
-
-pub async fn seed_ticker_conversion_db() -> anyhow::Result<Client> {
-    let client = db_client().await?;
-
-    client
-        .execute(
-            "CREATE TABLE if not exists ticker_conversions (
-                id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
-                ticker text NOT NULL,
-                isin text NOT NULL
-                )",
-            &[],
-        )
-        .await?;
-
     Ok(client)
 }
 
@@ -699,59 +462,6 @@ pub async fn get_all_trades(count: Option<i32>) -> anyhow::Result<Vec<Trade>> {
     Ok(trades)
 }
 
-pub async fn get_current_positions() -> anyhow::Result<Vec<EquityPosition>> {
-    let client = db_client().await?;
-
-    let listing_changes = get_listing_changes().await?;
-
-    let rows = client
-        .query("SELECT isin, no_units, date, direction FROM trades", &[])
-        .await?;
-
-    let mut stock_split_information = get_stock_splits().await?;
-
-    let mut single_positions = vec![];
-
-    for row in rows {
-        let isin = get_changed_identifier(&row.get::<usize, String>(0), listing_changes.clone());
-        let no_units = row.get::<usize, Decimal>(1);
-        let date = row.get::<usize, DateTime<Utc>>(2);
-        let direction = row.get::<usize, String>(3);
-        let no_units_split_adjusted =
-            get_split_adjusted_units(&isin, no_units, date, &mut stock_split_information);
-        let position_to_push = EquityPosition {
-            isin,
-            no_units: if direction == "Buy" {
-                no_units_split_adjusted
-            } else {
-                no_units_split_adjusted * dec!(-1.0)
-            },
-        };
-        single_positions.push(position_to_push)
-    }
-
-    let grouped_positions = single_positions
-        .into_iter()
-        .into_grouping_map_by(|n| n.isin.clone())
-        .fold(dec!(0.0), |mut acc, _key, nxt| {
-            acc += nxt.no_units;
-            acc
-        });
-    let aggregated_positions_before_conversion = Vec::from_iter(grouped_positions.iter());
-    let mut aggregated_positions_after_conversion: Vec<EquityPosition> = vec![];
-
-    for position in &aggregated_positions_before_conversion {
-        let position_to_push = EquityPosition {
-            isin: position.0.to_string(),
-            no_units: *position.1,
-        };
-        if position_size_over_threshold(position_to_push.no_units) {
-            aggregated_positions_after_conversion.push(position_to_push)
-        }
-    }
-    Ok(aggregated_positions_after_conversion)
-}
-
 pub async fn get_total_sell_value() -> anyhow::Result<Decimal> {
     let client = db_client().await?;
 
@@ -765,53 +475,48 @@ pub async fn get_total_sell_value() -> anyhow::Result<Decimal> {
     Ok(result.try_get::<usize, Decimal>(0).unwrap_or(dec!(0.0)))
 }
 
-pub async fn get_total_active_unit_count(
+pub async fn get_positions_for_isin(
     isin: &str,
     date: Option<DateTime<Utc>>,
 ) -> anyhow::Result<Decimal> {
-    let client = db_client().await?;
-
     let date = if let Some(date) = date {
         date
     } else {
         Utc::now()
     };
 
-    let result = client
-        .query_one(
-            "SELECT SUM(CASE WHEN direction = 'Buy' THEN no_units ELSE 0 END) -
-            SUM(CASE WHEN direction = 'Sell' THEN no_units ELSE 0 END)
-            FROM trades WHERE isin = $1 AND date <= $2;",
-            &[&isin, &date],
-        )
-        .await?;
+    let positions = get_positions(Some(date), Some(isin)).await?;
 
-    Ok(result.try_get::<usize, Decimal>(0).unwrap_or(dec!(0.0)))
+    let result = positions.first().unwrap().units;
+
+    Ok(result)
 }
 
 #[derive(Debug, Tabled, Serialize)]
-pub struct ActiveUnits {
-    isin: String,
-    active_units: Decimal,
+pub struct Position {
+    pub isin: String,
+    pub units: Decimal,
 }
 
-pub async fn get_all_total_active_unit_counts(
+pub async fn get_positions(
     date: Option<DateTime<Utc>>,
-) -> anyhow::Result<Vec<ActiveUnits>> {
+    isin: Option<&str>,
+) -> anyhow::Result<Vec<Position>> {
     let client = db_client().await?;
 
-    let date = if let Some(date) = date {
-        date
-    } else {
-        Utc::now()
-    };
+    let date = date.unwrap_or_else(Utc::now);
 
-    let rows = client
-        .query(
-            "SELECT isin, direction, no_units FROM trades WHERE date <= $1;",
-            &[&date],
-        )
-        .await?;
+    let mut query = String::from("select isin, direction, no_units from trades where date <= $1");
+    let mut params: Vec<&(dyn ToSql + Sync)> = vec![&date];
+
+    let for_specific_isin = isin.is_some();
+    if for_specific_isin {
+        query.push_str(" AND isin = $2");
+        let value = &isin;
+        params.push(value);
+    }
+
+    let rows = client.query(&query, &params).await?;
 
     let mut stock_split_information = get_stock_splits().await?;
     let listing_changes = get_listing_changes().await?;
@@ -834,19 +539,19 @@ pub async fn get_all_total_active_unit_counts(
         }
     }
 
-    let mut active_units: Vec<ActiveUnits> = vec![];
+    let mut active_units: Vec<Position> = vec![];
 
     for (isin, units) in units_map {
         let split_adjusted_units =
             get_split_adjusted_units(&isin, units, date, &mut stock_split_information);
 
-        let active_units_isin = ActiveUnits {
+        let position = Position {
             isin,
-            active_units: split_adjusted_units,
+            units: split_adjusted_units,
         };
 
-        if active_units_isin.active_units > dec!(0) {
-            active_units.push(active_units_isin);
+        if position.units > dec!(0) {
+            active_units.push(position);
         }
     }
 

@@ -8,7 +8,7 @@ use tabled::{Table, Tabled};
 
 use crate::util::{
     db_helpers::{
-        add_performance_signal_to_db, get_current_positions, get_total_invested_value,
+        add_performance_signal_to_db, get_positions, get_total_invested_value,
         get_total_sell_value, PerformanceSignal,
     },
     general_helpers::format_currency,
@@ -17,7 +17,7 @@ use crate::util::{
 };
 
 #[derive(Debug)]
-struct EquityPositionWithValue {
+struct PositionWithValue {
     isin: String,
     current_value: Decimal,
     units: Decimal,
@@ -42,7 +42,7 @@ struct FormattedEquityAllocationItem {
 }
 
 #[derive(Debug, Serialize)]
-pub struct PositionOverview {
+pub struct PortfolioOverview {
     pub generated_at: i64,
     pub total_value: Decimal,
     pub total_sell_value: Decimal,
@@ -51,28 +51,29 @@ pub struct PositionOverview {
     pub positions: Vec<EquityAllocationItem>,
 }
 
-pub async fn get_position_overview() -> anyhow::Result<PositionOverview> {
+pub async fn get_portfolio_overview() -> anyhow::Result<PortfolioOverview> {
     let total_sell_value = get_total_sell_value().await?;
     let total_invested_value = get_total_invested_value().await?;
 
-    let current_positions = get_current_positions().await?;
+    let current_positions = get_positions(None, None).await?;
     let mut total_position = dec!(0.0);
-    let mut positions: Vec<EquityPositionWithValue> = vec![];
-    for position in current_positions {
+    let mut positions_with_value: Vec<PositionWithValue> = vec![];
+
+    for position in current_positions.iter() {
         let current_price = get_current_equity_price(&position.isin).await?;
-        let position_and_value = EquityPositionWithValue {
-            isin: position.isin,
-            current_value: current_price * position.no_units,
-            units: position.no_units,
+        let position_with_value = PositionWithValue {
+            isin: position.isin.clone(),
+            current_value: current_price * position.units,
+            units: position.units,
         };
-        positions.push(position_and_value);
-        total_position += current_price * position.no_units;
+        positions_with_value.push(position_with_value);
+        total_position += current_price * position.units;
     }
 
-    positions.sort_by(|a, b| a.current_value.partial_cmp(&b.current_value).unwrap());
+    positions_with_value.sort_by(|a, b| a.current_value.partial_cmp(&b.current_value).unwrap());
 
     let mut positions_with_allocation: Vec<EquityAllocationItem> = vec![];
-    for position in positions {
+    for position in positions_with_value {
         let position_share = position.current_value / total_position;
         let item = EquityAllocationItem {
             isin: position.isin.clone(),
@@ -86,7 +87,7 @@ pub async fn get_position_overview() -> anyhow::Result<PositionOverview> {
     let total_roe_abs =
         round_to_decimals((total_position + total_sell_value) - total_invested_value);
 
-    Ok(PositionOverview {
+    Ok(PortfolioOverview {
         generated_at: Utc::now().timestamp(),
         total_value: round_to_decimals(total_position),
         total_roe_abs,
@@ -99,7 +100,7 @@ pub async fn get_position_overview() -> anyhow::Result<PositionOverview> {
 pub async fn portfolio() -> anyhow::Result<()> {
     let mut sp = Spinner::new(Spinners::Point, "Getting portfolio positions...");
     sp.start();
-    let position_overview = get_position_overview().await?;
+    let position_overview = get_portfolio_overview().await?;
 
     let mut formatted_positions_with_allocation: Vec<FormattedEquityAllocationItem> = vec![];
     for position in position_overview.positions {

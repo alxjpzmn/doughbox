@@ -1,85 +1,46 @@
-import {
-  Card,
-  Flex,
-  Metric,
-  BarList,
-  Text,
-  BadgeDelta,
-  Subtitle,
-  Divider,
-  Bold,
-} from '@tremor/react';
-import React from 'react';
-import useSwr from 'swr';
-import {
-  BASE_URL,
-  colors,
-  formatCurrency,
-  fetcher,
-  formatUnixTimestampRelative,
-  getDeltaType,
-} from '@/util';
+import { BASE_URL, fetcher } from "@/util";
+import useSwr from "swr";
+import { Card, Title, List, ListItem } from "@tremor/react";
+import { useState } from "react";
+import { DatePicker } from "@tremor/react";
+import { format } from "date-fns";
 
-interface PositionsProps { }
-
-const Positions: React.FC<PositionsProps> = ({ }) => {
-  const { data, isLoading } = useSwr(`${BASE_URL}/portfolio`, fetcher);
-
-  console.log(data);
-
-
-  let overviewData = {
-    title: 'Current Portfolio Value',
-    metric: `${formatCurrency(isLoading ? 0 : (data as any)?.total_value)}`,
-    metricPrev: `${formatCurrency(
-      isLoading ? 0 : (data as any)?.total_roe_abs
-    )}`,
-    delta: `${isLoading ? '0,00%' : `${(data as any)?.total_roe_rel}%`}`,
-    deltaType: getDeltaType((data as any)?.total_roe_rel),
-    updatedAt: (data as any)?.generated_at,
-  };
+const Positions = ({ }) => {
+  const [selectedDate, setSelectedDate] = useState(new Date());
+  const { data } = useSwr(
+    `${BASE_URL}/positions?date=${format(selectedDate, "yyyy-LL-dd")}`,
+    fetcher,
+  );
 
   return (
-    <>
-      <Card key={overviewData.title} className="mb-6">
-        <Subtitle>{overviewData.title}</Subtitle>
-        <Flex className="justify-start gap-3 items-baseline truncate">
-          <Metric>{overviewData.metric}</Metric>
-        </Flex>
-        <Flex className="my-4">
-          <BadgeDelta deltaType={overviewData.deltaType} className="mr-2" size="xs" />
-          <Flex className="justify-between gap-4 truncate">
-            <Text color={colors[overviewData.deltaType]}>{overviewData.delta}</Text>
-            <Text className="truncate">
-              <Bold>{overviewData.metricPrev}</Bold> total return
-            </Text>
-          </Flex>
-        </Flex>
-        <Divider />
-
-        <Text>Last updated {formatUnixTimestampRelative(data?.generated_at)}</Text>
-      </Card>
-
-      <Card>
-        <Text>Current Positions</Text>
-        <BarList
-          data={data?.positions
-            ?.filter((position: any) => {
-              return position.current_value > 0 ? true : false;
-            })
-            .map((position: any) => {
-              return {
-                name: `${position.share.replace('.', ',')}% · ${position.name}`,
-                value: position.current_value,
-                href: `https://duckduckgo.com/?q=${position.isin}`,
-              };
-            })
-            .sort((a: any, b: any) => a.value < b.value)}
-          className="mt-4"
-          valueFormatter={formatCurrency}
+    <div className="min-h-screen">
+      <Card className="w-full flex flex-col justify-start mb-6">
+        <Title className="w-full mb-4">Positions</Title>
+        <DatePicker
+          enableYearNavigation
+          className="max-w-sm"
+          // @ts-ignore
+          onValueChange={(value: string) => setSelectedDate(new Date(value))}
+          enableClear={false}
         />
       </Card>
-    </>
+      {data?.length > 0 && (
+        <Card>
+          <List>
+            {data?.map((item: any) => (
+              <ListItem key={`${item?.isin}`}>
+                <a href={`https://duckduckgo.com/?q=${item?.isin}`}>
+                  {item?.isin}
+                </a>
+                <span className="font-bold">
+                  {item?.units}
+                </span>
+              </ListItem>
+            ))}
+          </List>
+        </Card>
+      )}
+    </div>
   );
 };
 
