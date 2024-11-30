@@ -1,2 +1,6 @@
 pub mod importers;
-pub mod stock_splits;
+pub mod instruments;
+pub mod parsers;
+pub mod performance;
+pub mod portfolio;
+pub mod taxation;

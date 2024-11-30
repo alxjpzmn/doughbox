@@ -17,7 +17,7 @@ interface PositionPerformanceScatterChartProps { }
 const PositionPerformanceScatterChart: React.FC<
   PositionPerformanceScatterChartProps
 > = ({ }) => {
-  const { data, isLoading } = useSwr(`${BASE_URL}/pl`, fetcher);
+  const { data, isLoading } = useSwr(`${BASE_URL}/performance_overview`, fetcher);
   const [chartData, setChartData] = useState([]);
 
   useEffect(() => {

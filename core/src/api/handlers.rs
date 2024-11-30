@@ -1,5 +1,5 @@
 use crate::{
-    cli::portfolio::get_portfolio_overview,
+    services::portfolio::get_portfolio_overview,
     util::{
         constants::{OUT_DIR, SESSION_TOKEN_KEY},
         db_helpers::{get_dividends, get_performance_signals, get_positions},
@@ -102,7 +102,7 @@ pub async fn portfolio() -> anyhow::Result<impl IntoResponse, StatusCode> {
     json_response(&portfolio_overview)
 }
 
-pub async fn pl() -> anyhow::Result<impl IntoResponse, StatusCode> {
+pub async fn performance() -> anyhow::Result<impl IntoResponse, StatusCode> {
     let path = format!("{}/pl.json", OUT_DIR);
     let data = fs::read_to_string(path).await.expect("Unable to read file");
     let mut headers = HeaderMap::new();
@@ -110,7 +110,7 @@ pub async fn pl() -> anyhow::Result<impl IntoResponse, StatusCode> {
     Ok((StatusCode::OK, headers, data))
 }
 
-pub async fn performance() -> anyhow::Result<impl IntoResponse, StatusCode> {
+pub async fn past_performance() -> anyhow::Result<impl IntoResponse, StatusCode> {
     let performance = get_performance_signals()
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;

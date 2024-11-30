@@ -1,6 +1,7 @@
+use csv::ReaderBuilder;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
-use std::{collections::HashMap, fs};
+use std::{collections::HashMap, io::Cursor};
 
 use crate::util::{
     db_helpers::{
@@ -59,14 +60,14 @@ fn detect_record_type(record: &LightyearRecord) -> RecordType {
     RecordType::Unmatched
 }
 
-pub async fn extract_lightyear_record(file_path: &str) -> anyhow::Result<()> {
+pub async fn extract_lightyear_record(file_content: &[u8]) -> anyhow::Result<()> {
     let broker = "Lightyear".to_string();
-    let mut rdr = csv::ReaderBuilder::new()
+
+    let cursor = Cursor::new(file_content);
+    let mut rdr = ReaderBuilder::new()
         .has_headers(false)
-        .from_path(file_path)?;
-    let mut rdr2 = csv::ReaderBuilder::new()
-        .has_headers(false)
-        .from_path(file_path)?;
+        .from_reader(cursor.clone());
+    let mut rdr2 = ReaderBuilder::new().has_headers(false).from_reader(cursor);
 
     let mut records_by_timestamp: HashMap<String, Vec<LightyearRecord>> = HashMap::new();
 
@@ -200,6 +201,5 @@ pub async fn extract_lightyear_record(file_path: &str) -> anyhow::Result<()> {
             RecordType::Unmatched => continue,
         }
     }
-    fs::remove_file(file_path)?;
     Ok(())
 }

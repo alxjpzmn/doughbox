@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   BASE_URL,
   formatCurrency,
@@ -7,7 +7,7 @@ import {
   formatRelativeAmount,
 } from "@/util";
 import useSwr from "swr";
-import PerformanceChart from "@/components/PerformanceChart";
+import PerformanceChart from "@/components/Charts/PerformanceChart";
 import {
   Card,
   Flex,
@@ -21,11 +21,10 @@ import {
   TableRow,
   Text,
 } from "@tremor/react";
-import PositionPerformanceScatterChart from "@/components/PositionPerformanceScatterChart";
+import PositionPerformanceScatterChart from "@/components/Charts/PositionPerformanceScatterChart";
 import { Switch } from "@/components/Switch";
 import { Label } from "@/components/Label";
 
-interface PLProps { }
 
 type sortByMethods =
   | "ascRoe"
@@ -37,8 +36,8 @@ type sortByMethods =
   | "ascAlpha"
   | "descAlpha";
 
-const PL: React.FC<PLProps> = ({ }) => {
-  const { data, isLoading } = useSwr(`${BASE_URL}/pl`, fetcher);
+const Performance = ({ }) => {
+  const { data, isLoading } = useSwr(`${BASE_URL}/performance_overview`, fetcher);
 
   const sorting = (method: sortByMethods) => {
     switch (method) {
@@ -66,8 +65,6 @@ const PL: React.FC<PLProps> = ({ }) => {
   const [sortBy, setSortBy] = useState<sortByMethods>("ascRoe");
   const [showOnlyActivePositions, setShowOnlyActivePositions] = useState(false);
   const [positions, setPositions] = useState([]);
-  console.log(positions);
-
 
   useEffect(() => {
     if (!isLoading) {
@@ -113,7 +110,7 @@ const PL: React.FC<PLProps> = ({ }) => {
 
       <Card className="mt-6">
         <Flex className="flex-col md:flex flex-wrap justify-between items-baseline gap-4">
-          <Text className="flex-grow">Individiual P&L</Text>
+          <Text className="flex-grow">Individiual Performance</Text>
           <Flex className="flex md:justify-between">
             <Select
               value={undefined}
@@ -231,4 +228,4 @@ const PL: React.FC<PLProps> = ({ }) => {
   );
 };
 
-export default PL;
+export default Performance;

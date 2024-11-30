@@ -6,7 +6,7 @@ mod util;
 use api::api;
 use chrono::{Duration, Utc};
 use clap::{Parser, Subcommand};
-use cli::pl::pl;
+use cli::performance::performance;
 use cli::portfolio::portfolio;
 use cli::taxation::calculate_taxes;
 use cli::{housekeeping::housekeeping, import::import};
@@ -31,7 +31,7 @@ enum Command {
     },
     Housekeeping {},
     Portfolio,
-    PL {},
+    Performance {},
     Taxation {},
     Api {
         #[arg(short, long)]
@@ -69,16 +69,16 @@ async fn run_doughbox() -> anyhow::Result<()> {
                 if confirm_action("run portfolio calculation (2/4)") {
                     portfolio().await?;
                 }
-                if confirm_action("run P&L calculation (3/4)") {
-                    pl().await?;
+                if confirm_action("run performance calculation (3/4)") {
+                    performance().await?;
                 }
                 if confirm_action("run tax calculation (4/4)") {
                     calculate_taxes().await?;
                 }
             }
         }
-        Command::PL {} => {
-            pl().await?;
+        Command::Performance {} => {
+            performance().await?;
         }
         Command::Housekeeping {} => {
             housekeeping().await?;

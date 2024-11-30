@@ -1,6 +1,5 @@
 use regex::Regex;
 use rust_decimal_macros::dec;
-use std::fs;
 use std::io;
 
 use crate::util::db_helpers::find_similar_trade;
@@ -72,7 +71,7 @@ async fn add_with_import_confirmation(trade: Trade, id: String) -> anyhow::Resul
     Ok(())
 }
 
-pub async fn extract_trade_republic_record(text: &str, file_path: &str) -> anyhow::Result<()> {
+pub async fn extract_trade_republic_record(text: &str) -> anyhow::Result<()> {
     // TR supports decimialization of up to 6 decimals
     let no_units_default_regex = r"\d+(,|\.)*\d{0,6}\sStk.";
     let broker = "Trade Republic".to_string();
@@ -128,7 +127,6 @@ pub async fn extract_trade_republic_record(text: &str, file_path: &str) -> anyho
                 witholding_tax_currency: "EUR".to_string(),
             };
             add_with_import_confirmation(trade, id).await?;
-            fs::remove_file(file_path)?;
         }
         RecordType::Liquidation => {
             let date_match = return_first_match(r"(..\...\.....)", text)?;
@@ -183,7 +181,6 @@ pub async fn extract_trade_republic_record(text: &str, file_path: &str) -> anyho
                 witholding_tax_currency: "EUR".to_string(),
             };
             add_trade_to_db(trade, None).await?;
-            fs::remove_file(file_path)?;
         }
         RecordType::BondTrade => {
             let date_match =
@@ -251,7 +248,6 @@ pub async fn extract_trade_republic_record(text: &str, file_path: &str) -> anyho
                 witholding_tax_currency: "EUR".to_string(),
             };
             add_with_import_confirmation(trade, id).await?;
-            fs::remove_file(file_path)?;
         }
         RecordType::Dividend => {
             let date_match = return_first_match(r"(..\...\.....)", text)?;
@@ -284,7 +280,6 @@ pub async fn extract_trade_republic_record(text: &str, file_path: &str) -> anyho
             };
 
             add_dividend_to_db(dividend).await?;
-            fs::remove_file(file_path)?;
         }
 
         RecordType::EquityTrade => {
@@ -292,7 +287,6 @@ pub async fn extract_trade_republic_record(text: &str, file_path: &str) -> anyho
             let does_date_match_exist = does_match_exist(date_match_regex, text);
             //skip file if it's not a valid trade confirmation
             if !does_date_match_exist {
-                println!("Skipping {:?}", file_path);
                 return Ok(());
             }
             let date_match = return_first_match(date_match_regex, text)?.replace(", um", "");
@@ -304,7 +298,6 @@ pub async fn extract_trade_republic_record(text: &str, file_path: &str) -> anyho
 
             let does_isin_match_exist = does_match_exist(isin_match_regex, text);
             if !does_isin_match_exist {
-                println!("Skipping {:?}", file_path);
                 return Ok(());
             }
 
@@ -369,7 +362,6 @@ pub async fn extract_trade_republic_record(text: &str, file_path: &str) -> anyho
                 witholding_tax_currency: "EUR".to_string(),
             };
             add_with_import_confirmation(trade, id).await?;
-            fs::remove_file(file_path)?;
         }
         RecordType::InterestPayment => {
             let date_match = return_first_match(r"zum (..\...\.....)", text)?.replace("zum ", "");
@@ -398,7 +390,6 @@ pub async fn extract_trade_republic_record(text: &str, file_path: &str) -> anyho
             };
 
             add_interest_to_db(interest_payment).await?;
-            fs::remove_file(file_path)?;
         }
         RecordType::PortfolioTransfer => (),
     }

@@ -26,13 +26,13 @@ pub async fn update_stock_splits() -> anyhow::Result<()> {
                 .is_empty();
             if split_event_already_stored {
                 println!(
-                    "split event for {} on {} already stored, skipping.",
+                    "Split event for {} on {} already stored, skipping.",
                     split_event.isin,
                     split_event.ex_date.date_naive()
                 )
             } else {
                 println!(
-                    "storing split event for {} on {}.",
+                    "Storing split event for {} on {}.",
                     split_event.isin,
                     split_event.ex_date.date_naive()
                 );

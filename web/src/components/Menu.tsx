@@ -7,7 +7,7 @@ import { TabNavigation, TabNavigationLink } from "@/components/TabNavigation";
 
 const menuItems = [
   { text: 'Portfolio', route: '/portfolio' },
-  { text: 'P&L', route: '/pl' },
+  { text: 'Performance', route: '/performance' },
   { text: 'Timeline', route: '/timeline' },
   { text: 'Dividends', route: '/dividends' },
   { text: 'Positions', route: '/positions' },

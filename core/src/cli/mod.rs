@@ -1,5 +1,5 @@
 pub mod housekeeping;
 pub mod import;
-pub mod pl;
+pub mod performance;
 pub mod portfolio;
 pub mod taxation;
