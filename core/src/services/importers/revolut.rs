@@ -1,9 +1,9 @@
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
-use std::{collections::HashMap, fs};
+use std::{collections::HashMap, io::Cursor};
 
 use chrono::prelude::*;
-use csv::StringRecord;
+use csv::{ReaderBuilder, StringRecord};
 use serde::Deserialize;
 
 use crate::util::{
@@ -85,12 +85,14 @@ fn detect_account_record_type(record: &RevolutAccountRecord) -> AccountRecordTyp
     AccountRecordType::Unmatched
 }
 
-pub async fn extract_revolut_record(file_path: &str) -> anyhow::Result<()> {
+pub async fn extract_revolut_record(file_content: &[u8]) -> anyhow::Result<()> {
     let broker = "Revolut".to_string();
     let listing_changes = get_listing_changes().await?;
-    let mut rdr = csv::ReaderBuilder::new()
+
+    let cursor = Cursor::new(file_content);
+    let mut rdr = ReaderBuilder::new()
         .has_headers(false)
-        .from_path(file_path)?;
+        .from_reader(cursor.clone());
 
     let csv_type = detect_csv_type(rdr.headers().unwrap());
 
@@ -172,9 +174,8 @@ pub async fn extract_revolut_record(file_path: &str) -> anyhow::Result<()> {
             }
         }
         CsvType::Account => {
-            let mut rdr2 = csv::ReaderBuilder::new()
-                .has_headers(false)
-                .from_path(file_path)?;
+            let mut rdr2 = ReaderBuilder::new().has_headers(false).from_reader(cursor);
+
             let mut records_by_timestamp: HashMap<String, Vec<RevolutAccountRecord>> =
                 HashMap::new();
 
@@ -223,6 +224,5 @@ pub async fn extract_revolut_record(file_path: &str) -> anyhow::Result<()> {
         }
     }
 
-    fs::remove_file(file_path)?;
     Ok(())
 }

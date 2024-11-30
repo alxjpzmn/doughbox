@@ -4,7 +4,7 @@ import { Route, Switch } from "wouter";
 import { SWRConfig } from "swr";
 import Login from "@/pages/Login";
 import Portfolio from "@/pages/dashboard/Portfolio";
-import PL from "@/pages/dashboard/PL";
+import Performance from "@/pages/dashboard/Performance";
 import Timeline from "@/pages/dashboard/Timeline";
 import Dividends from "@/pages/dashboard/Dividends";
 import Positions from "@/pages/dashboard/Positions";
@@ -38,7 +38,7 @@ export default function App() {
             <Route path="/dashboard" nest>
               {isMobile ? <MobileMenu /> : <Menu />}
               <Route path="/portfolio" component={Portfolio} />
-              <Route path="/pl" component={PL} />
+              <Route path="/performance" component={Performance} />
               <Route path="/timeline" component={Timeline} />
               <Route path="/dividends" component={Dividends} />
               <Route path="/positions" component={Positions} />

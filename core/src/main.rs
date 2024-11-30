@@ -1,19 +1,20 @@
+mod api;
+mod cli;
+mod services;
+mod util;
+
+use api::api;
 use chrono::{Duration, Utc};
 use clap::{Parser, Subcommand};
-use commands::api::api;
-use commands::pl::pl;
-use commands::portfolio::portfolio;
-use commands::taxation::calculate_taxes;
-use commands::{housekeeping::housekeeping, import::import};
+use cli::performance::performance;
+use cli::portfolio::portfolio;
+use cli::taxation::calculate_taxes;
+use cli::{housekeeping::housekeeping, import::import};
 use util::general_helpers::{
     check_for_env_variables, confirm_action, create_necessary_directories,
 };
 use util::market_data_helpers::{fetch_historic_ecb_rates, get_most_recent_rate};
 use util::migrations::run_migrations;
-
-mod commands;
-mod importers;
-mod util;
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -30,7 +31,7 @@ enum Command {
     },
     Housekeeping {},
     Portfolio,
-    PL {},
+    Performance {},
     Taxation {},
     Api {
         #[arg(short, long)]
@@ -38,7 +39,7 @@ enum Command {
     },
 }
 
-async fn run_portfolio_tracker() -> anyhow::Result<()> {
+async fn run_doughbox() -> anyhow::Result<()> {
     let args = Args::parse();
     let args = args.cmd;
     check_for_env_variables();
@@ -68,16 +69,16 @@ async fn run_portfolio_tracker() -> anyhow::Result<()> {
                 if confirm_action("run portfolio calculation (2/4)") {
                     portfolio().await?;
                 }
-                if confirm_action("run P&L calculation (3/4)") {
-                    pl().await?;
+                if confirm_action("run performance calculation (3/4)") {
+                    performance().await?;
                 }
                 if confirm_action("run tax calculation (4/4)") {
                     calculate_taxes().await?;
                 }
             }
         }
-        Command::PL {} => {
-            pl().await?;
+        Command::Performance {} => {
+            performance().await?;
         }
         Command::Housekeeping {} => {
             housekeeping().await?;
@@ -95,6 +96,6 @@ async fn run_portfolio_tracker() -> anyhow::Result<()> {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
-    run_portfolio_tracker().await?;
+    run_doughbox().await?;
     Ok(())
 }

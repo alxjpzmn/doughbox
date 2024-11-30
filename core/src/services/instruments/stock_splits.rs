@@ -6,7 +6,7 @@ use crate::util::{
     taxation_helpers::query_for_oekb_funds_data,
 };
 
-pub async fn housekeeping() -> anyhow::Result<()> {
+pub async fn update_stock_splits() -> anyhow::Result<()> {
     let existing_splits = get_stock_splits().await?;
     let isins = get_used_isins().await?;
     for isin in isins {

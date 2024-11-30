@@ -1,15 +1,13 @@
 use chrono::{DateTime, Utc};
 use serde::Serialize;
-use serde_json::json;
 use spinners_rs::{Spinner, Spinners};
 use std::collections::BTreeMap;
-use tabled::{Table, Tabled};
+use tabled::Tabled;
 
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 
 use crate::util::{
-    constants::OUT_DIR,
     db_helpers::get_fund_report_by_id,
     market_data_helpers::convert_amount,
     taxation_helpers::{
@@ -18,7 +16,7 @@ use crate::util::{
 };
 
 #[derive(Debug, Serialize, Tabled)]
-struct AnnualTaxableAmounts {
+pub struct AnnualTaxableAmounts {
     #[serde(rename = "Cash Interest")]
     cash_interest: Decimal,
     #[serde(rename = "Share Lending Interest")]
@@ -54,15 +52,17 @@ impl AnnualTaxableAmounts {
 }
 
 #[derive(Debug, Serialize)]
-struct TaxationReport {
-    created_at: DateTime<Utc>,
-    data: BTreeMap<i32, AnnualTaxableAmounts>,
+pub struct TaxationReport {
+    pub created_at: DateTime<Utc>,
+    pub taxable_amounts: BTreeMap<i32, AnnualTaxableAmounts>,
+    pub securities_wacs: BTreeMap<String, SecWac>,
+    pub currency_wacs: BTreeMap<String, Wac>,
 }
 
-#[derive(Debug, Tabled)]
-struct Wac {
-    units: Decimal,
-    average_cost: Decimal,
+#[derive(Debug, Tabled, Serialize)]
+pub struct Wac {
+    pub units: Decimal,
+    pub average_cost: Decimal,
 }
 
 impl Wac {
@@ -72,11 +72,11 @@ impl Wac {
     }
 }
 
-#[derive(Debug, Tabled)]
-struct SecWac {
-    units: Decimal,
-    average_cost: Decimal,
-    weighted_avg_fx_rate: Decimal,
+#[derive(Debug, Tabled, Serialize)]
+pub struct SecWac {
+    pub units: Decimal,
+    pub average_cost: Decimal,
+    pub weighted_avg_fx_rate: Decimal,
 }
 
 impl SecWac {
@@ -87,13 +87,13 @@ impl SecWac {
     }
 }
 
-struct TaxRates {
-    interest: Decimal,
-    capital_gains: Decimal,
-    dividends: Decimal,
+pub struct TaxRates {
+    pub interest: Decimal,
+    pub capital_gains: Decimal,
+    pub dividends: Decimal,
 }
 
-pub async fn calculate_taxes() -> anyhow::Result<()> {
+pub async fn get_capital_gains_tax_report() -> anyhow::Result<TaxationReport> {
     // Austrian tax rates
     let tax_rates = TaxRates {
         interest: dec!(0.25),
@@ -695,7 +695,6 @@ pub async fn calculate_taxes() -> anyhow::Result<()> {
     for (_, amounts) in taxable_amounts.iter_mut() {
         amounts.round_all(2);
     }
-    let taxable_amounts_table = Table::new(&taxable_amounts).to_string();
 
     for (_, wac) in currency_wacs.iter_mut() {
         wac.round_all();
@@ -707,21 +706,10 @@ pub async fn calculate_taxes() -> anyhow::Result<()> {
 
     let taxation_report = TaxationReport {
         created_at: Utc::now(),
-        data: taxable_amounts,
+        taxable_amounts,
+        securities_wacs,
+        currency_wacs,
     };
 
-    let taxation_json = json!(&taxation_report).to_string();
-    std::fs::write(format!("{}/taxation.json", OUT_DIR), taxation_json)?;
-
-    sp.stop();
-    println!("Taxable amounts:");
-    println!("{}", taxable_amounts_table);
-    println!("=========================");
-    println!("Currency WAC:");
-    println!("{:?}", currency_wacs);
-    println!("=========================");
-    println!("Securities WAC:");
-    println!("{:?}", securities_wacs);
-
-    Ok(())
+    Ok(taxation_report)
 }

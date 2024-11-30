@@ -1,6 +1,5 @@
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
-use std::fs;
 
 use crate::util::{
     db_helpers::{add_dividend_to_db, add_trade_to_db, Dividend, Trade},
@@ -26,7 +25,7 @@ fn detect_record_type(text: &str) -> anyhow::Result<RecordType> {
     Ok(RecordType::Unmatched)
 }
 
-pub async fn extract_erste_bank_record(text: &str, file_path: &str) -> anyhow::Result<()> {
+pub async fn extract_erste_bank_record(text: &str) -> anyhow::Result<()> {
     let broker = "Erste Bank".to_string();
     let record_type = detect_record_type(text)?;
 
@@ -112,7 +111,6 @@ pub async fn extract_erste_bank_record(text: &str, file_path: &str) -> anyhow::R
                 witholding_tax_currency: "EUR".to_string(),
             };
             add_trade_to_db(trade, Some(id)).await?;
-            fs::remove_file(file_path)?;
         }
         RecordType::Dividend => {
             let date_match = return_first_match(r", am \d{2}\.\d{2}\.\d{4}", text)?
@@ -152,7 +150,6 @@ pub async fn extract_erste_bank_record(text: &str, file_path: &str) -> anyhow::R
                 witholding_tax_currency: "EUR".to_string(),
             };
             add_dividend_to_db(dividend).await?;
-            fs::remove_file(file_path)?;
         }
         RecordType::Unmatched => (),
     }

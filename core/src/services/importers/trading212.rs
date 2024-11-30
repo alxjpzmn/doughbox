@@ -1,9 +1,9 @@
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
-use std::{fs, str::FromStr};
+use std::{io::Cursor, str::FromStr};
 
 use chrono::{NaiveDate, Utc};
-use csv::StringRecord;
+use csv::{ReaderBuilder, StringRecord};
 use serde::Deserialize;
 
 use crate::util::{
@@ -210,11 +210,11 @@ fn detect_csv_version(headers: &StringRecord) -> RecordVersion {
     }
 }
 
-pub async fn extract_trading212_record(file_path: &str) -> anyhow::Result<()> {
+pub async fn extract_trading212_record(file_content: &[u8]) -> anyhow::Result<()> {
     let broker = "Trading212".to_string();
-    let mut rdr = csv::ReaderBuilder::new()
-        .has_headers(false)
-        .from_path(file_path)?;
+
+    let cursor = Cursor::new(file_content);
+    let mut rdr = ReaderBuilder::new().has_headers(false).from_reader(cursor);
 
     let version = detect_csv_version(rdr.headers().unwrap());
 
@@ -766,6 +766,5 @@ pub async fn extract_trading212_record(file_path: &str) -> anyhow::Result<()> {
         }
     }
 
-    fs::remove_file(file_path)?;
     Ok(())
 }

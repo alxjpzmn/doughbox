@@ -1,18 +1,14 @@
 use chrono::Utc;
 use itertools::Itertools;
-use owo_colors::{OwoColorize, Style};
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use serde::Serialize;
 use serde_json::json;
-use spinners_rs::{Spinner, Spinners};
-
-use tabled::{Table, Tabled};
 
 use crate::util::{
     constants::OUT_DIR,
     db_helpers::{get_all_trades, get_stock_splits, Trade},
-    general_helpers::{format_currency, get_env_variable},
+    general_helpers::get_env_variable,
     market_data_helpers::{
         fetch_fred_data_set, get_current_equity_price, get_current_security_name,
         get_fred_value_for_date,
@@ -23,56 +19,41 @@ use crate::util::{
     },
 };
 
+#[derive(Debug, Serialize)]
+pub struct PlOverview {
+    pub generated_at: i64,
+    pub total_actual: Decimal,
+    pub total_simulated_pl: Decimal,
+    pub total_alpha: Decimal,
+    pub position_pl: Vec<MergedPositionPl>,
+}
+
 #[derive(Debug, Clone)]
-struct PositionPl {
-    isin: String,
-    name: String,
-    broker: String,
-    unrealized_pl: Decimal,
-    realized_pl: Decimal,
-    pl: Decimal,
-    return_on_equity: Decimal,
-    invested_amount: Decimal,
+pub struct PositionPl {
+    pub isin: String,
+    pub name: String,
+    pub broker: String,
+    pub unrealized_pl: Decimal,
+    pub realized_pl: Decimal,
+    pub pl: Decimal,
+    pub return_on_equity: Decimal,
+    pub invested_amount: Decimal,
 }
 
 #[derive(Debug, Serialize, Clone)]
-struct MergedPositionPl {
-    isin: String,
-    name: String,
-    unrealized_pl: Decimal,
-    realized_pl: Decimal,
-    pl: Decimal,
-    pl_simulated: Decimal,
-    real_vs_sim: Decimal,
-    return_on_equity: Decimal,
-    invested_amount: Decimal,
+pub struct MergedPositionPl {
+    pub isin: String,
+    pub name: String,
+    pub unrealized_pl: Decimal,
+    pub realized_pl: Decimal,
+    pub pl: Decimal,
+    pub pl_simulated: Decimal,
+    pub real_vs_sim: Decimal,
+    pub return_on_equity: Decimal,
+    pub invested_amount: Decimal,
 }
 
-#[derive(Debug, Tabled)]
-struct FormattedMergedPositionPl {
-    isin: String,
-    name: String,
-    unrealized_pl: String,
-    realized_pl: String,
-    pl: String,
-    pl_simulated: String,
-    real_vs_sim: String,
-    return_on_equity: String,
-}
-
-#[derive(Debug, Serialize)]
-struct PlOverview {
-    generated_at: i64,
-    total_actual: Decimal,
-    total_simulated_pl: Decimal,
-    total_alpha: Decimal,
-    position_pl: Vec<MergedPositionPl>,
-}
-
-pub async fn pl() -> anyhow::Result<()> {
-    let mut sp = Spinner::new(Spinners::Point, "Calculating P&L for positions...");
-    sp.start();
-
+pub async fn get_performance() -> anyhow::Result<PlOverview> {
     let fred_token_set = get_env_variable("FRED_TOKEN").is_some();
 
     let mut trades: Vec<Trade> = get_all_trades(None).await?;
@@ -259,42 +240,5 @@ pub async fn pl() -> anyhow::Result<()> {
     }
     wtr.flush()?;
 
-    let negative_change_style = Style::new().red().bold();
-    let positive_change_style = Style::new().green().bold();
-
-    let merged_positions_with_cli_formatting: Vec<FormattedMergedPositionPl> = merged_positions
-        .iter()
-        .map(|item| FormattedMergedPositionPl {
-            isin: item.isin.clone(),
-            name: item.name.clone(),
-            unrealized_pl: format_currency(item.unrealized_pl, true),
-            realized_pl: format_currency(item.realized_pl, true),
-            pl: format_currency(item.pl, true),
-            pl_simulated: format_currency(item.pl_simulated, true),
-            real_vs_sim: format_currency(item.real_vs_sim, true),
-            return_on_equity: format!(
-                "{}",
-                format!("{}%", round_to_decimals(item.return_on_equity)).style(
-                    if item.return_on_equity > dec!(0.0) {
-                        positive_change_style
-                    } else {
-                        negative_change_style
-                    }
-                )
-            ),
-        })
-        .collect_vec();
-
-    let table_merged_pl = Table::new(&merged_positions_with_cli_formatting).to_string();
-    println!("{}", &table_merged_pl);
-
-    println!(
-        "Total actual PL {} vs. total simulated PL {}: {}",
-        format_currency(pl_overview.total_actual, true),
-        format_currency(pl_overview.total_simulated_pl, true),
-        format_currency(pl_overview.total_alpha, true)
-    );
-
-    sp.stop();
-    Ok(())
+    Ok(pl_overview)
 }

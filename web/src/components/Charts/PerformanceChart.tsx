@@ -6,7 +6,7 @@ import { BASE_URL, fetcher, formatDate, formatRelativeAmount } from "@/util";
 interface PerformanceChartProps { }
 
 const PerformanceChart: React.FC<PerformanceChartProps> = ({ }) => {
-  const { data, isLoading } = useSwr(`${BASE_URL}/performance`, fetcher);
+  const { data, isLoading } = useSwr(`${BASE_URL}/past_performance`, fetcher);
 
   const relativeReturnChartData = data?.map((performanceSignal: any) => {
     return {

@@ -1,5 +1,6 @@
+use csv::ReaderBuilder;
 use rust_decimal_macros::dec;
-use std::fs;
+use std::io::Cursor;
 
 use crate::util::{
     db_helpers::{add_fx_conversion_to_db, add_trade_to_db, FxConversion, Trade},
@@ -109,11 +110,12 @@ fn detect_record_type(record: &IBRKRecord) -> RecordType {
     RecordType::Unmatched
 }
 
-pub async fn extract_ibkr_record(file_path: &str) -> anyhow::Result<()> {
+pub async fn extract_ibkr_record(file_content: &[u8]) -> anyhow::Result<()> {
     let broker = "Interactive Brokers".to_string();
-    let mut rdr = csv::ReaderBuilder::new()
-        .has_headers(false)
-        .from_path(file_path)?;
+
+    let cursor = Cursor::new(file_content);
+    let mut rdr = ReaderBuilder::new().has_headers(false).from_reader(cursor);
+
     for result in rdr.deserialize() {
         let record: IBRKRecord = result?;
 
@@ -197,6 +199,5 @@ pub async fn extract_ibkr_record(file_path: &str) -> anyhow::Result<()> {
             RecordType::Unmatched => continue,
         }
     }
-    fs::remove_file(file_path)?;
     Ok(())
 }

@@ -1,9 +1,9 @@
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
-use std::fs;
+use std::io::Cursor;
 
 use chrono::prelude::*;
-use csv::StringRecord;
+use csv::{ReaderBuilder, StringRecord};
 use serde::Deserialize;
 
 use crate::util::{
@@ -149,11 +149,12 @@ fn detect_asset_record_type(record: &WiseAssetRecord) -> AssetRecordTye {
     AssetRecordTye::Unmatched
 }
 
-pub async fn extract_wise_record(file_path: &str) -> anyhow::Result<()> {
+pub async fn extract_wise_record(file_content: &[u8]) -> anyhow::Result<()> {
     let broker = "Wise".to_string();
-    let mut rdr = csv::ReaderBuilder::new()
-        .has_headers(false)
-        .from_path(file_path)?;
+
+    let cursor = Cursor::new(file_content);
+
+    let mut rdr = ReaderBuilder::new().has_headers(false).from_reader(cursor);
 
     let statement_type = detect_csv_version(rdr.headers().unwrap());
 
@@ -314,6 +315,5 @@ pub async fn extract_wise_record(file_path: &str) -> anyhow::Result<()> {
             }
         }
     }
-    fs::remove_file(file_path)?;
     Ok(())
 }
