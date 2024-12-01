@@ -7,7 +7,7 @@ import {
   formatRelativeAmount,
 } from "@/util";
 import useSwr from "swr";
-import PerformanceChart from "@/components/Charts/PerformanceChart";
+import PerformanceChart from "@/components/Charts/PortfolioPerformanceChart";
 import {
   Card,
   Flex,
@@ -21,7 +21,7 @@ import {
   TableRow,
   Text,
 } from "@tremor/react";
-import PositionPerformanceScatterChart from "@/components/Charts/PositionPerformanceScatterChart";
+import PositionPerformanceScatterChart from "@/components/Charts/PositionPerformanceChart";
 import { Switch } from "@/components/Switch";
 import { Label } from "@/components/Label";
 

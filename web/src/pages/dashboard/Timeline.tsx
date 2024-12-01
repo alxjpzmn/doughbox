@@ -3,7 +3,7 @@ import { useState } from "react";
 import { format } from "date-fns";
 import { Card, DatePicker, Title } from "@tremor/react";
 import { BASE_URL, fetcher } from "@/util";
-import { DividendCard, FxCard, InterestCard, TradeCard } from "@/components/TimelineEventCard";
+import { DividendCard, FxCard, InterestCard, TradeCard } from "@/components/EventCard";
 import { TaxEventType, TaxRelevantEvent } from "@/types/core";
 
 export const Timeline = () => {

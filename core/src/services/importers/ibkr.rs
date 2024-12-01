@@ -2,9 +2,9 @@ use csv::ReaderBuilder;
 use rust_decimal_macros::dec;
 use std::io::Cursor;
 
-use crate::util::{
-    db_helpers::{add_fx_conversion_to_db, add_trade_to_db, FxConversion, Trade},
-    general_helpers::parse_timestamp,
+use crate::{
+    services::parsers::parse_timestamp,
+    util::db_helpers::{add_fx_conversion_to_db, add_trade_to_db, FxConversion, Trade},
 };
 use chrono::prelude::*;
 use itertools::Itertools;

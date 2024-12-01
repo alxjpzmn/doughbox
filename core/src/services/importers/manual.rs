@@ -6,10 +6,9 @@ use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use serde::Deserialize;
 
-use crate::util::{
-    db_helpers::{add_trade_to_db, Trade},
-    general_helpers::parse_timestamp,
-    market_data_helpers::convert_amount,
+use crate::{
+    services::{market_data::fx_rates::convert_amount, parsers::parse_timestamp},
+    util::db_helpers::{add_trade_to_db, Trade},
 };
 
 #[derive(Debug, Deserialize)]

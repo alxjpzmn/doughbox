@@ -2,7 +2,7 @@ use serde_json::json;
 use spinners_rs::{Spinner, Spinners};
 use tabled::Table;
 
-use crate::{services::taxation::get_capital_gains_tax_report, util::constants::OUT_DIR};
+use crate::services::{constants::OUT_DIR, taxation::get_capital_gains_tax_report};
 
 pub async fn calculate_taxes() -> anyhow::Result<()> {
     let mut sp = Spinner::new(Spinners::Point, "Calculating taxes");

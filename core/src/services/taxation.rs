@@ -1,19 +1,19 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::Serialize;
 use spinners_rs::{Spinner, Spinners};
 use std::collections::BTreeMap;
 use tabled::Tabled;
+use typeshare::typeshare;
 
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 
-use crate::util::{
-    db_helpers::get_fund_report_by_id,
-    market_data_helpers::convert_amount,
-    taxation_helpers::{
-        get_tax_relevant_events, get_tax_relevant_years, TaxEventType, TradeDirection,
-    },
+use crate::{
+    services::market_data::fx_rates::convert_amount,
+    util::db_helpers::{db_client, get_fund_report_by_id},
 };
+
+use super::events::{get_events, TradeDirection};
 
 #[derive(Debug, Serialize, Tabled)]
 pub struct AnnualTaxableAmounts {
@@ -91,6 +91,85 @@ pub struct TaxRates {
     pub interest: Decimal,
     pub capital_gains: Decimal,
     pub dividends: Decimal,
+}
+
+#[typeshare]
+#[derive(Debug, Clone, Serialize)]
+pub enum TaxEventType {
+    CashInterest,
+    ShareInterest,
+    Dividend,
+    Trade,
+    FxConversion,
+    DividendAequivalent,
+}
+
+#[typeshare]
+#[derive(Debug, Clone, Serialize)]
+pub struct TaxRelevantEvent {
+    pub date: DateTime<Utc>,
+    pub event_type: TaxEventType,
+    pub currency: String,
+    pub units: Decimal,
+    pub price_unit: Decimal,
+    pub identifier: Option<String>,
+    pub direction: Option<TradeDirection>,
+    pub applied_fx_rate: Option<Decimal>,
+    pub withholding_tax_percent: Option<Decimal>,
+}
+
+pub async fn get_tax_relevant_events(year: i32) -> anyhow::Result<Vec<TaxRelevantEvent>> {
+    let year_start_date_str = format!("{}-01-01", year);
+    let year_start_timestamp = DateTime::<Utc>::from_naive_utc_and_offset(
+        NaiveDate::parse_from_str(&year_start_date_str, "%Y-%m-%d")?
+            .and_hms_opt(0, 0, 0)
+            .unwrap(),
+        Utc,
+    );
+
+    let year_end_date_str = format!("{}-01-01", year + 1);
+    let year_end_timestamp = DateTime::<Utc>::from_naive_utc_and_offset(
+        NaiveDate::parse_from_str(&year_end_date_str, "%Y-%m-%d")?
+            .and_hms_opt(0, 0, 0)
+            .unwrap(),
+        Utc,
+    );
+
+    get_events(year_start_timestamp, year_end_timestamp).await
+}
+
+pub async fn get_tax_relevant_years() -> anyhow::Result<Vec<i32>> {
+    let client = db_client().await?;
+
+    let mut years: Vec<i32> = vec![];
+
+    let rows = client
+        .query(
+            "WITH all_dates AS (
+                SELECT MIN(date) AS earliest_date FROM (
+                SELECT date FROM interest
+                UNION ALL
+                SELECT date FROM trades
+                UNION ALL
+                SELECT date FROM fx_conversions
+                UNION ALL
+                SELECT date FROM dividends
+                ) AS all_dates
+            )
+            SELECT 
+            GENERATE_SERIES(EXTRACT(YEAR FROM earliest_date)::INT, EXTRACT(YEAR FROM CURRENT_DATE)::INT) AS years
+            FROM all_dates;
+            ",
+            &[],
+        )
+        .await?;
+
+    for row in rows {
+        let year = row.get::<usize, i32>(0);
+        years.push(year);
+    }
+
+    Ok(years)
 }
 
 pub async fn get_capital_gains_tax_report() -> anyhow::Result<TaxationReport> {

@@ -6,13 +6,12 @@ use chrono::{NaiveDate, Utc};
 use csv::{ReaderBuilder, StringRecord};
 use serde::Deserialize;
 
-use crate::util::{
-    db_helpers::{
+use crate::{
+    services::{market_data::fx_rates::convert_amount, parsers::parse_timestamp},
+    util::db_helpers::{
         add_dividend_to_db, add_fx_conversion_to_db, add_interest_to_db, add_trade_to_db, Dividend,
         FxConversion, InterestPayment, Trade,
     },
-    general_helpers::parse_timestamp,
-    market_data_helpers::convert_amount,
 };
 
 #[derive(Debug, Deserialize)]

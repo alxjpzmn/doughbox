@@ -1,5 +1,7 @@
+use fancy_regex::Regex;
 use std::fs;
-
+use std::io::{self, Write};
+use std::process;
 use walkdir::WalkDir;
 
 use crate::services::parsers::parse_file_for_import;
@@ -26,4 +28,49 @@ pub async fn import(directory_path: &str) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+pub fn choose_match_from_regex(regex_pattern: &str, text: &str) -> anyhow::Result<String> {
+    let regex = Regex::new(regex_pattern)?;
+
+    let matches: Vec<String> = regex
+        .find_iter(text)
+        .filter_map(|result| result.ok().map(|mat| mat.as_str().to_string()))
+        .collect();
+
+    if matches.is_empty() {
+        eprintln!("No matches found for the given regex.");
+        process::exit(1);
+    }
+
+    if matches.len() == 1 {
+        return Ok(matches[0].clone());
+    }
+
+    println!("Found matches:");
+    for (index, matched_text) in matches.iter().enumerate() {
+        println!("{}: {}", index + 1, matched_text);
+    }
+
+    loop {
+        print!("Please choose a match (1-{}): ", matches.len());
+        io::stdout().flush().unwrap();
+
+        let mut input = String::new();
+        io::stdin()
+            .read_line(&mut input)
+            .expect("Failed to read line");
+
+        match input.trim().parse::<usize>() {
+            Ok(index) if index > 0 && index <= matches.len() => {
+                return Ok(matches[index - 1].clone());
+            }
+            _ => {
+                println!(
+                    "Invalid input. Please enter a number between 1 and {}.",
+                    matches.len()
+                );
+            }
+        }
+    }
 }

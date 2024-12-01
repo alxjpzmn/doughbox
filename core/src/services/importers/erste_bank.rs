@@ -1,9 +1,9 @@
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 
-use crate::util::{
-    db_helpers::{add_dividend_to_db, add_trade_to_db, Dividend, Trade},
-    general_helpers::{does_match_exist, parse_timestamp, return_first_match},
+use crate::{
+    services::parsers::{does_match_exist, parse_timestamp, return_first_match},
+    util::db_helpers::{add_dividend_to_db, add_trade_to_db, Dividend, Trade},
 };
 use chrono::prelude::*;
 

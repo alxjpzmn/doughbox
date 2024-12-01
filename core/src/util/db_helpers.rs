@@ -1,11 +1,14 @@
 use std::collections::HashMap;
 
-use crate::util::general_helpers::hash_string;
-
-use super::{
-    general_helpers::get_env_variable,
-    market_data_helpers::{get_changed_identifier, get_split_adjusted_units},
+use crate::services::{
+    env::get_env_variable,
+    instruments::{
+        identifiers::get_changed_identifier,
+        stock_splits::{get_split_adjusted_units, StockSplit},
+    },
+    shared::hash_string,
 };
+
 use chrono::prelude::*;
 
 use rust_decimal::Decimal;
@@ -36,15 +39,6 @@ pub struct Trade {
     pub fees: Decimal,
     pub withholding_tax: Decimal,
     pub witholding_tax_currency: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct StockSplit {
-    pub id: String,
-    pub ex_date: DateTime<Utc>,
-    pub from_factor: Decimal,
-    pub to_factor: Decimal,
-    pub isin: String,
 }
 
 #[derive(Debug, Clone)]

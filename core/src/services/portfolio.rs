@@ -4,10 +4,11 @@ use rust_decimal_macros::dec;
 use serde::Serialize;
 use tabled::Tabled;
 
-use crate::util::{
-    db_helpers::{get_positions, get_total_invested_value, get_total_sell_value},
-    market_data_helpers::{get_current_equity_price, get_current_security_name},
-    performance_helpers::round_to_decimals,
+use crate::util::db_helpers::{get_positions, get_total_invested_value, get_total_sell_value};
+
+use super::{
+    instruments::names::get_current_instrument_name,
+    market_data::prices::get_current_instrument_price, shared::round_to_decimals,
 };
 
 #[derive(Debug)]
@@ -45,7 +46,7 @@ pub async fn get_portfolio_overview() -> anyhow::Result<PortfolioOverview> {
     let mut positions_with_value: Vec<PositionWithValue> = vec![];
 
     for position in current_positions.iter() {
-        let current_price = get_current_equity_price(&position.isin).await?;
+        let current_price = get_current_instrument_price(&position.isin).await?;
         let position_with_value = PositionWithValue {
             isin: position.isin.clone(),
             current_value: current_price * position.units,
@@ -62,7 +63,7 @@ pub async fn get_portfolio_overview() -> anyhow::Result<PortfolioOverview> {
         let position_share = position.current_value / total_position;
         let item = EquityAllocationItem {
             isin: position.isin.clone(),
-            name: get_current_security_name(&position.isin).await?,
+            name: get_current_instrument_name(&position.isin).await?,
             current_value: round_to_decimals(position.current_value),
             units: round_to_decimals(position.units),
             share: round_to_decimals(position_share * dec!(100.0)),
