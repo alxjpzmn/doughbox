@@ -1,6 +1,8 @@
+use anyhow::anyhow;
+use chrono::prelude::*;
+use fancy_regex::Regex;
 use std::io::Cursor;
 
-use crate::util::general_helpers::does_match_exist;
 use csv::ReaderBuilder;
 use deunicode::deunicode;
 
@@ -145,4 +147,49 @@ pub async fn parse_file_for_import(file: &[u8]) -> anyhow::Result<()> {
         FileFormat::Unsupported => println!("File unsupported, skipping"),
     }
     Ok(())
+}
+
+pub fn does_match_exist(regex_pattern: &str, text: &str) -> bool {
+    let regex = Regex::new(regex_pattern).unwrap();
+    regex.is_match(text).unwrap()
+}
+
+pub fn return_first_match(regex_pattern: &str, text: &str) -> anyhow::Result<String> {
+    let regex = Regex::new(regex_pattern)?;
+    let caps = regex
+        .captures(text)?
+        .unwrap_or_else(|| panic!("Expected regex {} couldn't be found", regex_pattern));
+    let matched_text = caps.get(0).unwrap();
+    Ok(matched_text.as_str().to_string())
+}
+
+pub fn remove_first_and_last(value: &str) -> &str {
+    let mut chars = value.chars();
+    chars.next();
+    chars.next_back();
+    chars.as_str()
+}
+
+pub fn parse_timestamp(timestamp_str: &str) -> anyhow::Result<DateTime<Utc>> {
+    let formats = [
+        "%Y-%m-%d %H:%M:%S%.3f",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S%.3fZ",
+        "%Y-%m-%dT%H:%M:%S%.f%#z",
+        "%Y-%m-%d %H:%M:%S%.f%#z",
+        "%d.%m.%Y %H:%M:%S",
+        "%Y%m%d;%H%M%S",
+        "%d/%m/%Y %H:%M:%S",
+        "%d.%m.%Y %H:%M:%S",
+        "%d-%m-%Y %H:%M:%S",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S%.3f",
+        "%d.%m.%Y %H:%M:%S:%f",
+    ];
+    for format in formats.iter() {
+        if let Ok(timestamp) = NaiveDateTime::parse_from_str(timestamp_str, format) {
+            return Ok(timestamp.and_utc());
+        }
+    }
+    Err(anyhow!("Unable to parse timestamp"))
 }

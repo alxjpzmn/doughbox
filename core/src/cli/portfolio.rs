@@ -5,11 +5,9 @@ use spinners_rs::{Spinner, Spinners};
 use tabled::{Table, Tabled};
 
 use crate::{
+    cli::shared::format_currency,
     services::portfolio::get_portfolio_overview,
-    util::{
-        db_helpers::{add_performance_signal_to_db, PerformanceSignal},
-        general_helpers::format_currency,
-    },
+    util::db_helpers::{add_performance_signal_to_db, PerformanceSignal},
 };
 
 #[derive(Debug, Tabled, Serialize, Clone)]

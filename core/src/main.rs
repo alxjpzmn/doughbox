@@ -8,12 +8,12 @@ use chrono::{Duration, Utc};
 use clap::{Parser, Subcommand};
 use cli::performance::performance;
 use cli::portfolio::portfolio;
+use cli::shared::confirm_action;
 use cli::taxation::calculate_taxes;
 use cli::{housekeeping::housekeeping, import::import};
-use util::general_helpers::{
-    check_for_env_variables, confirm_action, create_necessary_directories,
-};
-use util::market_data_helpers::{fetch_historic_ecb_rates, get_most_recent_rate};
+use services::env::check_for_env_variables;
+use services::files::create_necessary_directories;
+use services::market_data::fx_rates::{fetch_historic_ecb_rates, get_most_recent_rate};
 use util::migrations::run_migrations;
 
 #[derive(Parser, Debug)]

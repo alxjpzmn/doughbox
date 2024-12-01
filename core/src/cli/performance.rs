@@ -6,8 +6,8 @@ use spinners_rs::{Spinner, Spinners};
 use tabled::{Table, Tabled};
 
 use crate::{
-    services::performance::get_performance,
-    util::{general_helpers::format_currency, performance_helpers::round_to_decimals},
+    cli::shared::format_currency,
+    services::{performance::get_performance, shared::round_to_decimals},
 };
 
 #[derive(Debug, Tabled)]

@@ -2,15 +2,15 @@ use regex::Regex;
 use rust_decimal_macros::dec;
 use std::io;
 
+use crate::cli::import::choose_match_from_regex;
+use crate::services::parsers::does_match_exist;
+use crate::services::parsers::parse_timestamp;
+use crate::services::parsers::return_first_match;
+use crate::services::shared::hash_string;
 use crate::util::db_helpers::find_similar_trade;
 use crate::util::db_helpers::get_positions_for_isin;
-use crate::util::general_helpers::choose_match_from_regex;
-use crate::util::general_helpers::hash_string;
-use crate::util::{
-    db_helpers::{
-        add_dividend_to_db, add_interest_to_db, add_trade_to_db, Dividend, InterestPayment, Trade,
-    },
-    general_helpers::{does_match_exist, parse_timestamp, return_first_match},
+use crate::util::db_helpers::{
+    add_dividend_to_db, add_interest_to_db, add_trade_to_db, Dividend, InterestPayment, Trade,
 };
 use chrono::prelude::*;
 use rust_decimal::Decimal;
