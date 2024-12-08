@@ -1,3 +1,5 @@
+use rust_decimal::Decimal;
+
 use crate::database::{db_client, models::instrument::Instrument};
 
 pub async fn get_instrument_by_id(id: &str) -> anyhow::Result<Option<Instrument>> {
@@ -39,4 +41,12 @@ pub async fn update_instrument_price(instrument: Instrument) -> anyhow::Result<(
     println!("🔄 Instrument added or updated: {:?}", instrument);
 
     Ok(())
+}
+
+pub async fn get_current_instrument_price(isin: &str) -> anyhow::Result<Decimal> {
+    let instrument = get_instrument_by_id(isin).await?;
+    match instrument {
+        Some(_) => Ok(instrument.unwrap().price),
+        None => panic!("No price found for ISIN {} in instrument table.", isin),
+    }
 }

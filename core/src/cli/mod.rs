@@ -15,8 +15,8 @@ use shared::confirm_action;
 use taxation::calculate_taxes;
 
 use crate::{
-    api,
-    services::market_data::fx_rates::{fetch_historic_ecb_rates, get_most_recent_rate},
+    api, database::queries::fx_rate::get_most_recent_rate,
+    services::market_data::fx_rates::fetch_historic_ecb_rates,
 };
 
 #[derive(Parser, Debug)]

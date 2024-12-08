@@ -5,14 +5,12 @@ use serde::Serialize;
 use tabled::Tabled;
 
 use crate::database::queries::{
+    instrument::get_current_instrument_price,
     position::get_positions,
     trade::{get_total_invested_value, get_total_sell_value},
 };
 
-use super::{
-    instruments::names::get_current_instrument_name,
-    market_data::prices::get_current_instrument_price, shared::round_to_decimals,
-};
+use super::{instruments::names::get_current_instrument_name, shared::round_to_decimals};
 
 #[derive(Debug)]
 struct PositionWithValue {
