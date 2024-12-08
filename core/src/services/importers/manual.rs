@@ -7,8 +7,8 @@ use rust_decimal_macros::dec;
 use serde::Deserialize;
 
 use crate::{
+    database::{models::trade::Trade, queries::composite::add_trade_to_db},
     services::{market_data::fx_rates::convert_amount, parsers::parse_timestamp},
-    util::db_helpers::{add_trade_to_db, Trade},
 };
 
 #[derive(Debug, Deserialize)]

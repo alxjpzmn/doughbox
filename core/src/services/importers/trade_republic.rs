@@ -3,15 +3,18 @@ use rust_decimal_macros::dec;
 use std::io;
 
 use crate::cli::import::choose_match_from_regex;
+use crate::database::models::dividend::Dividend;
+use crate::database::models::interest::InterestPayment;
+use crate::database::models::trade::Trade;
+use crate::database::queries::composite::add_trade_to_db;
+use crate::database::queries::dividend::add_dividend_to_db;
+use crate::database::queries::interest::add_interest_to_db;
+use crate::database::queries::position::get_positions_for_isin;
+use crate::database::queries::trade::find_similar_trade;
 use crate::services::parsers::does_match_exist;
 use crate::services::parsers::parse_timestamp;
 use crate::services::parsers::return_first_match;
 use crate::services::shared::hash_string;
-use crate::util::db_helpers::find_similar_trade;
-use crate::util::db_helpers::get_positions_for_isin;
-use crate::util::db_helpers::{
-    add_dividend_to_db, add_interest_to_db, add_trade_to_db, Dividend, InterestPayment, Trade,
-};
 use chrono::prelude::*;
 use rust_decimal::Decimal;
 

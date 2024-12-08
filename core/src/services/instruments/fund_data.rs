@@ -3,8 +3,8 @@ use rust_decimal_macros::dec;
 use serde::Deserialize;
 
 use crate::{
+    database::{models::fund_report::FundTaxReport, queries::fund_report::add_fund_report_to_db},
     services::parsers::parse_timestamp,
-    util::db_helpers::{add_fund_report_to_db, FundTaxReport},
 };
 
 #[derive(Deserialize, Debug)]

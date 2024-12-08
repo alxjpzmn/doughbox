@@ -8,7 +8,10 @@ use tabled::Tabled;
 use serde::Serialize;
 use serde_json::json;
 
-use crate::util::db_helpers::{get_all_trades, get_stock_splits, Trade};
+use crate::database::{
+    models::trade::Trade,
+    queries::{composite::get_all_trades, stock_split::get_stock_splits},
+};
 
 use super::{
     constants::OUT_DIR,

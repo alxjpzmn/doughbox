@@ -1,4 +1,7 @@
 use crate::{
+    database::queries::{
+        dividend::get_dividends, performance::get_performance_signals, position::get_positions,
+    },
     services::{
         constants::{OUT_DIR, SESSION_TOKEN_KEY},
         env::get_env_variable,
@@ -6,7 +9,6 @@ use crate::{
         parsers::parse_timestamp,
         portfolio::get_portfolio_overview,
     },
-    util::db_helpers::{get_dividends, get_performance_signals, get_positions},
 };
 use axum::{
     extract::{Json, Query, Request},

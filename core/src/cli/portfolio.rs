@@ -6,8 +6,10 @@ use tabled::{Table, Tabled};
 
 use crate::{
     cli::shared::format_currency,
+    database::{
+        models::performance::PerformanceSignal, queries::performance::add_performance_signal_to_db,
+    },
     services::portfolio::get_portfolio_overview,
-    util::db_helpers::{add_performance_signal_to_db, PerformanceSignal},
 };
 
 #[derive(Debug, Tabled, Serialize, Clone)]

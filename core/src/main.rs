@@ -1,5 +1,6 @@
 mod api;
 mod cli;
+mod database;
 mod services;
 mod util;
 

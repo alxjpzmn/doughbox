@@ -1,6 +1,6 @@
 use rust_decimal::Decimal;
 
-use crate::util::db_helpers::get_instrument_by_id;
+use crate::database::queries::instrument::get_instrument_by_id;
 
 pub async fn get_current_instrument_price(isin: &str) -> anyhow::Result<Decimal> {
     let instrument = get_instrument_by_id(isin).await?;

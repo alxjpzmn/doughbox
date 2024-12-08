@@ -9,8 +9,8 @@ use serde_json::Value;
 use spinners_rs::{Spinner, Spinners};
 
 use crate::{
+    database::{db_client, queries::composite::get_used_currencies},
     services::shared::hash_string,
-    util::db_helpers::{db_client, get_used_currencies},
 };
 
 pub async fn fetch_historic_ecb_rates() -> anyhow::Result<()> {

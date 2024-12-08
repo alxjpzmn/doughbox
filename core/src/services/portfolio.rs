@@ -4,7 +4,10 @@ use rust_decimal_macros::dec;
 use serde::Serialize;
 use tabled::Tabled;
 
-use crate::util::db_helpers::{get_positions, get_total_invested_value, get_total_sell_value};
+use crate::database::queries::{
+    position::get_positions,
+    trade::{get_total_invested_value, get_total_sell_value},
+};
 
 use super::{
     instruments::names::get_current_instrument_name,

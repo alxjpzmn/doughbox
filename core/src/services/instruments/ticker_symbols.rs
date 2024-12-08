@@ -4,7 +4,7 @@ use reqwest::Client;
 use serde::Deserialize;
 use tokio::time::sleep;
 
-use crate::{services::parsers::remove_first_and_last, util::db_helpers::db_client};
+use crate::{database::db_client, services::parsers::remove_first_and_last};
 
 #[derive(Deserialize, Debug)]
 

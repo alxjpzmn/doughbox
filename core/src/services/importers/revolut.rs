@@ -7,13 +7,16 @@ use csv::{ReaderBuilder, StringRecord};
 use serde::Deserialize;
 
 use crate::{
+    database::{
+        models::{dividend::Dividend, fx_conversion::FxConversion, trade::Trade},
+        queries::{
+            composite::add_trade_to_db, dividend::add_dividend_to_db,
+            fx_conversion::add_fx_conversion_to_db, listing_change::get_listing_changes,
+        },
+    },
     services::{
         instruments::{identifiers::get_changed_identifier, ticker_symbols::get_isin_from_symbol},
         parsers::parse_timestamp,
-    },
-    util::db_helpers::{
-        add_dividend_to_db, add_fx_conversion_to_db, add_trade_to_db, get_listing_changes,
-        Dividend, FxConversion, Trade,
     },
 };
 

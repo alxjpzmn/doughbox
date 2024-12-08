@@ -9,8 +9,11 @@ use serde::Deserialize;
 use tokio::time::sleep;
 
 use crate::{
+    database::queries::{
+        composite::get_used_isins,
+        stock_split::{add_stock_split_to_db, get_stock_splits},
+    },
     services::{env::get_env_variable, parsers::parse_timestamp, shared::hash_string},
-    util::db_helpers::{add_stock_split_to_db, get_stock_splits, get_used_isins},
 };
 
 use super::{fund_data::query_for_oekb_funds_data, ticker_symbols::get_symbol_from_isin};
