@@ -1,10 +1,10 @@
 use tokio_postgres::{Client, NoTls};
 
-use crate::services::env::get_env_variable;
-
 pub mod models;
 pub mod queries;
 use refinery::embed_migrations;
+
+use crate::services::shared::env::get_env_variable;
 
 pub async fn db_client() -> anyhow::Result<Client> {
     let (client, connection) =

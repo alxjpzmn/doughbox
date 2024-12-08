@@ -1,6 +1,6 @@
 use crate::{
     database::{db_client, models::interest::InterestPayment},
-    services::shared::hash_string,
+    services::shared::util::hash_string,
 };
 
 pub async fn add_interest_to_db(interest_payment: InterestPayment) -> anyhow::Result<()> {

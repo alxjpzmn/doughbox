@@ -14,7 +14,7 @@ use crate::database::queries::trade::find_similar_trade;
 use crate::services::parsers::does_match_exist;
 use crate::services::parsers::parse_timestamp;
 use crate::services::parsers::return_first_match;
-use crate::services::shared::hash_string;
+use crate::services::shared::util::hash_string;
 use chrono::prelude::*;
 use rust_decimal::Decimal;
 

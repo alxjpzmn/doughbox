@@ -3,7 +3,7 @@ use rust_decimal::Decimal;
 
 use crate::{
     database::{db_client, models::dividend::Dividend},
-    services::shared::hash_string,
+    services::shared::util::hash_string,
 };
 
 pub async fn get_dividends() -> anyhow::Result<Vec<Dividend>> {

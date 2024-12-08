@@ -10,7 +10,7 @@ use crate::database::queries::{
     trade::{get_total_invested_value, get_total_sell_value},
 };
 
-use super::{instruments::names::get_current_instrument_name, shared::round_to_decimals};
+use super::{instruments::names::get_current_instrument_name, shared::util::round_to_decimals};
 
 #[derive(Debug)]
 struct PositionWithValue {
