@@ -3,8 +3,11 @@ use rust_decimal_macros::dec;
 use std::io::Cursor;
 
 use crate::{
+    database::{
+        models::{fx_conversion::FxConversion, trade::Trade},
+        queries::{composite::add_trade_to_db, fx_conversion::add_fx_conversion_to_db},
+    },
     services::parsers::parse_timestamp,
-    util::db_helpers::{add_fx_conversion_to_db, add_trade_to_db, FxConversion, Trade},
 };
 use chrono::prelude::*;
 use itertools::Itertools;

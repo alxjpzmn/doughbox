@@ -2,8 +2,11 @@ use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 
 use crate::{
+    database::{
+        models::{dividend::Dividend, trade::Trade},
+        queries::{composite::add_trade_to_db, dividend::add_dividend_to_db},
+    },
     services::parsers::{does_match_exist, parse_timestamp, return_first_match},
-    util::db_helpers::{add_dividend_to_db, add_trade_to_db, Dividend, Trade},
 };
 use chrono::prelude::*;
 

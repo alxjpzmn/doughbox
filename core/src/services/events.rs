@@ -7,11 +7,14 @@ use tokio_postgres::{Client, Row};
 use typeshare::typeshare;
 
 use crate::{
+    database::{
+        db_client,
+        queries::{listing_change::get_listing_changes, stock_split::get_stock_splits},
+    },
     services::instruments::{
         identifiers::get_changed_identifier,
         stock_splits::{get_split_adjusted_price_per_unit, get_split_adjusted_units},
     },
-    util::db_helpers::{db_client, get_listing_changes, get_stock_splits},
 };
 
 use super::taxation::{TaxEventType, TaxRelevantEvent};

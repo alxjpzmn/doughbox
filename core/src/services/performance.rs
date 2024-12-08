@@ -8,7 +8,13 @@ use tabled::Tabled;
 use serde::Serialize;
 use serde_json::json;
 
-use crate::util::db_helpers::{get_all_trades, get_stock_splits, Trade};
+use crate::database::{
+    models::trade::Trade,
+    queries::{
+        composite::get_all_trades, instrument::get_current_instrument_price,
+        stock_split::get_stock_splits,
+    },
+};
 
 use super::{
     constants::OUT_DIR,
@@ -17,10 +23,7 @@ use super::{
         names::get_current_instrument_name,
         stock_splits::{get_split_adjusted_price_per_unit, get_split_adjusted_units, StockSplit},
     },
-    market_data::{
-        fred::{fetch_fred_data_set, get_fred_value_for_date, FREDResponse},
-        prices::get_current_instrument_price,
-    },
+    market_data::fred::{fetch_fred_data_set, get_fred_value_for_date, FREDResponse},
     shared::round_to_decimals,
 };
 

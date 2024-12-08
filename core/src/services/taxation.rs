@@ -9,8 +9,8 @@ use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 
 use crate::{
+    database::{db_client, queries::fund_report::get_fund_report_by_id},
     services::market_data::fx_rates::convert_amount,
-    util::db_helpers::{db_client, get_fund_report_by_id},
 };
 
 use super::events::{get_events, TradeDirection};

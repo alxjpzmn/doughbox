@@ -1,5 +1,6 @@
-use super::db_helpers::db_client;
 use tokio_postgres::Client;
+
+use crate::database::db_client;
 
 async fn seed_trades_db() -> anyhow::Result<Client> {
     let client = db_client().await?;

@@ -7,11 +7,14 @@ use csv::{ReaderBuilder, StringRecord};
 use serde::Deserialize;
 
 use crate::{
-    services::{market_data::fx_rates::convert_amount, parsers::parse_timestamp},
-    util::db_helpers::{
-        add_fx_conversion_to_db, add_interest_to_db, add_trade_to_db, FxConversion,
-        InterestPayment, Trade,
+    database::{
+        models::{fx_conversion::FxConversion, interest::InterestPayment, trade::Trade},
+        queries::{
+            composite::add_trade_to_db, fx_conversion::add_fx_conversion_to_db,
+            interest::add_interest_to_db,
+        },
     },
+    services::{market_data::fx_rates::convert_amount, parsers::parse_timestamp},
 };
 
 #[derive(Debug, Deserialize)]

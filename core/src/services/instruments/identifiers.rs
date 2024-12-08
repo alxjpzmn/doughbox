@@ -1,4 +1,4 @@
-use crate::util::db_helpers::ListingChange;
+use crate::database::models::listing_change::ListingChange;
 
 pub fn get_changed_identifier(identifier: &str, listing_changes: Vec<ListingChange>) -> String {
     let relevant_changes = listing_changes
