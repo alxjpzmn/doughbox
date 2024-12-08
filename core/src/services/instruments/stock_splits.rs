@@ -13,7 +13,10 @@ use crate::{
         composite::get_used_isins,
         stock_split::{add_stock_split_to_db, get_stock_splits},
     },
-    services::{env::get_env_variable, parsers::parse_timestamp, shared::hash_string},
+    services::{
+        parsers::parse_timestamp,
+        shared::{env::get_env_variable, util::hash_string},
+    },
 };
 
 use super::{fund_data::query_for_oekb_funds_data, ticker_symbols::get_symbol_from_isin};

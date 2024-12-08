@@ -6,8 +6,7 @@ mod services;
 use api::api;
 use cli::cli;
 use database::run_migrations;
-use services::env::check_for_env_variables;
-use services::files::create_necessary_directories;
+use services::{files::create_necessary_directories, shared::env::check_for_env_variables};
 
 async fn run_doughbox() -> anyhow::Result<()> {
     check_for_env_variables();

@@ -7,7 +7,7 @@ use crate::{
         models::{instrument::Instrument, trade::Trade},
         queries::instrument::{get_instrument_by_id, update_instrument_price},
     },
-    services::{instruments::identifiers::get_changed_identifier, shared::hash_string},
+    services::{instruments::identifiers::get_changed_identifier, shared::util::hash_string},
 };
 
 use super::listing_change::get_listing_changes;
@@ -16,15 +16,14 @@ pub async fn get_used_currencies() -> anyhow::Result<Vec<String>> {
     let client = db_client().await?;
 
     let statement: String = "
-SELECT DISTINCT currency FROM (
-    SELECT to_currency AS currency FROM fx_conversions
-    UNION
-    SELECT currency_denomination AS currency FROM trades
-    UNION
-    SELECT currency AS currency FROM interest
-) AS all_currencies;
-"
-    .to_string();
+        select distinct currency from (
+            select to_currency AS currency from fx_conversions
+            union
+            select currency_denomination AS currency from trades
+            union
+            select currency AS currency from interest
+        ) as all_currencies"
+        .to_string();
 
     let rows = client.query(&statement, &[]).await?;
 
@@ -40,7 +39,7 @@ SELECT DISTINCT currency FROM (
 pub async fn get_used_isins() -> anyhow::Result<Vec<String>> {
     let client = db_client().await?;
 
-    let statement: String = "SELECT distinct(isin) from trades".to_string();
+    let statement: String = "select distinct(isin) from trades".to_string();
 
     let listing_changes = get_listing_changes().await?;
 
@@ -59,11 +58,11 @@ pub async fn get_used_isins() -> anyhow::Result<Vec<String>> {
 pub async fn get_all_trades(count: Option<i32>) -> anyhow::Result<Vec<Trade>> {
     let client = db_client().await?;
 
-    let mut statement: String = "SELECT * from trades order by date desc".to_string();
+    let mut statement: String = "select * from trades order by date desc".to_string();
 
     statement = match count {
         Some(_) => {
-            let stmt_w_count = format!("{} LIMIT {}", statement, count.unwrap());
+            let stmt_w_count = format!("{} limit {}", statement, count.unwrap());
             stmt_w_count
         }
         None => statement,

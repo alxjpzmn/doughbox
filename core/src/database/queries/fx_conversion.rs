@@ -1,6 +1,6 @@
 use crate::{
     database::{db_client, models::fx_conversion::FxConversion},
-    services::shared::hash_string,
+    services::shared::util::hash_string,
 };
 
 pub async fn add_fx_conversion_to_db(fx_conversion: FxConversion) -> anyhow::Result<()> {

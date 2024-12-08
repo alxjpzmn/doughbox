@@ -12,7 +12,7 @@ use crate::{
         db_client,
         queries::{composite::get_used_currencies, fx_rate::get_exchange_rate},
     },
-    services::shared::hash_string,
+    services::shared::util::hash_string,
 };
 
 pub async fn fetch_historic_ecb_rates() -> anyhow::Result<()> {

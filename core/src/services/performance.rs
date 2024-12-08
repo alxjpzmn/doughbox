@@ -6,7 +6,6 @@ use rust_decimal_macros::dec;
 use tabled::Tabled;
 
 use serde::Serialize;
-use serde_json::json;
 
 use crate::database::{
     models::trade::Trade,
@@ -17,14 +16,13 @@ use crate::database::{
 };
 
 use super::{
-    constants::OUT_DIR,
-    env::get_env_variable,
+    files::{export_csv, export_json},
     instruments::{
         names::get_current_instrument_name,
         stock_splits::{get_split_adjusted_price_per_unit, get_split_adjusted_units, StockSplit},
     },
     market_data::fred::{fetch_fred_data_set, get_fred_value_for_date, FREDResponse},
-    shared::round_to_decimals,
+    shared::{env::get_env_variable, util::round_to_decimals},
 };
 
 #[derive(Debug, Serialize)]
@@ -239,14 +237,8 @@ pub async fn get_performance() -> anyhow::Result<PlOverview> {
         position_pl: merged_positions.clone(),
     };
 
-    let pl_json = json!(&pl_overview).to_string();
-    std::fs::write(format!("{}/pl.json", OUT_DIR), pl_json)?;
-
-    let mut wtr = csv::Writer::from_path(format!("{}/pl.csv", OUT_DIR))?;
-    for table_entry in &merged_positions {
-        wtr.serialize(table_entry)?;
-    }
-    wtr.flush()?;
+    export_csv(&merged_positions, "pl")?;
+    export_json(&pl_overview, "pl")?;
 
     Ok(pl_overview)
 }

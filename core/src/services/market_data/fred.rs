@@ -3,7 +3,7 @@ use reqwest::Client;
 use rust_decimal::Decimal;
 use serde::Deserialize;
 
-use crate::services::env::get_env_variable;
+use crate::services::shared::env::get_env_variable;
 
 #[derive(Deserialize, Debug)]
 pub struct FREDResponse {

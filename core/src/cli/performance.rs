@@ -7,7 +7,7 @@ use tabled::{Table, Tabled};
 
 use crate::{
     cli::shared::format_currency,
-    services::{performance::get_performance, shared::round_to_decimals},
+    services::{performance::get_performance, shared::util::round_to_decimals},
 };
 
 #[derive(Debug, Tabled)]

@@ -1,6 +1,13 @@
-use std::{fs, path::Path};
+use std::{
+    fs::{self, File},
+    path::Path,
+};
 
-use super::constants::{IN_DIR, OUT_DIR};
+use csv::Writer;
+use serde::Serialize;
+use serde_json::json;
+
+use super::shared::constants::{IN_DIR, OUT_DIR};
 
 fn create_dir_if_nonexistent(directory_path: &str) {
     let path = Path::new(directory_path);
@@ -15,4 +22,31 @@ fn create_dir_if_nonexistent(directory_path: &str) {
 pub fn create_necessary_directories() {
     create_dir_if_nonexistent(OUT_DIR);
     create_dir_if_nonexistent(IN_DIR);
+}
+
+pub fn export_csv<T>(rows: &Vec<T>, file_name: &str) -> anyhow::Result<()>
+where
+    T: Serialize,
+{
+    let file = File::create(format!("{}/{}.csv", OUT_DIR, file_name))?;
+    let mut wtr = Writer::from_writer(file);
+
+    for row in rows {
+        wtr.serialize(row)?;
+    }
+
+    wtr.flush()?;
+
+    Ok(())
+}
+
+pub fn export_json<T>(data: T, file_name: &str) -> anyhow::Result<()>
+where
+    T: Serialize,
+{
+    let json_data = json!(&data).to_string();
+
+    std::fs::write(format!("{}/{}.json", OUT_DIR, file_name), json_data)?;
+
+    Ok(())
 }
