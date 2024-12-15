@@ -156,3 +156,37 @@ pub async fn add_trade_to_db(trade: Trade, id: Option<String>) -> anyhow::Result
 
     Ok(())
 }
+
+pub async fn get_active_years() -> anyhow::Result<Vec<i32>> {
+    let client = db_client().await?;
+
+    let mut years: Vec<i32> = vec![];
+
+    let rows = client
+        .query(
+            "WITH all_dates AS (
+                SELECT MIN(date) AS earliest_date FROM (
+                SELECT date FROM interest
+                UNION ALL
+                SELECT date FROM trades
+                UNION ALL
+                SELECT date FROM fx_conversions
+                UNION ALL
+                SELECT date FROM dividends
+                ) AS all_dates
+            )
+            SELECT 
+            GENERATE_SERIES(EXTRACT(YEAR FROM earliest_date)::INT, EXTRACT(YEAR FROM CURRENT_DATE)::INT) AS years
+            FROM all_dates;
+            ",
+            &[],
+        )
+        .await?;
+
+    for row in rows {
+        let year = row.get::<usize, i32>(0);
+        years.push(year);
+    }
+
+    Ok(years)
+}

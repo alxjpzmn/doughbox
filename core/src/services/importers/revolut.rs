@@ -12,12 +12,10 @@ use crate::{
         queries::{
             composite::add_trade_to_db, dividend::add_dividend_to_db,
             fx_conversion::add_fx_conversion_to_db, listing_change::get_listing_changes,
+            ticker_conversion::get_isin_from_symbol,
         },
     },
-    services::{
-        instruments::{identifiers::get_changed_identifier, ticker_symbols::get_isin_from_symbol},
-        parsers::parse_timestamp,
-    },
+    services::{instruments::identifiers::get_changed_identifier, parsers::parse_timestamp},
 };
 
 #[derive(Debug, Deserialize)]

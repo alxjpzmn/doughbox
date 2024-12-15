@@ -9,4 +9,6 @@ pub mod listing_change;
 pub mod performance;
 pub mod position;
 pub mod stock_split;
+pub mod ticker_conversion;
 pub mod trade;
+

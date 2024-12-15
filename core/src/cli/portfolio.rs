@@ -13,10 +13,10 @@ use crate::{
 };
 
 #[derive(Debug, Tabled, Serialize, Clone)]
-struct FormattedEquityAllocationItem {
+struct StringifiedPositionWithAllocation {
     isin: String,
     name: String,
-    current_value: String,
+    value: String,
     units: String,
     share: String,
 }
@@ -26,12 +26,12 @@ pub async fn portfolio() -> anyhow::Result<()> {
     sp.start();
     let position_overview = get_portfolio_overview().await?;
 
-    let mut formatted_positions_with_allocation: Vec<FormattedEquityAllocationItem> = vec![];
+    let mut formatted_positions_with_allocation: Vec<StringifiedPositionWithAllocation> = vec![];
     for position in position_overview.positions {
-        let item = FormattedEquityAllocationItem {
+        let item = StringifiedPositionWithAllocation {
             isin: position.isin.clone(),
             name: position.name,
-            current_value: format_currency(position.current_value, true),
+            value: format_currency(position.value, true),
             units: position.units.to_string(),
             share: format!("{:.2} %", position.share),
         };

@@ -60,12 +60,12 @@ const Portfolio = () => {
         <BarList
           data={data?.positions
             ?.filter((position: any) => {
-              return position.current_value > 0 ? true : false;
+              return position.value > 0 ? true : false;
             })
             .map((position: any) => {
               return {
                 name: `${position.share.replace('.', ',')}% · ${position.name}`,
-                value: position.current_value,
+                value: position.value,
                 href: `https://duckduckgo.com/?q=${position.isin}`,
               };
             })
