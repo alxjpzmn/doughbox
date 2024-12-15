@@ -5,7 +5,6 @@ use reqwest::Client;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use serde_json::Value;
-use spinners_rs::{Spinner, Spinners};
 
 use crate::{
     database::{
@@ -16,8 +15,6 @@ use crate::{
 };
 
 pub async fn fetch_historic_ecb_rates() -> anyhow::Result<()> {
-    let mut sp = Spinner::new(Spinners::Point, "Fetching historic FX rates from ECB");
-    sp.start();
     let db = db_client().await?;
     let used_currencies = get_used_currencies().await?;
 
@@ -61,7 +58,6 @@ pub async fn fetch_historic_ecb_rates() -> anyhow::Result<()> {
             }
         }
     }
-    sp.stop();
     Ok(())
 }
 

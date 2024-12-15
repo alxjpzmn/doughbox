@@ -1,19 +1,17 @@
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::Serialize;
-use spinners_rs::{Spinner, Spinners};
 use std::collections::BTreeMap;
 use tabled::Tabled;
-use typeshare::typeshare;
 
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 
 use crate::{
-    database::{db_client, queries::fund_report::get_fund_report_by_id},
+    database::queries::{composite::get_active_years, fund_report::get_fund_report_by_id},
     services::market_data::fx_rates::convert_amount,
 };
 
-use super::events::{get_events, TradeDirection};
+use super::events::{get_events, Event, EventType, TradeDirection};
 
 #[derive(Debug, Serialize, Tabled)]
 pub struct AnnualTaxableAmounts {
@@ -93,32 +91,7 @@ pub struct TaxRates {
     pub dividends: Decimal,
 }
 
-#[typeshare]
-#[derive(Debug, Clone, Serialize)]
-pub enum TaxEventType {
-    CashInterest,
-    ShareInterest,
-    Dividend,
-    Trade,
-    FxConversion,
-    DividendAequivalent,
-}
-
-#[typeshare]
-#[derive(Debug, Clone, Serialize)]
-pub struct TaxRelevantEvent {
-    pub date: DateTime<Utc>,
-    pub event_type: TaxEventType,
-    pub currency: String,
-    pub units: Decimal,
-    pub price_unit: Decimal,
-    pub identifier: Option<String>,
-    pub direction: Option<TradeDirection>,
-    pub applied_fx_rate: Option<Decimal>,
-    pub withholding_tax_percent: Option<Decimal>,
-}
-
-pub async fn get_tax_relevant_events(year: i32) -> anyhow::Result<Vec<TaxRelevantEvent>> {
+pub async fn get_tax_relevant_events(year: i32) -> anyhow::Result<Vec<Event>> {
     let year_start_date_str = format!("{}-01-01", year);
     let year_start_timestamp = DateTime::<Utc>::from_naive_utc_and_offset(
         NaiveDate::parse_from_str(&year_start_date_str, "%Y-%m-%d")?
@@ -138,40 +111,6 @@ pub async fn get_tax_relevant_events(year: i32) -> anyhow::Result<Vec<TaxRelevan
     get_events(year_start_timestamp, year_end_timestamp).await
 }
 
-pub async fn get_tax_relevant_years() -> anyhow::Result<Vec<i32>> {
-    let client = db_client().await?;
-
-    let mut years: Vec<i32> = vec![];
-
-    let rows = client
-        .query(
-            "WITH all_dates AS (
-                SELECT MIN(date) AS earliest_date FROM (
-                SELECT date FROM interest
-                UNION ALL
-                SELECT date FROM trades
-                UNION ALL
-                SELECT date FROM fx_conversions
-                UNION ALL
-                SELECT date FROM dividends
-                ) AS all_dates
-            )
-            SELECT 
-            GENERATE_SERIES(EXTRACT(YEAR FROM earliest_date)::INT, EXTRACT(YEAR FROM CURRENT_DATE)::INT) AS years
-            FROM all_dates;
-            ",
-            &[],
-        )
-        .await?;
-
-    for row in rows {
-        let year = row.get::<usize, i32>(0);
-        years.push(year);
-    }
-
-    Ok(years)
-}
-
 pub async fn get_capital_gains_tax_report() -> anyhow::Result<TaxationReport> {
     // Austrian tax rates
     let tax_rates = TaxRates {
@@ -180,10 +119,8 @@ pub async fn get_capital_gains_tax_report() -> anyhow::Result<TaxationReport> {
         dividends: dec!(0.275),
     };
 
-    let mut sp = Spinner::new(Spinners::Point, "Calculating taxes");
-    sp.start();
     // get all years from the first trades until now
-    let tax_relevant_years = get_tax_relevant_years().await?;
+    let tax_relevant_years = get_active_years().await?;
 
     // create hashmap with tax categories for each year
     let mut taxable_amounts = BTreeMap::new();
@@ -212,9 +149,8 @@ pub async fn get_capital_gains_tax_report() -> anyhow::Result<TaxationReport> {
         // get all tax relevant events for the current year, ordered by date
         let tax_relevant_events = get_tax_relevant_events(year).await?;
         for event in tax_relevant_events {
-            println!("Calculating tax for event: {:?}", event);
             match event.event_type {
-                TaxEventType::CashInterest => {
+                EventType::CashInterest => {
                     // ======== CASH INTEREST =========
                     // IF not in EUR, add units to fx pool (basically, you've gotten them for exactly the cost of the
                     // current WAC of said currency, they neither reduce nor increase the currency WAC)
@@ -269,7 +205,7 @@ pub async fn get_capital_gains_tax_report() -> anyhow::Result<TaxationReport> {
                             year.withheld_tax_interest += withheld_tax_eur
                         });
                 }
-                TaxEventType::ShareInterest => {
+                EventType::ShareInterest => {
                     // ======== SHARE LENDING INTEREST =========
                     // for each year, get all interest rate entries (type needs to be shares) for the year, sorted
                     // by date
@@ -327,7 +263,7 @@ pub async fn get_capital_gains_tax_report() -> anyhow::Result<TaxationReport> {
                             year.witheld_tax_dividends += withheld_tax_eur
                         });
                 }
-                TaxEventType::Dividend => {
+                EventType::Dividend => {
                     // ======== DIVIDENDS =========
                     // for each year, get all dividend entries (type needs to be cash) for the year, sorted by date
                     // apply the difference of withholding tax in EUR and 27.5% on those
@@ -383,7 +319,7 @@ pub async fn get_capital_gains_tax_report() -> anyhow::Result<TaxationReport> {
                             year.witheld_tax_dividends += withheld_tax_eur
                         });
                 }
-                TaxEventType::Trade => {
+                EventType::Trade => {
                     // ======== TRADES =========
                     // for each isin:
                     // create or update entry in WAC hashmap (isin: (units: xx.xx, wac: xx.xx))
@@ -575,7 +511,7 @@ pub async fn get_capital_gains_tax_report() -> anyhow::Result<TaxationReport> {
                         }
                     }
                 }
-                TaxEventType::FxConversion => {
+                EventType::FxConversion => {
                     // ======== FX CONVERSIONS ==
                     // for each exchange, update wac and unit count:
                     // on exchange FROM eur, calculate wac + increase unit count
@@ -718,7 +654,7 @@ pub async fn get_capital_gains_tax_report() -> anyhow::Result<TaxationReport> {
                         }
                     }
                 } // ======== DIVIDEND AEQUIVALENTS ==
-                TaxEventType::DividendAequivalent => {
+                EventType::DividendAequivalent => {
                     let full_report =
                         get_fund_report_by_id(event.identifier.unwrap().parse::<i32>().unwrap())
                             .await?;

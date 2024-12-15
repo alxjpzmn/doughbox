@@ -1,25 +1,17 @@
-use std::{println, time::Duration};
+use std::println;
 
 use chrono::{DateTime, Utc};
 use itertools::Itertools;
-use reqwest::Client;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
-use serde::Deserialize;
-use tokio::time::sleep;
 
 use crate::{
     database::queries::{
         composite::get_used_isins,
         stock_split::{add_stock_split_to_db, get_stock_splits},
     },
-    services::{
-        parsers::parse_timestamp,
-        shared::{env::get_env_variable, util::hash_string},
-    },
+    services::market_data::{openfigi::get_symbol_from_isin, polygon::get_stock_split_information},
 };
-
-use super::{fund_data::query_for_oekb_funds_data, ticker_symbols::get_symbol_from_isin};
 
 #[derive(Debug, Clone)]
 pub struct StockSplit {
@@ -30,66 +22,12 @@ pub struct StockSplit {
     pub isin: String,
 }
 
-#[derive(Deserialize, Debug)]
-struct PolygonSplitResponseItem {
-    split_from: Decimal,
-    split_to: Decimal,
-    execution_date: String,
-}
-
-#[derive(Deserialize, Debug)]
-struct PolygonSplitResponse {
-    results: Vec<PolygonSplitResponseItem>,
-}
-
-pub async fn get_stock_split_information(
-    symbol: &str,
-    isin: &str,
-) -> anyhow::Result<Vec<StockSplit>> {
-    // Polygon API is rate limited to 5 requests / minute for free users
-    sleep(Duration::from_millis(12000)).await;
-    let client = Client::new();
-
-    let polygon_key = get_env_variable("POLYGON_TOKEN").unwrap();
-
-    let polygon_response_body = client
-        .get(format!(
-            "https://api.polygon.io/v3/reference/splits?ticker={symbol}&apiKey={polygon_key}"
-        ))
-        .send()
-        .await?
-        .text()
-        .await?;
-
-    let polygon_response_data =
-        serde_json::from_str::<PolygonSplitResponse>(&polygon_response_body)?;
-
-    let mut splits_found = vec![];
-
-    for polygon_response_item in polygon_response_data.results {
-        let stock_split_information = StockSplit {
-            id: hash_string(format!("{}{}", isin, polygon_response_item.execution_date).as_str()),
-            ex_date: parse_timestamp(
-                format!("{} 16:00:00", &polygon_response_item.execution_date).as_str(),
-            )?,
-            from_factor: polygon_response_item.split_from,
-            to_factor: polygon_response_item.split_to,
-            isin: isin.to_string(),
-        };
-        splits_found.push(stock_split_information)
-    }
-
-    Ok(splits_found)
-}
-
 pub async fn update_stock_splits() -> anyhow::Result<()> {
     let existing_splits = get_stock_splits().await?;
     let isins = get_used_isins().await?;
     for isin in isins {
-        query_for_oekb_funds_data(&isin).await?;
         let symbol = get_symbol_from_isin(&isin, None).await?;
         let split_events = get_stock_split_information(&symbol, &isin).await?;
-
         for split_event in split_events {
             let split_event_already_stored = !existing_splits
                 .clone()

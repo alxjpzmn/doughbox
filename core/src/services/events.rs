@@ -17,8 +17,6 @@ use crate::{
     },
 };
 
-use super::taxation::{TaxEventType, TaxRelevantEvent};
-
 #[typeshare]
 #[derive(Debug, Clone, Serialize)]
 pub enum TradeDirection {
@@ -26,10 +24,35 @@ pub enum TradeDirection {
     Sell,
 }
 
+#[typeshare]
+#[derive(Debug, Clone, Serialize)]
+pub enum EventType {
+    CashInterest,
+    ShareInterest,
+    Dividend,
+    Trade,
+    FxConversion,
+    DividendAequivalent,
+}
+
+#[typeshare]
+#[derive(Debug, Clone, Serialize)]
+pub struct Event {
+    pub date: DateTime<Utc>,
+    pub event_type: EventType,
+    pub currency: String,
+    pub units: Decimal,
+    pub price_unit: Decimal,
+    pub identifier: Option<String>,
+    pub direction: Option<TradeDirection>,
+    pub applied_fx_rate: Option<Decimal>,
+    pub withholding_tax_percent: Option<Decimal>,
+}
+
 pub async fn get_events(
     start_date: DateTime<Utc>,
     end_date: DateTime<Utc>,
-) -> anyhow::Result<Vec<TaxRelevantEvent>> {
+) -> anyhow::Result<Vec<Event>> {
     let client = db_client().await?;
 
     let (interest_rows, fund_report_rows, dividend_rows, trade_rows, fx_conversion_rows) = try_join!(
@@ -117,7 +140,7 @@ async fn query_fx_conversions(
         .await?)
 }
 
-fn process_interest_rows(rows: Vec<Row>) -> anyhow::Result<Vec<TaxRelevantEvent>> {
+fn process_interest_rows(rows: Vec<Row>) -> anyhow::Result<Vec<Event>> {
     let mut events = Vec::new();
     for row in rows {
         if row.get::<usize, Decimal>(4) != dec!(0.0)
@@ -130,12 +153,12 @@ fn process_interest_rows(rows: Vec<Row>) -> anyhow::Result<Vec<TaxRelevantEvent>
             )
         }
 
-        let event = TaxRelevantEvent {
+        let event = Event {
             date: row.get(0),
             event_type: if row.get::<usize, String>(3) == "Cash" {
-                TaxEventType::CashInterest
+                EventType::CashInterest
             } else {
-                TaxEventType::ShareInterest
+                EventType::ShareInterest
             },
             identifier: None,
             units: row.get(1),
@@ -153,12 +176,12 @@ fn process_interest_rows(rows: Vec<Row>) -> anyhow::Result<Vec<TaxRelevantEvent>
     Ok(events)
 }
 
-fn process_fund_report_rows(rows: Vec<Row>) -> anyhow::Result<Vec<TaxRelevantEvent>> {
+fn process_fund_report_rows(rows: Vec<Row>) -> anyhow::Result<Vec<Event>> {
     let mut events = Vec::new();
     for row in rows {
-        let event = TaxRelevantEvent {
+        let event = Event {
             date: row.get(0),
-            event_type: TaxEventType::DividendAequivalent,
+            event_type: EventType::DividendAequivalent,
             identifier: Some(row.get::<usize, i32>(1).to_string()),
             units: dec!(1.00),
             price_unit: dec!(1.00),
@@ -172,7 +195,7 @@ fn process_fund_report_rows(rows: Vec<Row>) -> anyhow::Result<Vec<TaxRelevantEve
     Ok(events)
 }
 
-fn process_dividend_rows(rows: Vec<Row>) -> anyhow::Result<Vec<TaxRelevantEvent>> {
+fn process_dividend_rows(rows: Vec<Row>) -> anyhow::Result<Vec<Event>> {
     let mut events = Vec::new();
     for row in rows {
         if row.get::<usize, Decimal>(4) != dec!(0.0)
@@ -184,9 +207,9 @@ fn process_dividend_rows(rows: Vec<Row>) -> anyhow::Result<Vec<TaxRelevantEvent>
                 row.get::<usize, String>(3)
             )
         }
-        let event = TaxRelevantEvent {
+        let event = Event {
             date: row.get(0),
-            event_type: TaxEventType::Dividend,
+            event_type: EventType::Dividend,
             identifier: row.get(3),
             units: row.get(1),
             price_unit: dec!(1.00),
@@ -203,7 +226,7 @@ fn process_dividend_rows(rows: Vec<Row>) -> anyhow::Result<Vec<TaxRelevantEvent>
     Ok(events)
 }
 
-async fn process_trade_rows(rows: Vec<Row>) -> anyhow::Result<Vec<TaxRelevantEvent>> {
+async fn process_trade_rows(rows: Vec<Row>) -> anyhow::Result<Vec<Event>> {
     let mut stock_split_information = get_stock_splits().await?;
     let listing_changes = get_listing_changes().await?;
 
@@ -243,9 +266,9 @@ async fn process_trade_rows(rows: Vec<Row>) -> anyhow::Result<Vec<TaxRelevantEve
             row.get::<usize, Decimal>(8)
         };
 
-        let event = TaxRelevantEvent {
+        let event = Event {
             date: row.get(0),
-            event_type: TaxEventType::Trade,
+            event_type: EventType::Trade,
             identifier: Some(isin),
             units: split_adjusted_units,
             price_unit: split_adjusted_price_per_unit,
@@ -271,12 +294,12 @@ async fn process_trade_rows(rows: Vec<Row>) -> anyhow::Result<Vec<TaxRelevantEve
     Ok(events)
 }
 
-fn process_fx_conversion_rows(rows: Vec<Row>) -> anyhow::Result<Vec<TaxRelevantEvent>> {
+fn process_fx_conversion_rows(rows: Vec<Row>) -> anyhow::Result<Vec<Event>> {
     let mut events = Vec::new();
     for row in rows {
-        let event = TaxRelevantEvent {
+        let event = Event {
             date: row.get(0),
-            event_type: TaxEventType::FxConversion,
+            event_type: EventType::FxConversion,
             currency: row.get(3),
             identifier: Some(format!(
                 "{}{}",

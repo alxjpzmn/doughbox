@@ -4,7 +4,7 @@ use reqwest::Client;
 use serde::Deserialize;
 use tokio::time::sleep;
 
-use crate::{database::db_client, services::parsers::remove_first_and_last};
+use crate::services::parsers::remove_first_and_last;
 
 #[derive(Deserialize, Debug)]
 
@@ -18,23 +18,6 @@ struct OpenFigiResponseItem {
 #[derive(Deserialize, Debug)]
 struct OpenFIGIResponse {
     data: Vec<OpenFigiResponseItem>,
-}
-
-pub async fn get_isin_from_symbol(symbol: &str) -> anyhow::Result<String> {
-    println!("Getting ISIN for symbol {}...", &symbol);
-
-    let client = db_client().await?;
-
-    let statement = format!(
-        "SELECT isin from ticker_conversions where ticker = '{}'",
-        symbol
-    );
-
-    let result = client.query_one(&statement, &[]).await?;
-
-    Ok(result
-        .try_get::<usize, String>(0)
-        .unwrap_or("Unidentified".to_string()))
 }
 
 pub async fn get_symbol_from_isin(isin: &str, exch_code: Option<&str>) -> anyhow::Result<String> {
