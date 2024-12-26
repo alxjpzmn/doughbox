@@ -39,7 +39,7 @@ pub async fn get_positions(
 
     let date = date.unwrap_or_else(Utc::now);
 
-    let mut query = String::from("select isin, direction, no_units from trades where date <= $1");
+    let mut query = String::from("select isin, direction, no_units from trade where date <= $1");
     let mut params: Vec<&(dyn ToSql + Sync)> = vec![&date];
 
     let for_specific_isin = isin.is_some();

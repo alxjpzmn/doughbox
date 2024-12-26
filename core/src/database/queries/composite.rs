@@ -17,9 +17,9 @@ pub async fn get_used_currencies() -> anyhow::Result<Vec<String>> {
 
     let statement: String = "
         select distinct currency from (
-            select to_currency AS currency from fx_conversions
+            select to_currency AS currency from fx_conversion
             union
-            select currency_denomination AS currency from trades
+            select currency_denomination AS currency from trade
             union
             select currency AS currency from interest
         ) as all_currencies"
@@ -39,7 +39,7 @@ pub async fn get_used_currencies() -> anyhow::Result<Vec<String>> {
 pub async fn get_used_isins() -> anyhow::Result<Vec<String>> {
     let client = db_client().await?;
 
-    let statement: String = "select distinct(isin) from trades".to_string();
+    let statement: String = "select distinct(isin) from trade".to_string();
 
     let listing_changes = get_listing_changes().await?;
 
@@ -58,7 +58,7 @@ pub async fn get_used_isins() -> anyhow::Result<Vec<String>> {
 pub async fn get_all_trades(count: Option<i32>) -> anyhow::Result<Vec<Trade>> {
     let client = db_client().await?;
 
-    let mut statement: String = "select * from trades order by date desc".to_string();
+    let mut statement: String = "select * from trade order by date desc".to_string();
 
     statement = match count {
         Some(_) => {
@@ -116,7 +116,7 @@ pub async fn add_trade_to_db(trade: Trade, id: Option<String>) -> anyhow::Result
     };
 
     client.execute(
-        "INSERT INTO trades (hash, date, no_units, avg_price_per_unit, eur_avg_price_per_unit, security_type, direction, currency_denomination, isin, broker, date_added, fees, withholding_tax, witholding_tax_currency) values ($1, $2, $3, $4, $5, $6,$7, $8, $9, $10, $11, $12, $13, $14) ON CONFLICT(hash) DO NOTHING",
+        "INSERT INTO trade (hash, date, no_units, avg_price_per_unit, eur_avg_price_per_unit, security_type, direction, currency_denomination, isin, broker, date_added, fees, withholding_tax, witholding_tax_currency) values ($1, $2, $3, $4, $5, $6,$7, $8, $9, $10, $11, $12, $13, $14) ON CONFLICT(hash) DO NOTHING",
         &[&hash, &trade.date, &trade.no_units, &trade.avg_price_per_unit, &trade.eur_avg_price_per_unit, &trade.security_type, &trade.direction, &trade.currency_denomination, &trade.isin, &trade.broker, &Utc::now(), &trade.fees, &trade.withholding_tax, &trade.witholding_tax_currency],
         )
     .await?;
@@ -168,11 +168,11 @@ pub async fn get_active_years() -> anyhow::Result<Vec<i32>> {
                 SELECT MIN(date) AS earliest_date FROM (
                 SELECT date FROM interest
                 UNION ALL
-                SELECT date FROM trades
+                SELECT date FROM trade
                 UNION ALL
-                SELECT date FROM fx_conversions
+                SELECT date FROM fx_conversion
                 UNION ALL
-                SELECT date FROM dividends
+                SELECT date FROM dividend
                 ) AS all_dates
             )
             SELECT 

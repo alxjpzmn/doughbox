@@ -7,7 +7,7 @@ use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 
 use crate::{
-    database::queries::{composite::get_active_years, fund_report::get_fund_report_by_id},
+    database::queries::{composite::get_active_years, fund_report::get_oekb_fund_report_by_id},
     services::market_data::fx_rates::convert_amount,
 };
 
@@ -655,9 +655,10 @@ pub async fn get_capital_gains_tax_report() -> anyhow::Result<TaxationReport> {
                     }
                 } // ======== DIVIDEND AEQUIVALENTS ==
                 EventType::DividendAequivalent => {
-                    let full_report =
-                        get_fund_report_by_id(event.identifier.unwrap().parse::<i32>().unwrap())
-                            .await?;
+                    let full_report = get_oekb_fund_report_by_id(
+                        event.identifier.unwrap().parse::<i32>().unwrap(),
+                    )
+                    .await?;
 
                     let report_date = &full_report.date.date_naive();
                     let wacs = securities_wacs

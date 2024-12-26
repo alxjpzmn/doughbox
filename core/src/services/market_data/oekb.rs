@@ -3,7 +3,9 @@ use rust_decimal_macros::dec;
 use serde::Deserialize;
 
 use crate::{
-    database::{models::fund_report::FundTaxReport, queries::fund_report::add_fund_report_to_db},
+    database::{
+        models::fund_report::FundTaxReport, queries::fund_report::add_oekb_fund_report_to_db,
+    },
     services::parsers::parse_timestamp,
 };
 
@@ -116,7 +118,7 @@ pub async fn fetch_and_store_oekb_fund_report(isin: &str) -> anyhow::Result<()> 
                     None => println!("No fund type found for id {}", report_item.id),
                 }
             }
-            add_fund_report_to_db(report_to_store).await?;
+            add_oekb_fund_report_to_db(report_to_store).await?;
         }
     } else {
         println!("error while getting oekb funds data: {:?}", response);

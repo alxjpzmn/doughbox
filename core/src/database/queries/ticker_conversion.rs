@@ -6,7 +6,7 @@ pub async fn get_isin_from_symbol(symbol: &str) -> anyhow::Result<String> {
     let client = db_client().await?;
 
     let statement = format!(
-        "SELECT isin from ticker_conversions where ticker = '{}'",
+        "SELECT isin from ticker_conversion where ticker = '{}'",
         symbol
     );
 

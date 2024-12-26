@@ -23,9 +23,9 @@ const PositionPerformanceScatterChart: React.FC<
   useEffect(() => {
     if (!isLoading) {
       setChartData(
-        data?.position_pl?.map((dataPoint: any) => {
+        data?.position?.map((dataPoint: any) => {
           return {
-            roe: dataPoint.return_on_equity,
+            total_return: dataPoint.total_return,
             invested_amount: dataPoint.invested_amount,
             name: dataPoint.name,
           };
@@ -43,8 +43,8 @@ const PositionPerformanceScatterChart: React.FC<
 
   const [largestRoe, setLargestRoe] = useState(0);
   useEffect(() => {
-    const largestRoeItem = (chartData as any)?.map((item: any) => item).sort((a: any, b: any) => parseFloat(a.roe) > parseFloat(b.roe)).pop();
-    setLargestRoe(parseFloat(largestRoeItem?.roe));
+    const largestRoeItem = (chartData as any)?.map((item: any) => item).sort((a: any, b: any) => parseFloat(a.total_return) > parseFloat(b.total_return)).pop();
+    setLargestRoe(parseFloat(largestRoeItem?.total_return));
   }, [chartData])
 
 
@@ -55,7 +55,7 @@ const PositionPerformanceScatterChart: React.FC<
       return (
         <div className="bg-white dark:bg-gray-900 outline-current border border-gray-200 dark:border-gray-800 shadow rounded-lg p-4 text-sm ring-0">
           <p className="font-bold text-gray-700 dark:text-white">{`${payload[0].payload.name}`}</p>
-          <p className="text-gray-500">{`${payload[0].payload.roe}% RoE `}</p>
+          <p className="text-gray-500">{`${payload[0].payload.total_return}% Total Return `}</p>
           <p className="text-gray-500">{`Invested: ${formatCurrency(
             payload[0].payload.invested_amount,
           )}`}</p>
@@ -74,8 +74,8 @@ const PositionPerformanceScatterChart: React.FC<
             <CartesianGrid className="stroke-gray-200 dark:stroke-gray-800" />
             <XAxis
               type="number"
-              dataKey="roe"
-              name="Return"
+              dataKey="total_return"
+              name="Total Return"
               unit="%"
               label={{ fontSize: 14 }}
               tick={{ fontSize: 14 }}
@@ -99,7 +99,7 @@ const PositionPerformanceScatterChart: React.FC<
               {chartData?.map((entry: any, index: any) => (
                 <Cell
                   key={`cell-${index}`}
-                  className={`${entry.roe > 0 ? 'fill-green-500' : 'fill-red-500'}`}
+                  className={`${entry.total_return > 0 ? 'fill-green-500' : 'fill-red-500'}`}
                 />
               ))}
             </Scatter>

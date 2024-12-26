@@ -26,40 +26,59 @@ use super::{
 };
 
 #[derive(Debug, Serialize)]
-pub struct PlOverview {
+pub struct PortfolioPerformance {
     pub generated_at: i64,
-    pub total_actual: Decimal,
-    pub total_simulated_pl: Decimal,
-    pub total_alpha: Decimal,
-    pub position_pl: Vec<MergedPositionPl>,
+    pub actual: Decimal,
+    pub simulated: Decimal,
+    pub alpha: Decimal,
+    pub position: Vec<PositionPerformance>,
+}
+
+// position = trades in the same instrument across multiple brokers
+#[derive(Debug, Serialize, Clone)]
+pub struct PositionPerformance {
+    pub isin: String,
+    pub name: String,
+    pub unrealized: Decimal,
+    pub realized: Decimal,
+    pub performance: Decimal,
+    pub simulated: Decimal,
+    pub alpha: Decimal,
+    pub invested_amount: Decimal,
+    pub total_return: Decimal,
 }
 
 #[derive(Debug, Clone)]
-pub struct PositionPl {
+pub struct TradePerformance {
     pub isin: String,
     pub name: String,
     pub broker: String,
-    pub unrealized_pl: Decimal,
-    pub realized_pl: Decimal,
-    pub pl: Decimal,
-    pub return_on_equity: Decimal,
+    pub unrealized: Decimal,
+    pub realized: Decimal,
+    pub performance: Decimal,
     pub invested_amount: Decimal,
+    pub total_return: Decimal,
 }
 
-#[derive(Debug, Serialize, Clone)]
-pub struct MergedPositionPl {
+// trade group = trades in the same instrument at the same broker
+#[derive(Debug)]
+pub struct TradeGroup {
     pub isin: String,
-    pub name: String,
-    pub unrealized_pl: Decimal,
-    pub realized_pl: Decimal,
-    pub pl: Decimal,
-    pub pl_simulated: Decimal,
-    pub real_vs_sim: Decimal,
-    pub return_on_equity: Decimal,
+    pub broker: String,
+    pub trades: Vec<Trade>,
+}
+
+#[derive(Debug, Tabled)]
+pub struct TradeGroupPerformance {
+    pub isin: String,
+    pub broker: String,
+    pub inventory: Decimal,
+    pub unit_price: Decimal,
+    pub realized: Decimal,
     pub invested_amount: Decimal,
 }
 
-pub async fn get_performance() -> anyhow::Result<PlOverview> {
+pub async fn get_performance() -> anyhow::Result<PortfolioPerformance> {
     let fred_token_set = get_env_variable("FRED_TOKEN").is_some();
 
     let mut trades: Vec<Trade> = get_all_trades(None).await?;
@@ -116,148 +135,131 @@ pub async fn get_performance() -> anyhow::Result<PlOverview> {
         }
     }
 
-    let mut position_pl: Vec<PositionPl> = vec![];
+    let mut trade_performance: Vec<TradePerformance> = vec![];
 
     for title_performance in title_performances {
-        let realized_pl = round_to_decimals(title_performance.realized_profit_eur);
-        let unrealized_pl = if title_performance.units_left > dec!(0.0) {
+        let realized = round_to_decimals(title_performance.realized);
+        let unrealized = if title_performance.inventory > dec!(0.0) {
             round_to_decimals(
                 (get_current_instrument_price(&title_performance.isin).await?
-                    * title_performance.units_left)
-                    - title_performance.average_unit_price * title_performance.units_left,
+                    * title_performance.inventory)
+                    - title_performance.unit_price * title_performance.inventory,
             )
         } else {
             dec!(0.0)
         };
 
-        let pl = round_to_decimals(realized_pl + unrealized_pl);
+        let performance = round_to_decimals(realized + unrealized);
 
-        let performance_item = PositionPl {
+        let performance_item = TradePerformance {
             isin: title_performance.isin.clone(),
             name: get_current_instrument_name(&title_performance.isin.clone()).await?,
             broker: title_performance.broker,
-            unrealized_pl,
-            realized_pl,
-            pl,
-            return_on_equity: round_to_decimals(
-                (pl / title_performance.invested_cash) * dec!(100.0),
+            unrealized,
+            realized,
+            performance,
+            total_return: round_to_decimals(
+                (performance / title_performance.invested_amount) * dec!(100.0),
             ),
-            invested_amount: title_performance.invested_cash,
+            invested_amount: title_performance.invested_amount,
         };
-        position_pl.push(performance_item);
+        trade_performance.push(performance_item);
     }
 
-    position_pl.sort_by(|a, b| a.pl.partial_cmp(&b.pl).unwrap());
+    trade_performance.sort_by(|a, b| a.performance.partial_cmp(&b.performance).unwrap());
 
-    let mut simulated_pl: Vec<PositionPl> = vec![];
+    let mut simulated_trade_performance: Vec<TradePerformance> = vec![];
 
     for simulated_performance in simulated_sp500_title_performances {
-        let realized_pl = round_to_decimals(simulated_performance.realized_profit_eur);
-        let unrealized_pl = if simulated_performance.units_left > dec!(0.0) {
+        let realized = round_to_decimals(simulated_performance.realized);
+        let unrealized = if simulated_performance.inventory > dec!(0.0) {
             round_to_decimals(
                 (get_fred_value_for_date(index_values.as_ref().unwrap(), Utc::now().date_naive())
                     .await?
-                    * simulated_performance.units_left)
-                    - simulated_performance.average_unit_price * simulated_performance.units_left,
+                    * simulated_performance.inventory)
+                    - simulated_performance.unit_price * simulated_performance.inventory,
             )
         } else {
             dec!(0.0)
         };
 
-        let pl = round_to_decimals(realized_pl + unrealized_pl);
+        let performance = round_to_decimals(realized + unrealized);
 
-        let performance_item = PositionPl {
+        let trade_performance = TradePerformance {
             isin: simulated_performance.isin.clone(),
             name: get_current_instrument_name(&simulated_performance.isin.clone()).await?,
             broker: simulated_performance.broker,
-            unrealized_pl,
-            realized_pl,
-            pl,
-            return_on_equity: round_to_decimals(
-                (pl / simulated_performance.invested_cash) * dec!(100.0),
+            unrealized,
+            realized,
+            performance,
+            total_return: round_to_decimals(
+                (performance / simulated_performance.invested_amount) * dec!(100.0),
             ),
-            invested_amount: simulated_performance.invested_cash,
+            invested_amount: simulated_performance.invested_amount,
         };
-        simulated_pl.push(performance_item);
+        simulated_trade_performance.push(trade_performance);
     }
 
-    simulated_pl.sort_by(|a, b| a.pl.partial_cmp(&b.pl).unwrap());
+    simulated_trade_performance.sort_by(|a, b| a.performance.partial_cmp(&b.performance).unwrap());
 
-    let total_actual_pl = &position_pl
+    let total_performance = &trade_performance
         .clone()
         .into_iter()
-        .fold(dec!(0.0), |acc, item| acc + item.pl);
+        .fold(dec!(0.0), |acc, item| acc + item.performance);
 
-    let total_simulated_pl = &simulated_pl
+    let total_simulated_performance = &simulated_trade_performance
         .clone()
         .into_iter()
-        .fold(dec!(0.0), |acc, item| acc + item.pl);
+        .fold(dec!(0.0), |acc, item| acc + item.performance);
 
-    let mut merged_positions: Vec<MergedPositionPl> = vec![];
+    let mut merged_positions: Vec<PositionPerformance> = vec![];
 
-    for item in position_pl.iter() {
+    for item in trade_performance.iter() {
         let simulated_item = match fred_token_set {
-            true => simulated_pl
+            true => simulated_trade_performance
                 .iter()
                 .find(|simulated_item| {
                     simulated_item.broker == item.broker && simulated_item.isin == item.isin
                 })
                 .unwrap(),
-            false => &PositionPl {
+            false => &TradePerformance {
                 isin: "".to_string(),
                 name: "".to_string(),
                 broker: "".to_string(),
-                unrealized_pl: dec!(0),
-                realized_pl: dec!(0),
-                pl: dec!(0),
-                return_on_equity: dec!(0),
+                unrealized: dec!(0),
+                realized: dec!(0),
+                performance: dec!(0),
+                total_return: dec!(0),
                 invested_amount: dec!(0),
             },
         };
 
-        let merged_position_pl = MergedPositionPl {
+        let merged_position_pl = PositionPerformance {
             isin: item.isin.clone(),
             name: item.name.clone(),
-            unrealized_pl: round_to_decimals(item.unrealized_pl),
-            realized_pl: round_to_decimals(item.realized_pl),
-            pl: round_to_decimals(item.pl),
-            pl_simulated: round_to_decimals(simulated_item.pl),
-            real_vs_sim: round_to_decimals(item.pl - simulated_item.pl),
-            return_on_equity: round_to_decimals(item.return_on_equity),
+            unrealized: round_to_decimals(item.unrealized),
+            realized: round_to_decimals(item.realized),
+            performance: round_to_decimals(item.performance),
+            simulated: round_to_decimals(simulated_item.performance),
+            alpha: round_to_decimals(item.performance - simulated_item.performance),
+            total_return: round_to_decimals(item.total_return),
             invested_amount: item.invested_amount,
         };
         merged_positions.push(merged_position_pl);
     }
 
-    let pl_overview = PlOverview {
+    let performance_overview = PortfolioPerformance {
         generated_at: Utc::now().timestamp(),
-        total_actual: round_to_decimals(*total_actual_pl),
-        total_simulated_pl: round_to_decimals(*total_simulated_pl),
-        total_alpha: round_to_decimals(total_actual_pl - total_simulated_pl),
-        position_pl: merged_positions.clone(),
+        actual: round_to_decimals(*total_performance),
+        simulated: round_to_decimals(*total_simulated_performance),
+        alpha: round_to_decimals(total_performance - total_simulated_performance),
+        position: merged_positions.clone(),
     };
 
-    export_csv(&merged_positions, "pl")?;
-    export_json(&pl_overview, "pl")?;
+    export_csv(&merged_positions, "performance")?;
+    export_json(&performance_overview, "performance")?;
 
-    Ok(pl_overview)
-}
-
-#[derive(Debug)]
-pub struct TradeGroup {
-    pub isin: String,
-    pub broker: String,
-    pub trades: Vec<Trade>,
-}
-
-#[derive(Debug, Tabled)]
-pub struct TradeGroupPerformance {
-    pub isin: String,
-    pub broker: String,
-    pub units_left: Decimal,
-    pub average_unit_price: Decimal,
-    pub realized_profit_eur: Decimal,
-    pub invested_cash: Decimal,
+    Ok(performance_overview)
 }
 
 pub fn get_title_performance(
@@ -272,10 +274,10 @@ pub fn get_title_performance(
         .iter()
         .filter(|item| item.date.timestamp_millis() < date_until.timestamp_millis());
 
-    let mut held_units = dec!(0.0);
+    let mut inventory = dec!(0.0);
     let mut purchase_value = dec!(0.0);
-    let mut pnl = dec!(0.0);
-    let mut invested_cash = dec!(0.0);
+    let mut realized = dec!(0.0);
+    let mut invested_amount = dec!(0.0);
 
     let queue_len = &queue.clone().count();
 
@@ -288,14 +290,14 @@ pub fn get_title_performance(
         );
 
         if trade.direction == "Buy" {
-            held_units += split_adjusted_units;
+            inventory += split_adjusted_units;
             purchase_value += get_split_adjusted_price_per_unit(
                 &trade.isin,
                 trade.eur_avg_price_per_unit,
                 trade.date,
                 stock_split_information,
             ) * split_adjusted_units;
-            invested_cash += get_split_adjusted_price_per_unit(
+            invested_amount += get_split_adjusted_price_per_unit(
                 &trade.isin,
                 trade.eur_avg_price_per_unit,
                 trade.date,
@@ -303,13 +305,13 @@ pub fn get_title_performance(
             ) * split_adjusted_units;
         }
         if trade.direction == "Sell" {
-            if held_units == dec!(0) {
+            if inventory == dec!(0) {
                 panic!(
                     "ISIN {} has no units in the portfolio at the point of sell event.",
                     trade.isin
                 )
             }
-            let avg_purchase_price = purchase_value / held_units;
+            let avg_purchase_price = purchase_value / inventory;
             let actual_sell_price = get_split_adjusted_price_per_unit(
                 &trade.isin,
                 trade.eur_avg_price_per_unit,
@@ -319,13 +321,13 @@ pub fn get_title_performance(
 
             let realized_pnl_for_trade =
                 (actual_sell_price - avg_purchase_price) * split_adjusted_units;
-            pnl += realized_pnl_for_trade;
-            held_units -= split_adjusted_units;
+            realized += realized_pnl_for_trade;
+            inventory -= split_adjusted_units;
             purchase_value -= avg_purchase_price * split_adjusted_units;
-            invested_cash -= if !position_size_over_threshold(held_units) && queue_len != &(&i + 1)
+            invested_amount -= if !position_size_over_threshold(inventory) && queue_len != &(&i + 1)
             {
                 realized_pnl_for_trade + avg_purchase_price * split_adjusted_units
-            } else if position_size_over_threshold(held_units) && queue_len == &(&i + 1) {
+            } else if position_size_over_threshold(inventory) && queue_len == &(&i + 1) {
                 realized_pnl_for_trade
             } else {
                 dec!(0.0)
@@ -333,19 +335,19 @@ pub fn get_title_performance(
         };
     }
 
-    held_units = override_positions_below_threshold(held_units);
+    inventory = override_positions_below_threshold(inventory);
 
     TradeGroupPerformance {
         isin: trade_group.isin.to_string(),
         broker: trade_group.broker.to_string(),
-        units_left: held_units,
-        average_unit_price: if held_units > dec!(0.0) {
-            purchase_value / held_units
+        inventory,
+        unit_price: if inventory > dec!(0.0) {
+            purchase_value / inventory
         } else {
             dec!(0.0)
         },
-        realized_profit_eur: pnl,
-        invested_cash,
+        realized,
+        invested_amount,
     }
 }
 
@@ -408,60 +410,60 @@ pub async fn simulate_alternate_purchase(
             queue_with_overrides.push(trade_with_index_overrides);
         }
 
+        let mut inventory = dec!(0.0);
         let mut real_held_units = dec!(0.0);
-        let mut held_units = dec!(0.0);
         let mut purchase_value = dec!(0.0);
-        let mut pnl = dec!(0.0);
-        let mut invested_cash = dec!(0.0);
+        let mut realized = dec!(0.0);
+        let mut invested_amount = dec!(0.0);
 
         let queue_len = &queue_with_overrides.iter().clone().count();
 
         for (i, trade) in queue_with_overrides.iter().enumerate() {
             if trade.direction == "Buy" {
-                held_units += trade.no_units;
+                inventory += trade.no_units;
                 real_held_units += queue_without_overrides.clone().collect_vec()[i].no_units;
                 purchase_value += trade.eur_avg_price_per_unit * trade.no_units;
-                invested_cash += trade.eur_avg_price_per_unit * trade.no_units;
+                invested_amount += trade.eur_avg_price_per_unit * trade.no_units;
             }
 
             if trade.direction == "Sell" {
                 let share_of_accrued_position =
                     queue_without_overrides.clone().collect_vec()[i].no_units / real_held_units;
 
-                let normalized_unit_count = share_of_accrued_position * held_units;
+                let normalized_unit_count = share_of_accrued_position * inventory;
 
-                let avg_purchase_price = purchase_value / held_units;
+                let avg_purchase_price = purchase_value / inventory;
                 let actual_sell_price = trade.eur_avg_price_per_unit;
 
-                let realized_pnl_for_trade =
+                let realized_for_trade =
                     (actual_sell_price - avg_purchase_price) * normalized_unit_count;
-                pnl += realized_pnl_for_trade;
-                held_units -= normalized_unit_count;
+                realized += realized_for_trade;
+                inventory -= normalized_unit_count;
                 real_held_units -= queue_without_overrides.clone().collect_vec()[i].no_units;
                 purchase_value -= avg_purchase_price * normalized_unit_count;
-                invested_cash -=
-                    if !position_size_over_threshold(held_units) && queue_len != &(&i + 1) {
-                        realized_pnl_for_trade + avg_purchase_price * normalized_unit_count
-                    } else if position_size_over_threshold(held_units) && queue_len == &(&i + 1) {
-                        realized_pnl_for_trade
+                invested_amount -=
+                    if !position_size_over_threshold(inventory) && queue_len != &(&i + 1) {
+                        realized_for_trade + avg_purchase_price * normalized_unit_count
+                    } else if position_size_over_threshold(inventory) && queue_len == &(&i + 1) {
+                        realized_for_trade
                     } else {
                         dec!(0.0)
                     }
             };
         }
-        held_units = override_positions_below_threshold(held_units);
+        inventory = override_positions_below_threshold(inventory);
 
         Ok(Some(TradeGroupPerformance {
             isin: trade_group_for_simulation.isin.to_string(),
             broker: trade_group_for_simulation.broker.to_string(),
-            units_left: held_units,
-            average_unit_price: if held_units > dec!(0.0) {
-                purchase_value / held_units
+            inventory,
+            unit_price: if inventory > dec!(0.0) {
+                purchase_value / inventory
             } else {
                 dec!(0.0)
             },
-            realized_profit_eur: pnl,
-            invested_cash,
+            realized,
+            invested_amount,
         }))
     } else {
         Ok(None)

@@ -108,7 +108,7 @@ pub async fn portfolio() -> anyhow::Result<impl IntoResponse, StatusCode> {
 }
 
 pub async fn performance() -> anyhow::Result<impl IntoResponse, StatusCode> {
-    let path = format!("{}/pl.json", OUT_DIR);
+    let path = format!("{}/performance.json", OUT_DIR);
     let data = fs::read_to_string(path).await.expect("Unable to read file");
     let mut headers = HeaderMap::new();
     headers.insert("Content-Type", "application/json".parse().unwrap());
