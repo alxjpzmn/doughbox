@@ -1,9 +1,7 @@
-use std::{println, time::Duration};
-
-use chrono::{DateTime, Utc};
 use reqwest::Client;
 use rust_decimal::Decimal;
 use serde::Deserialize;
+use std::time::Duration;
 use tokio::time::sleep;
 
 use crate::services::{

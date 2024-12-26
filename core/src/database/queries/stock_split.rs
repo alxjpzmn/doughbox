@@ -7,7 +7,7 @@ pub async fn add_stock_split_to_db(stock_split: StockSplit) -> anyhow::Result<()
     let client = db_client().await?;
 
     client.execute(
-            "INSERT INTO stock_splits (id, ex_date, from_factor, to_factor, isin, date_added) values ($1, $2, $3, $4, $5, $6) ON CONFLICT(id) DO NOTHING",
+            "INSERT INTO stock_split (id, ex_date, from_factor, to_factor, isin, date_added) values ($1, $2, $3, $4, $5, $6) ON CONFLICT(id) DO NOTHING",
             &[&stock_split.id, &stock_split.ex_date, &stock_split.from_factor, &stock_split.to_factor, &stock_split.isin, &Utc::now()],
         )
     .await?;
@@ -18,7 +18,7 @@ pub async fn add_stock_split_to_db(stock_split: StockSplit) -> anyhow::Result<()
 pub async fn get_stock_splits() -> anyhow::Result<Vec<StockSplit>> {
     let client = db_client().await?;
 
-    let rows = client.query(r#"select * from stock_splits"#, &[]).await?;
+    let rows = client.query(r#"select * from stock_split"#, &[]).await?;
 
     let mut stock_splits: Vec<StockSplit> = vec![];
 

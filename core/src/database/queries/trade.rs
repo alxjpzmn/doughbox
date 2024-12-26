@@ -11,7 +11,7 @@ pub async fn get_total_sell_value() -> anyhow::Result<Decimal> {
 
     let result = client
         .query_one(
-            "select SUM(t.eur_avg_price_per_unit * t.no_units) from trades t where direction = 'Sell'",
+            "select SUM(t.eur_avg_price_per_unit * t.no_units) from trade t where direction = 'Sell'",
             &[],
         )
         .await?;
@@ -26,7 +26,7 @@ pub async fn find_similar_trade(trade: &Trade) -> anyhow::Result<Option<TradeWit
         SELECT broker, date, isin, avg_price_per_unit, eur_avg_price_per_unit, no_units, 
                direction, security_type, currency_denomination, date_added, fees, 
                withholding_tax, witholding_tax_currency, hash
-        FROM trades
+        FROM trade
         WHERE isin = $1 AND date = $2 AND no_units = $3 AND avg_price_per_unit = $4
     "#;
 
@@ -72,7 +72,7 @@ pub async fn get_total_invested_value() -> anyhow::Result<Decimal> {
 
     let result = client
         .query_one(
-            "select SUM(t.eur_avg_price_per_unit * t.no_units) from trades t where direction = 'Buy'",
+            "select SUM(t.eur_avg_price_per_unit * t.no_units) from trade t where direction = 'Buy'",
             &[],
         )
         .await?;

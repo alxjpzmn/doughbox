@@ -27,8 +27,8 @@ import { Label } from "@/components/Label";
 
 
 type sortByMethods =
-  | "ascRoe"
-  | "descRoe"
+  | "ascTotalReturn"
+  | "descTotalReturn"
   | "ascRealized"
   | "descRealized"
   | "ascUnrealized"
@@ -41,49 +41,53 @@ const Performance = ({ }) => {
 
   const sorting = (method: sortByMethods) => {
     switch (method) {
-      case "ascRoe":
-        return (a: any, b: any) => a.return_on_equity - b.return_on_equity;
-      case "descRoe":
-        return (a: any, b: any) => b.return_on_equity - a.return_on_equity;
+      case "ascTotalReturn":
+        return (a: any, b: any) => a.total_return - b.total_return;
+      case "descTotalReturn":
+        return (a: any, b: any) => b.total_return - a.total_return;
       case "ascRealized":
-        return (a: any, b: any) => a.realized_pl - b.realized_pl;
+        return (a: any, b: any) => a.realized - b.realized;
       case "descRealized":
-        return (a: any, b: any) => b.realized_pl - a.realized_pl;
+        return (a: any, b: any) => b.realized - a.realized;
       case "ascUnrealized":
-        return (a: any, b: any) => a.unrealized_pl - b.unrealized_pl;
+        return (a: any, b: any) => a.unrealized - b.unrealized;
       case "descUnrealized":
-        return (a: any, b: any) => b.unrealized_pl - a.unrealized_pl;
+        return (a: any, b: any) => b.unrealized - a.unrealized;
       case "ascAlpha":
-        return (a: any, b: any) => a.real_vs_sim - b.real_vs_sim;
+        return (a: any, b: any) => a.alpha - b.alpha;
       case "descAlpha":
-        return (a: any, b: any) => b.real_vs_sim - a.real_vs_sim;
+        return (a: any, b: any) => b.alpha - a.alpha;
       default:
         return null;
     }
   };
 
-  const [sortBy, setSortBy] = useState<sortByMethods>("ascRoe");
+  const [sortBy, setSortBy] = useState<sortByMethods>("ascTotalReturn");
   const [showOnlyActivePositions, setShowOnlyActivePositions] = useState(false);
   const [positions, setPositions] = useState([]);
 
   useEffect(() => {
     if (!isLoading) {
       setPositions(
-        data?.position_pl
-          ?.filter((item: any) => {
+        data?.position
+          .map((position: any) => {
+            return {
+              key: `${position.isin}-${position.total_return}`,
+              unrealized: parseFloat(position.unrealized),
+              realized: parseFloat(position.realized),
+              total_return: parseFloat(position.total_return),
+              alpha: parseFloat(position.alpha),
+              name: position.name
+            };
+          })
+          ?.filter((position: any) => {
             if (showOnlyActivePositions) {
-              return parseFloat(item.unrealized_pl) !== 0;
+              return position.unrealized !== 0;
             } else {
               return true;
             }
           })
           .sort(sorting(sortBy))
-          .map((position: any) => {
-            return {
-              key: `${position.isin}-${position.return_on_equity}`,
-              ...position,
-            };
-          }),
       );
     }
   }, [data, sortBy, isLoading, showOnlyActivePositions]);
@@ -93,7 +97,7 @@ const Performance = ({ }) => {
       <Card className="grid grid-cols-1 gap-2">
         <Flex className="justify-between items-baseline truncate">
           <Text>Performance</Text>
-          <Text>Total alpha: {formatCurrency(data?.total_alpha)}</Text>
+          <Text>Total alpha: {formatCurrency(data?.alpha)}</Text>
         </Flex>
         <PerformanceChart />
         <Flex className="justify-between items-baseline truncate">
@@ -111,32 +115,32 @@ const Performance = ({ }) => {
       <Card className="mt-6">
         <Flex className="flex-col md:flex flex-wrap justify-between items-baseline gap-4">
           <Text className="flex-grow">Individiual Performance</Text>
-          <Flex className="flex md:justify-between">
+          <Flex className="flex md:justify-between gap-16">
             <Select
               value={undefined}
               defaultValue={sortBy}
               onValueChange={setSortBy as any}
               placeholder="Sort by..."
-              className="max-w-min mt-0"
+              className="max-w-full"
             >
-              <SelectItem value="ascRoe">RoE Ascending</SelectItem>
-              <SelectItem value="descRoe">RoE Descending</SelectItem>
+              <SelectItem value="ascTotalReturn">Return Ascending</SelectItem>
+              <SelectItem value="descTotalReturn">Return Descending</SelectItem>
               <SelectItem value="ascRealized">
-                Realized P/L Ascending
+                Realized Ascending
               </SelectItem>
               <SelectItem value="descRealized">
-                Realized P/L Descending
+                Realized Descending
               </SelectItem>
               <SelectItem value="ascUnrealized">
-                Unrealized P/L Ascending
+                Unrealized Ascending
               </SelectItem>
               <SelectItem value="descUnrealized">
-                Unrealized P/L Descending
+                Unrealized Descending
               </SelectItem>
               <SelectItem value="ascAlpha">Alpha Ascending</SelectItem>
               <SelectItem value="descAlpha">Alpha Descending</SelectItem>
             </Select>
-            <div className="flex items-center justify-center gap-2">
+            <div className="flex items-center justify-center gap-2 min-w-max">
               <Switch id="r1" checked={showOnlyActivePositions} onCheckedChange={() => setShowOnlyActivePositions(!showOnlyActivePositions)} />
               <Label htmlFor="r1">Active only</Label>
             </div>
@@ -147,7 +151,7 @@ const Performance = ({ }) => {
             <TableHead>
               <TableRow>
                 <TableHeaderCell>Name</TableHeaderCell>
-                <TableHeaderCell>RoE</TableHeaderCell>
+                <TableHeaderCell>Total Return</TableHeaderCell>
                 <TableHeaderCell>Realized</TableHeaderCell>
                 <TableHeaderCell>Unrealized</TableHeaderCell>
                 <TableHeaderCell>Alpha</TableHeaderCell>
@@ -169,53 +173,53 @@ const Performance = ({ }) => {
                   <TableCell>
                     <Text
                       color={
-                        item.return_on_equity === 0
+                        item.total_return === 0
                           ? "gray"
-                          : item.return_on_equity < 0
+                          : item.total_return < 0
                             ? "red"
                             : "green"
                       }
                     >
-                      {formatRelativeAmount(item.return_on_equity)}
+                      {formatRelativeAmount(item.total_return)}
                     </Text>
                   </TableCell>
                   <TableCell>
                     <Text
                       color={
-                        item.realized_pl === 0
+                        item.realized === 0
                           ? "gray"
-                          : item.realized_pl < 0
+                          : item.realized < 0
                             ? "red"
                             : "green"
                       }
                     >
-                      {formatCurrency(item.realized_pl)}
+                      {formatCurrency(item.realized)}
                     </Text>
                   </TableCell>
                   <TableCell>
                     <Text
                       color={
-                        item.unrealized_pl === 0
+                        item.unrealized === 0
                           ? "gray"
-                          : item.unrealized_pl < 0
+                          : item.unrealized < 0
                             ? "red"
                             : "green"
                       }
                     >
-                      {formatCurrency(item.unrealized_pl)}
+                      {formatCurrency(item.unrealized)}
                     </Text>
                   </TableCell>
                   <TableCell>
                     <Text
                       color={
-                        item.real_vs_sim === 0
+                        item.alpha === 0
                           ? "gray"
-                          : item.real_vs_sim < 0
+                          : item.alpha < 0
                             ? "red"
                             : "green"
                       }
                     >
-                      {formatCurrency(item.real_vs_sim)}
+                      {formatCurrency(item.alpha)}
                     </Text>
                   </TableCell>
                 </TableRow>

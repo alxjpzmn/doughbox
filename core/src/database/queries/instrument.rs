@@ -6,7 +6,7 @@ pub async fn get_instrument_by_id(id: &str) -> anyhow::Result<Option<Instrument>
     let client = db_client().await?;
 
     let row = client
-        .query_opt("SELECT * FROM instruments WHERE id = $1", &[&id])
+        .query_opt("SELECT * FROM instrument WHERE id = $1", &[&id])
         .await?;
 
     match row {
@@ -19,7 +19,7 @@ pub async fn update_instrument_price(instrument: Instrument) -> anyhow::Result<(
     let client = db_client().await?;
 
     let query = "
-        INSERT INTO instruments (id, last_price_update, price, name)
+        INSERT INTO instrument (id, last_price_update, price, name)
         VALUES ($1, $2, $3, $4)
         ON CONFLICT (id) DO UPDATE
         SET price = EXCLUDED.price,

@@ -4,6 +4,8 @@ import { BASE_URL, fetcher, formatCurrency, formatDate } from "@/util";
 
 const Taxation = () => {
   const { data } = useSwr(`${BASE_URL}/taxation`, fetcher);
+  console.log(data);
+
 
   return (
     <div>
@@ -13,7 +15,7 @@ const Taxation = () => {
             Report from {formatDate(new Date(data?.created_at))}
           </Text>
           <Grid className="grid-col-1 gap-4">
-            {Object.entries(data?.data).map(([year, taxItems]) => (
+            {Object.entries(data?.taxable_amounts ?? []).map(([year, taxItems]) => (
               <Card key={year}>
                 <Title>{year}</Title>
                 <List>

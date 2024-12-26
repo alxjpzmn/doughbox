@@ -82,7 +82,7 @@ async fn query_interest(
 ) -> anyhow::Result<Vec<Row>> {
     Ok(client
         .query(
-            "SELECT date, amount, currency, principal, withholding_tax, witholding_tax_currency, amount_eur FROM interest WHERE date >= $1 AND date < $2",
+            "select date, amount, currency, principal, withholding_tax, witholding_tax_currency, amount_eur FROM interest WHERE date >= $1 AND date < $2",
             &[start_date, end_date],
         )
         .await?)
@@ -95,7 +95,7 @@ async fn query_fund_reports(
 ) -> anyhow::Result<Vec<Row>> {
     Ok(client
         .query(
-            "SELECT date, id, currency FROM fund_reports WHERE date >= $1 AND date < $2",
+            "select date, id, currency FROM fund_report_oekb WHERE date >= $1 AND date < $2",
             &[start_date, end_date],
         )
         .await?)
@@ -108,7 +108,7 @@ async fn query_dividends(
 ) -> anyhow::Result<Vec<Row>> {
     Ok(client
         .query(
-            "SELECT date, amount, currency, isin, withholding_tax, witholding_tax_currency, amount_eur FROM dividends WHERE date >= $1 AND date < $2",
+            "select date, amount, currency, isin, withholding_tax, witholding_tax_currency, amount_eur FROM dividend WHERE date >= $1 AND date < $2",
             &[start_date, end_date],
         )
         .await?)
@@ -121,7 +121,7 @@ async fn query_trades(
 ) -> anyhow::Result<Vec<Row>> {
     Ok(client
         .query(
-            "SELECT date, no_units, avg_price_per_unit, currency_denomination, isin, direction, withholding_tax, witholding_tax_currency, eur_avg_price_per_unit FROM trades WHERE date >= $1 AND date < $2",
+            "select date, no_units, avg_price_per_unit, currency_denomination, isin, direction, withholding_tax, witholding_tax_currency, eur_avg_price_per_unit FROM trade WHERE date >= $1 AND date < $2",
             &[start_date, end_date],
         )
         .await?)
@@ -134,7 +134,7 @@ async fn query_fx_conversions(
 ) -> anyhow::Result<Vec<Row>> {
     Ok(client
         .query(
-            "SELECT date, from_amount, to_amount, from_currency, to_currency FROM fx_conversions WHERE date >= $1 AND date < $2",
+            "select date, from_amount, to_amount, from_currency, to_currency FROM fx_conversion WHERE date >= $1 AND date < $2",
             &[start_date, end_date],
         )
         .await?)
