@@ -5,84 +5,86 @@
 export interface Dividend {
 	isin: string;
 	date: Date;
-	amount: number;
+	amount: string;
 	broker: string;
 	currency: string;
-	amount_eur: number;
-	withholding_tax: number;
+	amount_eur: string;
+	withholding_tax: string;
 	witholding_tax_currency: string;
 }
 
 export interface PerformanceSignal {
 	date: Date;
-	total_value: number;
-	total_invested: number;
+	total_value: string;
+	total_invested: string;
 }
 
 export interface Position {
 	isin: string;
-	units: number;
+	units: string;
 }
 
 export interface PositionWithValueAndAllocation {
 	isin: string;
 	name: string;
-	value: number;
-	units: number;
-	share: number;
+	value: string;
+	units: string;
+	share: string;
 }
 
 export interface PortfolioEvent {
 	date: Date;
 	event_type: EventType;
 	currency: string;
-	units: number;
-	price_unit: number;
+	units: string;
+	price_unit: string;
 	identifier?: string;
 	direction?: TradeDirection;
-	applied_fx_rate?: number;
-	withholding_tax_percent?: number;
+	applied_fx_rate?: string;
+	withholding_tax_percent?: string;
+	total: string;
+	broker: string;
 }
 
 export interface PortfolioPerformance {
 	generated_at: number;
-	actual: number;
-	simulated: number;
-	alpha: number;
+	actual: string;
+	simulated: string;
+	alpha: string;
 	position: PositionPerformance[];
 }
 
 export interface PositionPerformance {
 	isin: string;
 	name: string;
-	unrealized: number;
-	realized: number;
-	performance: number;
-	simulated: number;
-	alpha: number;
-	invested_amount: number;
-	total_return: number;
+	unrealized: string;
+	realized: string;
+	performance: string;
+	simulated: string;
+	alpha: string;
+	invested_amount: string;
+	total_return: string;
 }
 
 export interface PortfolioOverview {
 	generated_at: number;
-	total_value: number;
-	realized: number;
-	total_return_abs: number;
-	total_return_rel: number;
+	total_value: string;
+	realized: string;
+	total_return_abs: string;
+	total_return_rel: string;
 	positions: PositionWithValueAndAllocation[];
 }
 
 export interface AnnualTaxableAmounts {
-	cashInterest: number;
-	shareLendingInterest: number;
-	capitalGains: number;
-	capitalLosses: number;
-	dividends: number;
-	fxAppreciation: number;
-	witheldTaxDividends: number;
-	withheldTaxInterest: number;
-	dividendAequivalents: number;
+	cashInterest: string;
+	shareLendingInterest: string;
+	capitalGains: string;
+	capitalLosses: string;
+	dividends: string;
+	fxAppreciation: string;
+	witheldTaxDividends: string;
+	withheldTaxInterest: string;
+	dividendAequivalents: string;
 }
 
 export interface TaxationReport {
@@ -93,14 +95,14 @@ export interface TaxationReport {
 }
 
 export interface Wac {
-	units: number;
-	average_cost: number;
+	units: string;
+	average_cost: string;
 }
 
 export interface SecWac {
-	units: number;
-	average_cost: number;
-	weighted_avg_fx_rate: number;
+	units: string;
+	average_cost: string;
+	weighted_avg_fx_rate: string;
 }
 
 export enum TradeDirection {

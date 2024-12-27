@@ -47,7 +47,7 @@ const PositionPerformanceScatterChart: React.FC = () => {
         <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 shadow rounded-lg p-4 text-sm">
           <p className="font-bold text-gray-700 dark:text-white">{name}</p>
           <p className="text-gray-500">{`${total_return}% Total Return`}</p>
-          <p className="text-gray-500">{`Invested: ${formatCurrency(invested_amount)}`}</p>
+          <p className="text-gray-500">{`${formatCurrency(invested_amount)} Invested`}</p>
         </div>
       );
     }

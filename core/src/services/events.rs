@@ -47,6 +47,8 @@ pub struct PortfolioEvent {
     pub direction: Option<TradeDirection>,
     pub applied_fx_rate: Option<Decimal>,
     pub withholding_tax_percent: Option<Decimal>,
+    pub total: Decimal,
+    pub broker: String,
 }
 
 pub async fn get_events(
@@ -82,7 +84,7 @@ async fn query_interest(
 ) -> anyhow::Result<Vec<Row>> {
     Ok(client
         .query(
-            "select date, amount, currency, principal, withholding_tax, witholding_tax_currency, amount_eur FROM interest WHERE date >= $1 AND date < $2",
+            "select date, amount, currency, principal, withholding_tax, witholding_tax_currency, amount_eur, broker FROM interest WHERE date >= $1 AND date < $2",
             &[start_date, end_date],
         )
         .await?)
@@ -108,7 +110,7 @@ async fn query_dividends(
 ) -> anyhow::Result<Vec<Row>> {
     Ok(client
         .query(
-            "select date, amount, currency, isin, withholding_tax, witholding_tax_currency, amount_eur FROM dividend WHERE date >= $1 AND date < $2",
+            "select date, amount, currency, isin, withholding_tax, witholding_tax_currency, amount_eur, broker FROM dividend WHERE date >= $1 AND date < $2",
             &[start_date, end_date],
         )
         .await?)
@@ -121,7 +123,7 @@ async fn query_trades(
 ) -> anyhow::Result<Vec<Row>> {
     Ok(client
         .query(
-            "select date, no_units, avg_price_per_unit, currency_denomination, isin, direction, withholding_tax, witholding_tax_currency, eur_avg_price_per_unit FROM trade WHERE date >= $1 AND date < $2",
+            "select date, no_units, avg_price_per_unit, currency_denomination, isin, direction, withholding_tax, witholding_tax_currency, eur_avg_price_per_unit, broker FROM trade WHERE date >= $1 AND date < $2",
             &[start_date, end_date],
         )
         .await?)
@@ -134,7 +136,7 @@ async fn query_fx_conversions(
 ) -> anyhow::Result<Vec<Row>> {
     Ok(client
         .query(
-            "select date, from_amount, to_amount, from_currency, to_currency FROM fx_conversion WHERE date >= $1 AND date < $2",
+            "select date, from_amount, to_amount, from_currency, to_currency, broker FROM fx_conversion WHERE date >= $1 AND date < $2",
             &[start_date, end_date],
         )
         .await?)
@@ -170,6 +172,8 @@ fn process_interest_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent>> 
                 row.get::<usize, Option<Decimal>>(4).unwrap_or(dec!(0.0))
                     / row.get::<usize, Decimal>(1),
             ),
+            total: row.get(1),
+            broker: row.get::<usize, String>(7),
         };
         events.push(event);
     }
@@ -189,6 +193,8 @@ fn process_fund_report_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent
             direction: None,
             applied_fx_rate: None,
             withholding_tax_percent: None,
+            total: dec!(1.00),
+            broker: "OeKB Fund Report".to_string(),
         };
         events.push(event);
     }
@@ -220,6 +226,8 @@ fn process_dividend_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent>> 
                 row.get::<usize, Option<Decimal>>(4).unwrap_or(dec!(0.0))
                     / row.get::<usize, Decimal>(1),
             ),
+            total: row.get::<usize, Decimal>(6),
+            broker: row.get::<usize, String>(7),
         };
         events.push(event);
     }
@@ -288,6 +296,8 @@ async fn process_trade_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent
                             row.get::<usize, Decimal>(2)
                         }),
             ),
+            total: split_adjusted_units * split_adjusted_price_per_unit,
+            broker: row.get::<usize, String>(9),
         };
         events.push(event);
     }
@@ -315,6 +325,9 @@ fn process_fx_conversion_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEve
             units: row.get(1),
             price_unit: row.get::<usize, Decimal>(2) / row.get::<usize, Decimal>(1),
             withholding_tax_percent: None,
+            total: row.get::<usize, Decimal>(1) * row.get::<usize, Decimal>(2)
+                / row.get::<usize, Decimal>(1),
+            broker: row.get::<usize, String>(5),
         };
         events.push(event);
     }

@@ -1,7 +1,7 @@
 use spinners_rs::{Spinner, Spinners};
 use tabled::Table;
 
-use crate::services::{files::export_json, taxation::get_capital_gains_tax_report};
+use crate::services::taxation::get_capital_gains_tax_report;
 
 pub async fn calculate_taxes() -> anyhow::Result<()> {
     let mut sp = Spinner::new(Spinners::Point, "Calculating taxes");
@@ -10,8 +10,6 @@ pub async fn calculate_taxes() -> anyhow::Result<()> {
     let taxation_report = get_capital_gains_tax_report().await?;
 
     let taxable_amounts_table = Table::new(&taxation_report.taxable_amounts).to_string();
-
-    export_json(&taxation_report, "taxation")?;
 
     sp.stop();
     println!("Taxable amounts:");

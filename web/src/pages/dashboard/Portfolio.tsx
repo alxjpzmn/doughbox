@@ -26,12 +26,12 @@ const Portfolio = () => {
 
   let overviewData = {
     title: 'Current Portfolio Value',
-    metric: `${formatCurrency(isLoading || !data ? 0 : data.total_value)}`,
+    metric: `${formatCurrency(isLoading || !data ? 0 : parseFloat(data.total_value))}`,
     metricPrev: `${formatCurrency(
-      isLoading || !data ? 0 : data?.total_return_abs
+      isLoading || !data ? 0 : parseFloat(data?.total_return_abs)
     )}`,
     delta: `${isLoading || !data ? '0,00%' : `${data.total_return_rel}%`}`,
-    deltaType: (isLoading || !data) ? 'unchanged' : getDeltaType((data as any)?.total_return_abs),
+    deltaType: (isLoading || !data) ? 'unchanged' : getDeltaType(parseFloat(data?.total_return_abs)),
     updatedAt: (isLoading || !data) ? new Date() : data.generated_at,
   };
 
@@ -64,7 +64,7 @@ const Portfolio = () => {
               .map((position: PositionWithValueAndAllocation) => {
                 return {
                   name: `${position.share}% · ${position.name}`,
-                  value: position.value,
+                  value: parseFloat(position.value),
                   href: `https://duckduckgo.com/?q=${position.isin}`,
                 };
               })}

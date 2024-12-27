@@ -13,8 +13,8 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ }) => {
     return {
       date: formatDate(new Date(performanceSignal?.date)),
       "Relative Return":
-        ((performanceSignal?.total_value - performanceSignal?.total_invested) /
-          performanceSignal?.total_invested) *
+        ((parseFloat(performanceSignal?.total_value) - parseFloat(performanceSignal?.total_invested)) /
+          parseFloat(performanceSignal?.total_invested)) *
         100,
     };
   });
