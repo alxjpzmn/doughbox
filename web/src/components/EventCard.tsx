@@ -12,7 +12,7 @@ const TradeCard: React.FC<TimelineCardProps> = ({ timelineEvent }) => {
     <Card>
       <h3 className="mb-4 font-semibold text-gray-900 dark:text-gray-50">{timelineEvent.direction}</h3>
       <Text>{timelineEvent.identifier}</Text>
-      <Text>{timelineEvent.units} @ {formatCurrency(timelineEvent.price_unit, timelineEvent.currency)}</Text>
+      <Text>{timelineEvent.units} @ {formatCurrency(parseFloat(timelineEvent.price_unit), timelineEvent.currency)} → {formatCurrency(parseFloat(timelineEvent.total), timelineEvent.currency)}</Text>
       <Divider />
       <div className='flex justify-between items-center'>
         <Text>{formatDate(new Date(timelineEvent?.date))}</Text>
@@ -29,7 +29,7 @@ const InterestCard: React.FC<TimelineCardProps> = ({ timelineEvent }) => {
       <Text>
         {timelineEvent.event_type === EventType.ShareInterest ? 'Share Lending Interest' : 'Cash Interest'}
       </Text>
-      <Text>{timelineEvent.units} @ {formatCurrency(timelineEvent.price_unit, timelineEvent.currency)}</Text>
+      <Text>{formatCurrency(parseFloat(timelineEvent.units), timelineEvent.currency)} → {formatCurrency(parseFloat(timelineEvent.total), "EUR")}</Text>
       <Divider />
       <div className='flex justify-between items-center'>
         <Text>{formatDate(new Date(timelineEvent?.date))}</Text>
@@ -46,7 +46,7 @@ const DividendCard: React.FC<TimelineCardProps> = ({ timelineEvent }) => {
       <Text>
         <Text>{timelineEvent.identifier}{timelineEvent.event_type === EventType.DividendAequivalent && ', Aequivalent'}</Text>
       </Text>
-      <Text>{timelineEvent.units} @ {formatCurrency(timelineEvent.price_unit, timelineEvent.currency)}</Text>
+      <Text>{formatCurrency(parseFloat(timelineEvent.units), timelineEvent.currency)} → {formatCurrency(parseFloat(timelineEvent.total), "EUR")}</Text>
       <Divider />
       <div className='flex justify-between items-center'>
         <Text>{formatDate(new Date(timelineEvent?.date))}</Text>
@@ -63,7 +63,7 @@ const FxCard: React.FC<TimelineCardProps> = ({ timelineEvent }) => {
       <Text>
         <Text>{timelineEvent.identifier}</Text>
       </Text>
-      <Text>{timelineEvent.units} @ {formatCurrency(timelineEvent.price_unit, timelineEvent.currency)}</Text>
+      <Text>{formatCurrency(parseFloat(timelineEvent.units), timelineEvent.identifier?.slice(0, 3))} @ {formatCurrency(parseFloat(timelineEvent.price_unit), timelineEvent.identifier?.slice(3, 6))} → {formatCurrency(parseFloat(timelineEvent.total), timelineEvent.identifier?.slice(3, 6))}</Text>
       <Divider />
       <div className='flex justify-between items-center'>
         <Text>{formatDate(new Date(timelineEvent?.date))}</Text>

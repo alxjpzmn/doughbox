@@ -46,21 +46,21 @@ const Performance = ({ }) => {
   const sorting = (method: sortByMethods): (a: PositionPerformance, b: PositionPerformance) => number => {
     switch (method) {
       case "ascTotalReturn":
-        return (a: PositionPerformance, b: PositionPerformance) => a.total_return - b.total_return;
+        return (a: PositionPerformance, b: PositionPerformance) => parseFloat(a.total_return) - parseFloat(b.total_return);
       case "descTotalReturn":
-        return (a: PositionPerformance, b: PositionPerformance) => b.total_return - a.total_return;
+        return (a: PositionPerformance, b: PositionPerformance) => parseFloat(b.total_return) - parseFloat(a.total_return);
       case "ascRealized":
-        return (a: PositionPerformance, b: PositionPerformance) => a.realized - b.realized;
+        return (a: PositionPerformance, b: PositionPerformance) => parseFloat(a.realized) - parseFloat(b.realized);
       case "descRealized":
-        return (a: PositionPerformance, b: PositionPerformance) => b.realized - a.realized;
+        return (a: PositionPerformance, b: PositionPerformance) => parseFloat(b.realized) - parseFloat(a.realized);
       case "ascUnrealized":
-        return (a: PositionPerformance, b: PositionPerformance) => a.unrealized - b.unrealized;
+        return (a: PositionPerformance, b: PositionPerformance) => parseFloat(a.unrealized) - parseFloat(b.unrealized);
       case "descUnrealized":
-        return (a: PositionPerformance, b: PositionPerformance) => b.unrealized - a.unrealized;
+        return (a: PositionPerformance, b: PositionPerformance) => parseFloat(b.unrealized) - parseFloat(a.unrealized);
       case "ascAlpha":
-        return (a: PositionPerformance, b: PositionPerformance) => a.alpha - b.alpha;
+        return (a: PositionPerformance, b: PositionPerformance) => parseFloat(a.alpha) - parseFloat(b.alpha);
       case "descAlpha":
-        return (a: PositionPerformance, b: PositionPerformance) => b.alpha - a.alpha;
+        return (a: PositionPerformance, b: PositionPerformance) => parseFloat(b.alpha) - parseFloat(a.alpha);
       default:
         return () => { return 0 };
     }
@@ -77,7 +77,7 @@ const Performance = ({ }) => {
         data?.position
           ?.filter((position) => {
             if (showOnlyActivePositions) {
-              return position.unrealized != 0;
+              return position.unrealized !== "0.0";
             } else {
               return true;
             }
@@ -108,7 +108,7 @@ const Performance = ({ }) => {
           <Card className="grid grid-cols-1 gap-2">
             <Flex className="justify-between items-baseline truncate">
               <Text>Performance</Text>
-              <Text>Total alpha: {formatCurrency(data?.alpha)}</Text>
+              <Text>Total alpha: {formatCurrency(parseFloat(data?.alpha))}</Text>
             </Flex>
             <PerformanceChart />
             <Flex className="justify-between items-baseline truncate">
@@ -130,7 +130,8 @@ const Performance = ({ }) => {
                 <Select
                   value={undefined}
                   defaultValue={sortBy}
-                  onValueChange={setSortBy as any}
+                  //@ts-ignore
+                  onValueChange={setSortBy}
                   placeholder="Sort by..."
                   className="max-w-full"
                 >
@@ -184,53 +185,53 @@ const Performance = ({ }) => {
                       <TableCell>
                         <Text
                           color={
-                            item.total_return === 0
+                            parseFloat(item.total_return) === 0
                               ? "gray"
-                              : item.total_return < 0
+                              : parseFloat(item.total_return) < 0
                                 ? "red"
                                 : "green"
                           }
                         >
-                          {formatRelativeAmount(item.total_return)}
+                          {formatRelativeAmount(parseFloat(item.total_return))}
                         </Text>
                       </TableCell>
                       <TableCell>
                         <Text
                           color={
-                            item.realized === 0
+                            parseFloat(item.realized) === 0
                               ? "gray"
-                              : item.realized < 0
+                              : parseFloat(item.realized) < 0
                                 ? "red"
                                 : "green"
                           }
                         >
-                          {formatCurrency(item.realized)}
+                          {formatCurrency(parseFloat(item.realized))}
                         </Text>
                       </TableCell>
                       <TableCell>
                         <Text
                           color={
-                            item.unrealized === 0
+                            parseFloat(item.unrealized) === 0
                               ? "gray"
-                              : item.unrealized < 0
+                              : parseFloat(item.unrealized) < 0
                                 ? "red"
                                 : "green"
                           }
                         >
-                          {formatCurrency(item.unrealized)}
+                          {formatCurrency(parseFloat(item.unrealized))}
                         </Text>
                       </TableCell>
                       <TableCell>
                         <Text
                           color={
-                            item.alpha === 0
+                            parseFloat(item.alpha) === 0
                               ? "gray"
-                              : item.alpha < 0
+                              : parseFloat(item.alpha) < 0
                                 ? "red"
                                 : "green"
                           }
                         >
-                          {formatCurrency(item.alpha)}
+                          {formatCurrency(parseFloat(item.alpha))}
                         </Text>
                       </TableCell>
                     </TableRow>

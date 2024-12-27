@@ -140,9 +140,12 @@ pub async fn timeline(
 
     let end_date = Utc::now();
 
-    let timeline = get_events(year_start_timestamp, end_date)
+    let mut timeline = get_events(year_start_timestamp, end_date)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    timeline.sort_by(|a, b| b.date.cmp(&a.date));
+
     json_response(&timeline)
 }
 

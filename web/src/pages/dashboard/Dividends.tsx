@@ -31,7 +31,7 @@ const Dividends = ({ }) => {
                 {item?.isin}
               </a>
               <span className="font-bold">
-                {formatCurrency(item?.amount_eur)}
+                {formatCurrency(parseFloat(item?.amount_eur))}
               </span>
             </ListItem>
           ))}

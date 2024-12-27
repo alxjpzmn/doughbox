@@ -12,7 +12,10 @@ use crate::{
     services::market_data::fx_rates::convert_amount,
 };
 
-use super::events::{get_events, EventType, PortfolioEvent, TradeDirection};
+use super::{
+    events::{get_events, EventType, PortfolioEvent, TradeDirection},
+    files::export_json,
+};
 
 #[typeshare]
 #[derive(Debug, Serialize, Tabled)]
@@ -723,6 +726,8 @@ pub async fn get_capital_gains_tax_report() -> anyhow::Result<TaxationReport> {
         securities_wacs,
         currency_wacs,
     };
+
+    export_json(&taxation_report, "taxation")?;
 
     Ok(taxation_report)
 }
