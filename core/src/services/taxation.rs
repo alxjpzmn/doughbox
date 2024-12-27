@@ -16,24 +16,16 @@ use super::events::{get_events, EventType, PortfolioEvent, TradeDirection};
 
 #[typeshare]
 #[derive(Debug, Serialize, Tabled)]
+#[serde(rename_all = "camelCase")]
 pub struct AnnualTaxableAmounts {
-    #[serde(rename = "Cash Interest")]
     cash_interest: Decimal,
-    #[serde(rename = "Share Lending Interest")]
     share_lending_interest: Decimal,
-    #[serde(rename = "Capital Gains")]
     capital_gains: Decimal,
-    #[serde(rename = "Capital Losses")]
     capital_losses: Decimal,
-    #[serde(rename = "Dividends")]
     dividends: Decimal,
-    #[serde(rename = "FX Appreciation")]
     fx_appreciation: Decimal,
-    #[serde(rename = "Withheld Tax (Dividends)")]
     witheld_tax_dividends: Decimal,
-    #[serde(rename = "Withheld Tax (Interest)")]
     withheld_tax_interest: Decimal,
-    #[serde(rename = "Dividend Equivalents")]
     dividend_aequivalents: Decimal,
 }
 

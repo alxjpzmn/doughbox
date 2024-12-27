@@ -74,22 +74,22 @@ export interface PortfolioOverview {
 }
 
 export interface AnnualTaxableAmounts {
-	Cash Interest: number;
-	Share Lending Interest: number;
-	Capital Gains: number;
-	Capital Losses: number;
-	Dividends: number;
-	FX Appreciation: number;
-	Withheld Tax (Dividends): number;
-	Withheld Tax (Interest): number;
-	Dividend Equivalents: number;
+	cashInterest: number;
+	shareLendingInterest: number;
+	capitalGains: number;
+	capitalLosses: number;
+	dividends: number;
+	fxAppreciation: number;
+	witheldTaxDividends: number;
+	withheldTaxInterest: number;
+	dividendAequivalents: number;
 }
 
 export interface TaxationReport {
 	created_at: Date;
-	taxable_amounts: BTreeMap<number, AnnualTaxableAmounts>;
-	securities_wacs: BTreeMap<string, SecWac>;
-	currency_wacs: BTreeMap<string, Wac>;
+	taxable_amounts: any;
+	securities_wacs: any;
+	currency_wacs: any;
 }
 
 export interface Wac {

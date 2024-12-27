@@ -1,5 +1,8 @@
 [typescript.type_mappings]
 "Decimal" = "number"
+"BTreeMap" = "any"
+# "BTreeMap<i32, T>" = "Record<number, T>"
+# "BTreeMap<String, T>" = "Record<string, T>"
 "Uuid" = "string"
 "DateTime" = "Date"
 "NaiveDateTime" = "Date"
