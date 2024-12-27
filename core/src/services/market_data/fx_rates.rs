@@ -51,7 +51,7 @@ pub async fn fetch_historic_ecb_rates() -> anyhow::Result<()> {
 
             if rate != dec!(0.0) {
                 db.execute(
-                    "INSERT INTO fx_rates (hash, date, rate, currency_from, currency_to) values ($1, $2, $3, $4, $5) ON CONFLICT(hash) DO NOTHING",
+                    "INSERT INTO fx_rate (hash, date, rate, currency_from, currency_to) values ($1, $2, $3, $4, $5) ON CONFLICT(hash) DO NOTHING",
                     &[&hash, &date, &rate, &currency_from, &currency_to],
                 )
             .await?;

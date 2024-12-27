@@ -324,14 +324,14 @@ pub fn get_title_performance(
             realized += realized_pnl_for_trade;
             inventory -= split_adjusted_units;
             purchase_value -= avg_purchase_price * split_adjusted_units;
-            invested_amount -= if !position_size_over_threshold(inventory) && queue_len != &(&i + 1)
-            {
-                realized_pnl_for_trade + avg_purchase_price * split_adjusted_units
-            } else if position_size_over_threshold(inventory) && queue_len == &(&i + 1) {
-                realized_pnl_for_trade
-            } else {
-                dec!(0.0)
-            }
+            invested_amount -=
+                if !is_position_size_over_threshold(inventory) && queue_len != &(&i + 1) {
+                    realized_pnl_for_trade + avg_purchase_price * split_adjusted_units
+                } else if is_position_size_over_threshold(inventory) && queue_len == &(&i + 1) {
+                    realized_pnl_for_trade
+                } else {
+                    dec!(0.0)
+                }
         };
     }
 
@@ -351,12 +351,12 @@ pub fn get_title_performance(
     }
 }
 
-pub fn position_size_over_threshold(no_units: Decimal) -> bool {
+pub fn is_position_size_over_threshold(no_units: Decimal) -> bool {
     no_units > dec!(0.00000000000001)
 }
 
 pub fn override_positions_below_threshold(no_units: Decimal) -> Decimal {
-    if position_size_over_threshold(no_units) {
+    if is_position_size_over_threshold(no_units) {
         no_units
     } else {
         dec!(0.0)
@@ -442,9 +442,9 @@ pub async fn simulate_alternate_purchase(
                 real_held_units -= queue_without_overrides.clone().collect_vec()[i].no_units;
                 purchase_value -= avg_purchase_price * normalized_unit_count;
                 invested_amount -=
-                    if !position_size_over_threshold(inventory) && queue_len != &(&i + 1) {
+                    if !is_position_size_over_threshold(inventory) && queue_len != &(&i + 1) {
                         realized_for_trade + avg_purchase_price * normalized_unit_count
-                    } else if position_size_over_threshold(inventory) && queue_len == &(&i + 1) {
+                    } else if is_position_size_over_threshold(inventory) && queue_len == &(&i + 1) {
                         realized_for_trade
                     } else {
                         dec!(0.0)
@@ -469,3 +469,4 @@ pub async fn simulate_alternate_purchase(
         Ok(None)
     }
 }
+

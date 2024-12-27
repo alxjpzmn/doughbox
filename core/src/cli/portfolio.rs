@@ -41,7 +41,7 @@ pub async fn portfolio() -> anyhow::Result<()> {
     let performance_signal_to_save = PerformanceSignal {
         date: Utc::now(),
         total_value: position_overview.total_value,
-        total_invested: position_overview.total_value - position_overview.total_roe_abs,
+        total_invested: position_overview.total_value - position_overview.total_return_abs,
     };
 
     add_performance_signal_to_db(performance_signal_to_save).await?;
@@ -59,8 +59,8 @@ pub async fn portfolio() -> anyhow::Result<()> {
     );
     println!(
         "Total gain: {}, {:.2}% ROE",
-        format_currency(position_overview.total_roe_abs, true).style(total_position_cli_style),
-        position_overview.total_roe_rel
+        format_currency(position_overview.total_return_abs, true).style(total_position_cli_style),
+        position_overview.total_return_rel
     );
     Ok(())
 }

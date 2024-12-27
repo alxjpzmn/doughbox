@@ -6,7 +6,7 @@ use crate::database::{
     models::trade::{Trade, TradeWithHash},
 };
 
-pub async fn get_total_sell_value() -> anyhow::Result<Decimal> {
+pub async fn get_realized_return() -> anyhow::Result<Decimal> {
     let client = db_client().await?;
 
     let result = client
