@@ -2,6 +2,7 @@ use chrono::{DateTime, NaiveDate, Utc};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use tabled::Tabled;
+use typeshare::typeshare;
 
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
@@ -11,8 +12,9 @@ use crate::{
     services::market_data::fx_rates::convert_amount,
 };
 
-use super::events::{get_events, Event, EventType, TradeDirection};
+use super::events::{get_events, EventType, PortfolioEvent, TradeDirection};
 
+#[typeshare]
 #[derive(Debug, Serialize, Tabled)]
 pub struct AnnualTaxableAmounts {
     #[serde(rename = "Cash Interest")]
@@ -49,6 +51,7 @@ impl AnnualTaxableAmounts {
     }
 }
 
+#[typeshare]
 #[derive(Debug, Serialize)]
 pub struct TaxationReport {
     pub created_at: DateTime<Utc>,
@@ -57,6 +60,7 @@ pub struct TaxationReport {
     pub currency_wacs: BTreeMap<String, Wac>,
 }
 
+#[typeshare]
 #[derive(Debug, Tabled, Serialize)]
 pub struct Wac {
     pub units: Decimal,
@@ -70,6 +74,7 @@ impl Wac {
     }
 }
 
+#[typeshare]
 #[derive(Debug, Tabled, Serialize)]
 pub struct SecWac {
     pub units: Decimal,
@@ -91,7 +96,7 @@ pub struct TaxRates {
     pub dividends: Decimal,
 }
 
-pub async fn get_tax_relevant_events(year: i32) -> anyhow::Result<Vec<Event>> {
+pub async fn get_tax_relevant_events(year: i32) -> anyhow::Result<Vec<PortfolioEvent>> {
     let year_start_date_str = format!("{}-01-01", year);
     let year_start_timestamp = DateTime::<Utc>::from_naive_utc_and_offset(
         NaiveDate::parse_from_str(&year_start_date_str, "%Y-%m-%d")?

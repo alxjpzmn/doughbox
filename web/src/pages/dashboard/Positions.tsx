@@ -4,10 +4,11 @@ import { Card, Title, List, ListItem } from "@tremor/react";
 import { useState } from "react";
 import { DatePicker } from "@tremor/react";
 import { format } from "date-fns";
+import { Position } from "@/types/core";
 
 const Positions = ({ }) => {
   const [selectedDate, setSelectedDate] = useState(new Date());
-  const { data } = useSwr(
+  const { data } = useSwr<Position[]>(
     `${BASE_URL}/positions?date=${format(selectedDate, "yyyy-LL-dd")}`,
     fetcher,
   );
@@ -24,10 +25,10 @@ const Positions = ({ }) => {
           enableClear={false}
         />
       </Card>
-      {data?.length > 0 && (
+      {data && (
         <Card>
           <List>
-            {data?.map((item: any) => (
+            {data?.map((item) => (
               <ListItem key={`${item?.isin}`}>
                 <a href={`https://duckduckgo.com/?q=${item?.isin}`}>
                   {item?.isin}

@@ -1,10 +1,10 @@
-import { TaxEventType, TaxRelevantEvent, TradeDirection } from '@/types/core';
+import { EventType, TradeDirection, PortfolioEvent } from '@/types/core';
 import { formatCurrency, formatDate } from '@/util';
 import { RiArrowLeftDownLine, RiArrowRightUpLine, RiDropLine, RiExchangeLine, RiHandCoinLine } from '@remixicon/react';
 import { Card, Divider, Text } from '@tremor/react';
 
 interface TimelineCardProps {
-  timelineEvent: TaxRelevantEvent
+  timelineEvent: PortfolioEvent
 }
 
 const TradeCard: React.FC<TimelineCardProps> = ({ timelineEvent }) => {
@@ -27,7 +27,7 @@ const InterestCard: React.FC<TimelineCardProps> = ({ timelineEvent }) => {
     <Card>
       <h3 className="mb-4 font-semibold text-gray-900 dark:text-gray-50">Interest</h3>
       <Text>
-        {timelineEvent.event_type === TaxEventType.ShareInterest ? 'Share Lending Interest' : 'Cash Interest'}
+        {timelineEvent.event_type === EventType.ShareInterest ? 'Share Lending Interest' : 'Cash Interest'}
       </Text>
       <Text>{timelineEvent.units} @ {formatCurrency(timelineEvent.price_unit, timelineEvent.currency)}</Text>
       <Divider />
@@ -44,7 +44,7 @@ const DividendCard: React.FC<TimelineCardProps> = ({ timelineEvent }) => {
     <Card>
       <h3 className="mb-4 font-semibold text-gray-900 dark:text-gray-50">Dividend</h3>
       <Text>
-        <Text>{timelineEvent.identifier}{timelineEvent.event_type === TaxEventType.DividendAequivalent && ', Aequivalent'}</Text>
+        <Text>{timelineEvent.identifier}{timelineEvent.event_type === EventType.DividendAequivalent && ', Aequivalent'}</Text>
       </Text>
       <Text>{timelineEvent.units} @ {formatCurrency(timelineEvent.price_unit, timelineEvent.currency)}</Text>
       <Divider />

@@ -1,6 +1,6 @@
 import { Tab, TabList, TabGroup, TabPanels, TabPanel } from "@tremor/react";
 import useAuth from "@/hooks/useAuth";
-import PL from "@/pages/dashboard/PL";
+import Performance from "@/pages/dashboard/Performance";
 import Dividends from "@/pages/dashboard/Dividends";
 import Taxation from "@/pages/dashboard/Taxation";
 import Timeline from "@/pages/dashboard/Timeline";
@@ -16,10 +16,10 @@ const Dashboard = () => {
         <TabList className="mb-6 flex justify-between items-center overflow-x-auto overflow-y-hidden flex-shrink-0">
           <div className="flex">
             <Tab className="flex-shrink-0" value={1}>
-              Positions
+              Portfolio
             </Tab>
             <Tab className="flex-shrink-0" value={2}>
-              Profit & Loss
+              Performance
             </Tab>
             <Tab className="flex-shrink-0" value={2}>
               Timeline
@@ -41,7 +41,7 @@ const Dashboard = () => {
             <Portfolio />
           </TabPanel>
           <TabPanel>
-            <PL />
+            <Performance />
           </TabPanel>
           <TabPanel>
             <Timeline />
