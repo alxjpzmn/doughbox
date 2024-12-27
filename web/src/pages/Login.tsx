@@ -16,6 +16,7 @@ const Login = () => {
           className="mx-auto max-w-xs"
           placeholder="Enter password"
           onChange={(event) => setPassword(event.target.value)}
+          autoFocus
           type="password" />
       </form>
     </div>

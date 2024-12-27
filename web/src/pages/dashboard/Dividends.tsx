@@ -1,9 +1,10 @@
 import useSwr from "swr";
 import { Card, Metric, Subtitle, List, ListItem } from "@tremor/react";
 import { BASE_URL, formatCurrency, fetcher, formatDate } from "@/util";
+import { Dividend } from "@/types/core";
 
 const Dividends = ({ }) => {
-  const { data, isLoading } = useSwr(`${BASE_URL}/dividends`, fetcher);
+  const { data, isLoading } = useSwr<Dividend[]>(`${BASE_URL}/dividends`, fetcher);
 
   let total_dividends = data?.reduce((acc: any, item: any) => {
     return acc + parseFloat(item?.amount_eur);
@@ -23,7 +24,7 @@ const Dividends = ({ }) => {
       </Card>
       <Card>
         <List>
-          {data?.map((item: any) => (
+          {data?.map((item) => (
             <ListItem key={`${item?.isin} ${item?.date} ${item?.amount_eur}`}>
               <span>{formatDate(new Date(item?.date))}</span>
               < a href={`https://duckduckgo.com/?q=${item?.isin}`}>

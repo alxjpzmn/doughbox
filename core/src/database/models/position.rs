@@ -1,7 +1,9 @@
 use rust_decimal::Decimal;
 use serde::Serialize;
 use tabled::Tabled;
+use typeshare::typeshare;
 
+#[typeshare]
 #[derive(Debug, Tabled, Serialize)]
 pub struct Position {
     pub isin: String,
@@ -15,6 +17,7 @@ pub struct PositionWithValue {
     pub value: Decimal,
 }
 
+#[typeshare]
 #[derive(Debug, Tabled, Serialize, Clone)]
 pub struct PositionWithValueAndAllocation {
     pub isin: String,

@@ -2,13 +2,14 @@ import { AreaChart } from "@tremor/react";
 import React from "react";
 import useSwr from "swr";
 import { BASE_URL, fetcher, formatDate, formatRelativeAmount } from "@/util";
+import { PerformanceSignal } from "@/types/core";
 
 interface PerformanceChartProps { }
 
 const PerformanceChart: React.FC<PerformanceChartProps> = ({ }) => {
-  const { data, isLoading } = useSwr(`${BASE_URL}/past_performance`, fetcher);
+  const { data, isLoading } = useSwr<PerformanceSignal[]>(`${BASE_URL}/past_performance`, fetcher);
 
-  const relativeReturnChartData = data?.map((performanceSignal: any) => {
+  const relativeReturnChartData = data?.map((performanceSignal) => {
     return {
       date: formatDate(new Date(performanceSignal?.date)),
       "Relative Return":

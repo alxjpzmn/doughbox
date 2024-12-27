@@ -2,7 +2,9 @@ use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use serde::Serialize;
 use tabled::Tabled;
+use typeshare::typeshare;
 
+#[typeshare]
 #[derive(Debug, Tabled, Serialize)]
 pub struct Dividend {
     pub isin: String,

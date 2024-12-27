@@ -1,21 +1,20 @@
 import useSwr from "swr";
 import { Card, Title, Text, List, ListItem, Grid } from "@tremor/react";
 import { BASE_URL, fetcher, formatCurrency, formatDate } from "@/util";
+import { TaxationReport } from "@/types/core";
 
 const Taxation = () => {
-  const { data } = useSwr(`${BASE_URL}/taxation`, fetcher);
-  console.log(data);
-
+  const { data } = useSwr<TaxationReport>(`${BASE_URL}/taxation`, fetcher);
 
   return (
     <div>
-      {!!data && (
+      {data && (
         <div>
           <Text color="slate" className="mb-4">
             Report from {formatDate(new Date(data?.created_at))}
           </Text>
           <Grid className="grid-col-1 gap-4">
-            {Object.entries(data?.taxable_amounts ?? []).map(([year, taxItems]) => (
+            {Object.entries(data?.taxable_amounts).map(([year, taxItems]) => (
               <Card key={year}>
                 <Title>{year}</Title>
                 <List>

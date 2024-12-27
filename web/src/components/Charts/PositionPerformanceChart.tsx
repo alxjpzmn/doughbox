@@ -11,105 +11,87 @@ import {
 } from "recharts";
 import useSwr from "swr";
 import { BASE_URL, formatCurrency, fetcher } from "@/util";
+import { PortfolioPerformance } from "@/types/core";
 
-interface PositionPerformanceScatterChartProps { }
+interface ChartDataItem {
+  total_return: number;
+  invested_amount: number;
+  name: string;
+}
 
-const PositionPerformanceScatterChart: React.FC<
-  PositionPerformanceScatterChartProps
-> = ({ }) => {
-  const { data, isLoading } = useSwr(`${BASE_URL}/performance_overview`, fetcher);
-  const [chartData, setChartData] = useState([]);
+const PositionPerformanceScatterChart: React.FC = () => {
+  const { data, isLoading } = useSwr<PortfolioPerformance>(
+    `${BASE_URL}/performance_overview`,
+    fetcher
+  );
+  const [chartData, setChartData] = useState<ChartDataItem[]>([]);
 
   useEffect(() => {
-    if (!isLoading) {
-      setChartData(
-        data?.position?.map((dataPoint: any) => {
-          return {
-            total_return: dataPoint.total_return,
-            invested_amount: dataPoint.invested_amount,
-            name: dataPoint.name,
-          };
-        }),
-      );
+    if (!isLoading && data) {
+      const mappedData = data.position.map(({ total_return, invested_amount, name }) => ({
+        total_return,
+        invested_amount,
+        name,
+      }));
+      setChartData(mappedData);
     }
   }, [data, isLoading]);
 
-  const [largestInvestedAmount, setLargestInvestedAmount] = useState(0);
+  const largestInvestedAmount = Math.max(...chartData.map(d => d.invested_amount), 0);
+  const largestReturn = Math.max(...chartData.map(d => d.total_return), 0);
 
-  useEffect(() => {
-    const largestInvestedAmountItem = (chartData as any)?.map((item: any) => item).sort((a: any, b: any) => parseFloat(a.invested_amount) > parseFloat(b.invested_amount)).pop();
-    setLargestInvestedAmount(parseFloat(largestInvestedAmountItem?.invested_amount));
-  }, [chartData])
-
-  const [largestRoe, setLargestRoe] = useState(0);
-  useEffect(() => {
-    const largestRoeItem = (chartData as any)?.map((item: any) => item).sort((a: any, b: any) => parseFloat(a.total_return) > parseFloat(b.total_return)).pop();
-    setLargestRoe(parseFloat(largestRoeItem?.total_return));
-  }, [chartData])
-
-
-
-  //@ts-ignore
-  const CustomTooltip = ({ payload, active }) => {
-    if (active) {
+  const CustomTooltip = ({ payload, active }: any) => {
+    if (active && payload?.length) {
+      const { name, total_return, invested_amount } = payload[0].payload;
       return (
-        <div className="bg-white dark:bg-gray-900 outline-current border border-gray-200 dark:border-gray-800 shadow rounded-lg p-4 text-sm ring-0">
-          <p className="font-bold text-gray-700 dark:text-white">{`${payload[0].payload.name}`}</p>
-          <p className="text-gray-500">{`${payload[0].payload.total_return}% Total Return `}</p>
-          <p className="text-gray-500">{`Invested: ${formatCurrency(
-            payload[0].payload.invested_amount,
-          )}`}</p>
+        <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 shadow rounded-lg p-4 text-sm">
+          <p className="font-bold text-gray-700 dark:text-white">{name}</p>
+          <p className="text-gray-500">{`${total_return}% Total Return`}</p>
+          <p className="text-gray-500">{`Invested: ${formatCurrency(invested_amount)}`}</p>
         </div>
       );
     }
-
     return null;
   };
 
+  if (isLoading) {
+    return <div className="h-40" />;
+  }
+
   return (
-    <>
-      {!isLoading ? (
-        <ResponsiveContainer width="100%" height={400}>
-          <ScatterChart className="mt-4">
-            <CartesianGrid className="stroke-gray-200 dark:stroke-gray-800" />
-            <XAxis
-              type="number"
-              dataKey="total_return"
-              name="Total Return"
-              unit="%"
-              label={{ fontSize: 14 }}
-              tick={{ fontSize: 14 }}
-              domain={[-100, largestRoe]}
+    <ResponsiveContainer width="100%" height={400}>
+      <ScatterChart className="mt-4">
+        <CartesianGrid className="stroke-gray-200 dark:stroke-gray-800" />
+        <XAxis
+          type="number"
+          dataKey="total_return"
+          name="Total Return"
+          unit="%"
+          label={{ fontSize: 14 }}
+          tick={{ fontSize: 14 }}
+          domain={[-100, largestReturn]}
+        />
+        <YAxis
+          type="number"
+          dataKey="invested_amount"
+          name="Invested Amount"
+          unit="EUR"
+          hide
+          domain={[0, largestInvestedAmount]}
+        />
+        <Tooltip content={<CustomTooltip />} />
+        <Scatter data={chartData}>
+          {chartData.map((entry, index) => (
+            <Cell
+              key={`cell-${index}`}
+              className={entry.total_return > 0 ? "fill-green-500" : "fill-red-500"}
             />
-            <YAxis
-              type="number"
-              dataKey="invested_amount"
-              name="Invested amount"
-              unit="EUR"
-              label={{ fontSize: 14 }}
-              tick={{ fontSize: 14 }}
-              hide={true}
-              domain={[0, largestInvestedAmount]}
-            />
-            <Tooltip
-              //@ts-ignore
-              content={<CustomTooltip />}
-            />
-            <Scatter name="Return Scatter" data={chartData}>
-              {chartData?.map((entry: any, index: any) => (
-                <Cell
-                  key={`cell-${index}`}
-                  className={`${entry.total_return > 0 ? 'fill-green-500' : 'fill-red-500'}`}
-                />
-              ))}
-            </Scatter>
-          </ScatterChart>
-        </ResponsiveContainer>
-      ) : (
-        <div className="h-40" />
-      )}
-    </>
+          ))}
+        </Scatter>
+      </ScatterChart>
+    </ResponsiveContainer>
   );
 };
 
 export default PositionPerformanceScatterChart;
+

@@ -37,7 +37,7 @@ pub enum EventType {
 
 #[typeshare]
 #[derive(Debug, Clone, Serialize)]
-pub struct Event {
+pub struct PortfolioEvent {
     pub date: DateTime<Utc>,
     pub event_type: EventType,
     pub currency: String,
@@ -52,7 +52,7 @@ pub struct Event {
 pub async fn get_events(
     start_date: DateTime<Utc>,
     end_date: DateTime<Utc>,
-) -> anyhow::Result<Vec<Event>> {
+) -> anyhow::Result<Vec<PortfolioEvent>> {
     let client = db_client().await?;
 
     let (interest_rows, fund_report_rows, dividend_rows, trade_rows, fx_conversion_rows) = try_join!(
@@ -140,7 +140,7 @@ async fn query_fx_conversions(
         .await?)
 }
 
-fn process_interest_rows(rows: Vec<Row>) -> anyhow::Result<Vec<Event>> {
+fn process_interest_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent>> {
     let mut events = Vec::new();
     for row in rows {
         if row.get::<usize, Decimal>(4) != dec!(0.0)
@@ -153,7 +153,7 @@ fn process_interest_rows(rows: Vec<Row>) -> anyhow::Result<Vec<Event>> {
             )
         }
 
-        let event = Event {
+        let event = PortfolioEvent {
             date: row.get(0),
             event_type: if row.get::<usize, String>(3) == "Cash" {
                 EventType::CashInterest
@@ -176,10 +176,10 @@ fn process_interest_rows(rows: Vec<Row>) -> anyhow::Result<Vec<Event>> {
     Ok(events)
 }
 
-fn process_fund_report_rows(rows: Vec<Row>) -> anyhow::Result<Vec<Event>> {
+fn process_fund_report_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent>> {
     let mut events = Vec::new();
     for row in rows {
-        let event = Event {
+        let event = PortfolioEvent {
             date: row.get(0),
             event_type: EventType::DividendAequivalent,
             identifier: Some(row.get::<usize, i32>(1).to_string()),
@@ -195,7 +195,7 @@ fn process_fund_report_rows(rows: Vec<Row>) -> anyhow::Result<Vec<Event>> {
     Ok(events)
 }
 
-fn process_dividend_rows(rows: Vec<Row>) -> anyhow::Result<Vec<Event>> {
+fn process_dividend_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent>> {
     let mut events = Vec::new();
     for row in rows {
         if row.get::<usize, Decimal>(4) != dec!(0.0)
@@ -207,7 +207,7 @@ fn process_dividend_rows(rows: Vec<Row>) -> anyhow::Result<Vec<Event>> {
                 row.get::<usize, String>(3)
             )
         }
-        let event = Event {
+        let event = PortfolioEvent {
             date: row.get(0),
             event_type: EventType::Dividend,
             identifier: row.get(3),
@@ -226,7 +226,7 @@ fn process_dividend_rows(rows: Vec<Row>) -> anyhow::Result<Vec<Event>> {
     Ok(events)
 }
 
-async fn process_trade_rows(rows: Vec<Row>) -> anyhow::Result<Vec<Event>> {
+async fn process_trade_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent>> {
     let mut stock_split_information = get_stock_splits().await?;
     let listing_changes = get_listing_changes().await?;
 
@@ -266,7 +266,7 @@ async fn process_trade_rows(rows: Vec<Row>) -> anyhow::Result<Vec<Event>> {
             row.get::<usize, Decimal>(8)
         };
 
-        let event = Event {
+        let event = PortfolioEvent {
             date: row.get(0),
             event_type: EventType::Trade,
             identifier: Some(isin),
@@ -294,10 +294,10 @@ async fn process_trade_rows(rows: Vec<Row>) -> anyhow::Result<Vec<Event>> {
     Ok(events)
 }
 
-fn process_fx_conversion_rows(rows: Vec<Row>) -> anyhow::Result<Vec<Event>> {
+fn process_fx_conversion_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent>> {
     let mut events = Vec::new();
     for row in rows {
-        let event = Event {
+        let event = PortfolioEvent {
             date: row.get(0),
             event_type: EventType::FxConversion,
             currency: row.get(3),

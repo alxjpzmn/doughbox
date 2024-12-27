@@ -76,7 +76,9 @@ pub async fn extract_trading212_record(file_content: &[u8]) -> anyhow::Result<()
     let price_per_share_idx = find_column_index(&headers, "Price / share", true)?.unwrap();
     let id_idx = find_column_index(&headers, "ID", true)?.unwrap();
     let isin_idx = find_column_index(&headers, "ISIN", true)?.unwrap();
-    let currency_idx = find_column_index(&headers, "Currency (Total)", true)?.unwrap();
+    let currency_total_idx = find_column_index(&headers, "Currency (Total)", true)?.unwrap();
+    let currency_price_idx =
+        find_column_index(&headers, "Currency (Price / share)", true)?.unwrap();
     let withholding_tax_idx = find_column_index(&headers, "Withholding tax", true)?.unwrap();
     let withholding_tax_currency_idx =
         find_column_index(&headers, "Currency (Withholding tax)", true)?.unwrap();
@@ -110,7 +112,7 @@ pub async fn extract_trading212_record(file_content: &[u8]) -> anyhow::Result<()
                     amount: record[share_count_idx].parse::<Decimal>()?
                         * record[price_per_share_idx].parse::<Decimal>()?,
                     broker: broker.clone(),
-                    currency: record[currency_idx].to_string(),
+                    currency: record[currency_price_idx].to_string(),
                     amount_eur: record[amount_idx].parse::<Decimal>()?,
                     withholding_tax: record
                         .get(withholding_tax_idx)
@@ -158,7 +160,7 @@ pub async fn extract_trading212_record(file_content: &[u8]) -> anyhow::Result<()
                         "Sell".to_string()
                     },
                     security_type: "Equity".to_string(),
-                    currency_denomination: record[currency_idx].to_string(),
+                    currency_denomination: record[currency_price_idx].to_string(),
                     date_added: Utc::now(),
                     // Trading 212 only charges for fx conversions
                     fees: record[fees_idx].parse::<Decimal>().unwrap_or(dec!(0.0)),
@@ -170,7 +172,7 @@ pub async fn extract_trading212_record(file_content: &[u8]) -> anyhow::Result<()
                 add_trade_to_db(trade, Some(record[id_idx].to_string())).await?;
             }
             RecordType::CashInterest => {
-                let amount = if record[currency_idx].to_string() == "EUR" {
+                let amount = if record[currency_total_idx].to_string() == "EUR" {
                     record[amount_idx].parse::<Decimal>()?
                 } else {
                     convert_amount(
@@ -181,7 +183,7 @@ pub async fn extract_trading212_record(file_content: &[u8]) -> anyhow::Result<()
                                 .to_string()
                                 .as_str(),
                         )?,
-                        &record[currency_idx],
+                        &record[currency_total_idx],
                         "EUR",
                     )
                     .await?
@@ -192,7 +194,7 @@ pub async fn extract_trading212_record(file_content: &[u8]) -> anyhow::Result<()
                     amount: record[amount_idx].parse::<Decimal>()?,
                     broker: broker.clone(),
                     principal: "Cash".to_string(),
-                    currency: record[currency_idx].to_string(),
+                    currency: record[currency_total_idx].to_string(),
                     amount_eur: amount,
                     withholding_tax: record[withholding_tax_idx]
                         .parse::<Decimal>()
@@ -203,7 +205,7 @@ pub async fn extract_trading212_record(file_content: &[u8]) -> anyhow::Result<()
             }
 
             RecordType::ShareInterest => {
-                let amount = if record[currency_idx].to_string() == "EUR" {
+                let amount = if record[currency_total_idx].to_string() == "EUR" {
                     record[amount_idx].parse::<Decimal>()?
                 } else {
                     convert_amount(
@@ -214,7 +216,7 @@ pub async fn extract_trading212_record(file_content: &[u8]) -> anyhow::Result<()
                                 .to_string()
                                 .as_str(),
                         )?,
-                        &record[currency_idx],
+                        &record[currency_total_idx],
                         "EUR",
                     )
                     .await?
@@ -225,7 +227,7 @@ pub async fn extract_trading212_record(file_content: &[u8]) -> anyhow::Result<()
                     amount: record[amount_idx].parse::<Decimal>()?,
                     broker: broker.clone(),
                     principal: "Shares".to_string(),
-                    currency: record[currency_idx].to_string(),
+                    currency: record[currency_total_idx].to_string(),
                     amount_eur: amount,
                     withholding_tax: record[withholding_tax_idx]
                         .parse::<Decimal>()

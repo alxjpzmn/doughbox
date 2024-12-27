@@ -2,6 +2,7 @@ use chrono::Utc;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use serde::Serialize;
+use typeshare::typeshare;
 
 use crate::database::{
     models::position::{PositionWithValue, PositionWithValueAndAllocation},
@@ -14,8 +15,10 @@ use crate::database::{
 
 use super::{instruments::names::get_current_instrument_name, shared::util::round_to_decimals};
 
+#[typeshare]
 #[derive(Debug, Serialize)]
 pub struct PortfolioOverview {
+    #[typeshare(serialized_as = "number")]
     pub generated_at: i64,
     pub total_value: Decimal,
     pub realized: Decimal,

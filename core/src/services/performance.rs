@@ -4,8 +4,7 @@ use itertools::Itertools;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use tabled::Tabled;
-
-use serde::Serialize;
+use typeshare::typeshare;
 
 use crate::database::{
     models::trade::Trade,
@@ -14,6 +13,7 @@ use crate::database::{
         stock_split::get_stock_splits,
     },
 };
+use serde::Serialize;
 
 use super::{
     files::{export_csv, export_json},
@@ -25,8 +25,10 @@ use super::{
     shared::{env::get_env_variable, util::round_to_decimals},
 };
 
+#[typeshare]
 #[derive(Debug, Serialize)]
 pub struct PortfolioPerformance {
+    #[typeshare(serialized_as = "number")]
     pub generated_at: i64,
     pub actual: Decimal,
     pub simulated: Decimal,
@@ -35,6 +37,7 @@ pub struct PortfolioPerformance {
 }
 
 // position = trades in the same instrument across multiple brokers
+#[typeshare]
 #[derive(Debug, Serialize, Clone)]
 pub struct PositionPerformance {
     pub isin: String,
@@ -469,4 +472,3 @@ pub async fn simulate_alternate_purchase(
         Ok(None)
     }
 }
-
