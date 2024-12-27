@@ -133,7 +133,8 @@ pub async fn extract_ibkr_record(file_content: &[u8]) -> anyhow::Result<()> {
                     avg_price_per_unit: record.trade_price.parse::<Decimal>()?,
                     eur_avg_price_per_unit: record.trade_price.parse::<Decimal>()?
                         * record.fx_rate_to_base.parse::<Decimal>()?,
-                    no_units: record.quantity.parse::<Decimal>()?,
+                    // IBKR assigns negative units on sell events
+                    no_units: record.quantity.parse::<Decimal>()?.abs(),
                     direction: if record.buy_sell.contains("BUY") {
                         "Buy".to_string()
                     } else {
