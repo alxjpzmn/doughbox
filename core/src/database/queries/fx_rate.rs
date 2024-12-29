@@ -2,8 +2,9 @@ use anyhow::anyhow;
 use chrono::NaiveDate;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
+use tokio_postgres::Client;
 
-use crate::database::db_client;
+use crate::{database::db_client, services::market_data::fx_rates::fetch_historic_ecb_rates};
 
 pub async fn get_exchange_rate(
     mut currency_from: &str,
@@ -28,6 +29,30 @@ pub async fn get_exchange_rate(
         gbx_fx_rate_adjustment_needed = true;
     }
 
+    async fn is_rate_present(client: &Client, currency: &str) -> anyhow::Result<bool> {
+        let query = "SELECT EXISTS (SELECT 1 FROM fx_rate WHERE currency_to = $1)";
+        let stmt = client.prepare(query).await?;
+        let rows = client.query(&stmt, &[&currency]).await?;
+        Ok(rows.first().map_or(false, |row| row.get(0)))
+    }
+
+    let mut rates_fetched = false;
+
+    if !is_rate_present(&client, currency_from).await? {
+        fetch_historic_ecb_rates(Some(currency_from)).await?;
+        rates_fetched = true;
+    }
+    if !is_rate_present(&client, currency_to).await? {
+        fetch_historic_ecb_rates(Some(currency_to)).await?;
+        rates_fetched = true;
+    }
+
+    let client = if rates_fetched {
+        db_client().await?
+    } else {
+        client
+    };
+
     let query = if currency_from != "EUR" {
         format!(
             "SELECT rate FROM fx_rate WHERE currency_to = '{}' AND date < $1 ORDER BY date desc LIMIT 1",
@@ -44,9 +69,10 @@ pub async fn get_exchange_rate(
     let rows = client.query(&stmt, &[&date]).await?;
 
     if rows.is_empty() {
-        return Err(anyhow!(
-            "Exchange rate not found for the given currencies and date."
-        ));
+        return Err(anyhow!(format!(
+            "Exchange rate not found for the given currencies ({}{}) and date ({:?}).",
+            currency_from, currency_to, date
+        )));
     }
 
     let mut rate: Decimal = rows[0].get(0);

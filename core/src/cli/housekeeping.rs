@@ -6,6 +6,6 @@ use crate::services::{
 pub async fn housekeeping() -> anyhow::Result<()> {
     update_stock_splits().await?;
     update_oekb_fund_reports().await?;
-    fetch_historic_ecb_rates().await?;
+    fetch_historic_ecb_rates(None).await?;
     Ok(())
 }
