@@ -29,8 +29,8 @@ const PositionPerformanceScatterChart: React.FC = () => {
   useEffect(() => {
     if (!isLoading && data) {
       const mappedData = data.position.map(({ total_return, invested_amount, name }) => ({
-        total_return,
-        invested_amount,
+        total_return: parseFloat(total_return),
+        invested_amount: parseFloat(invested_amount),
         name,
       }));
       setChartData(mappedData);
