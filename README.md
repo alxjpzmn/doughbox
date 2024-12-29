@@ -31,7 +31,6 @@ If you need to take care of capital gains taxes in Austria, you can use Doughbox
 - Current quotes for securities are not fetched automatically. They're kept in a separate table and need to be refreshed either manually or via API (more on this below).
 - Doughbox uses ISINs as primary identifier, so it's agnostic to the trading venue an instrument was bought. If it encounters a ticker symbol during the import, it attempts to convert it to an ISIN via the OpenFIGI API
 - Crypto, Real Estate, Cash Holdings aren't supported. Basically, if it has an ISIN, it _might_ work with Doughbox, if it hasn't, then it sure won't.
-- PDFs and CSV that are successfully imported are deleted to leave the input folder uncluttered, so please only copy files into the input folder.
 - The web interface is currently used for visualizations only, commands need to be invoked using the CLI.
 
 ## Supported brokers
