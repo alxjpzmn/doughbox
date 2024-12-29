@@ -50,7 +50,7 @@ pub async fn cli() -> anyhow::Result<()> {
         let four_days_ago = Utc::now().naive_utc().date() - Duration::days(4);
         let most_recent_fx_rate = get_most_recent_rate().await?;
         if most_recent_fx_rate < four_days_ago && confirm_action("fetch updated exchange rates") {
-            fetch_historic_ecb_rates().await?;
+            fetch_historic_ecb_rates(None).await?;
         }
     };
 
