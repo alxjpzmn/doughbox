@@ -79,7 +79,7 @@ pub async fn get_portfolio_overview() -> anyhow::Result<PortfolioOverview> {
                 isin: position.isin.clone(),
                 name: name_map
                     .get(&position.isin)
-                    .unwrap_or(&&"Unknown".to_string())
+                    .unwrap_or(&&position.isin.to_string())
                     .to_string(),
                 value: round_to_decimals(position.value),
                 units: round_to_decimals(position.units),

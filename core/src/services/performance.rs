@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use chrono::{DateTime, Utc};
 
 use itertools::Itertools;
@@ -9,7 +11,8 @@ use typeshare::typeshare;
 use crate::database::{
     models::trade::Trade,
     queries::{
-        composite::get_all_trades, instrument::get_current_instrument_price,
+        composite::get_all_trades,
+        instrument::{batch_get_instrument_names, batch_get_instrument_prices},
         stock_split::get_stock_splits,
     },
 };
@@ -85,6 +88,17 @@ pub async fn get_performance() -> anyhow::Result<PortfolioPerformance> {
 
     let mut trades: Vec<Trade> = get_all_trades(None).await?;
     trades.sort_unstable_by_key(|item| (item.isin.clone(), item.broker.clone()));
+
+    let isins: Vec<_> = trades.iter().map(|trade| trade.isin.clone()).collect();
+
+    // Fetch all prices and names in batches
+    let prices = batch_get_instrument_prices(&isins).await?;
+    let names = batch_get_instrument_names(&isins).await?;
+
+    // Map ISIN to price and name
+    let price_map: HashMap<_, _> = isins.iter().zip(prices.iter()).collect();
+    let name_map: HashMap<_, _> = isins.iter().zip(names.iter()).collect();
+
     let grouped_trades: Vec<TradeGroup> = trades
         .iter()
         .chunk_by(|x| (x.broker.clone(), x.isin.clone()))
@@ -143,8 +157,7 @@ pub async fn get_performance() -> anyhow::Result<PortfolioPerformance> {
         let realized = round_to_decimals(title_performance.realized);
         let unrealized = if title_performance.inventory > dec!(0.0) {
             round_to_decimals(
-                (get_current_instrument_price(&title_performance.isin).await?
-                    * title_performance.inventory)
+                (*price_map.get(&title_performance.isin).unwrap() * title_performance.inventory)
                     - title_performance.unit_price * title_performance.inventory,
             )
         } else {
@@ -155,7 +168,10 @@ pub async fn get_performance() -> anyhow::Result<PortfolioPerformance> {
 
         let performance_item = TradePerformance {
             isin: title_performance.isin.clone(),
-            name: title_performance.isin.clone(),
+            name: name_map
+                .get(&title_performance.isin)
+                .unwrap_or(&&title_performance.isin.to_string())
+                .to_string(),
             broker: title_performance.broker,
             unrealized,
             realized,

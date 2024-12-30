@@ -46,14 +46,6 @@ pub async fn update_instrument_price(instrument: Instrument) -> anyhow::Result<(
     Ok(())
 }
 
-pub async fn get_current_instrument_price(isin: &str) -> anyhow::Result<Decimal> {
-    let instrument = get_instrument_by_id(isin).await?;
-    match instrument {
-        Some(_) => Ok(instrument.unwrap().price),
-        None => panic!("No price found for ISIN {} in instrument table.", isin),
-    }
-}
-
 pub async fn batch_get_instrument_prices(isins: &[String]) -> anyhow::Result<Vec<Decimal>> {
     let client = db_client().await?;
     let query = r#"SELECT id, price FROM instrument WHERE id = ANY($1)"#.to_string();
