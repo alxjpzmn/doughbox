@@ -172,7 +172,7 @@ fn process_interest_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent>> 
                 row.get::<usize, Option<Decimal>>(4).unwrap_or(dec!(0.0))
                     / row.get::<usize, Decimal>(1),
             ),
-            total: row.get(1),
+            total: row.get(6),
             broker: row.get::<usize, String>(7),
         };
         events.push(event);

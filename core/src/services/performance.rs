@@ -17,9 +17,8 @@ use serde::Serialize;
 
 use super::{
     files::{export_csv, export_json},
-    instruments::{
-        names::get_current_instrument_name,
-        stock_splits::{get_split_adjusted_price_per_unit, get_split_adjusted_units, StockSplit},
+    instruments::stock_splits::{
+        get_split_adjusted_price_per_unit, get_split_adjusted_units, StockSplit,
     },
     market_data::fred::{fetch_fred_data_set, get_fred_value_for_date, FREDResponse},
     shared::{env::get_env_variable, util::round_to_decimals},
@@ -156,7 +155,7 @@ pub async fn get_performance() -> anyhow::Result<PortfolioPerformance> {
 
         let performance_item = TradePerformance {
             isin: title_performance.isin.clone(),
-            name: get_current_instrument_name(&title_performance.isin.clone()).await?,
+            name: title_performance.isin.clone(),
             broker: title_performance.broker,
             unrealized,
             realized,
@@ -190,7 +189,7 @@ pub async fn get_performance() -> anyhow::Result<PortfolioPerformance> {
 
         let trade_performance = TradePerformance {
             isin: simulated_performance.isin.clone(),
-            name: get_current_instrument_name(&simulated_performance.isin.clone()).await?,
+            name: simulated_performance.isin.clone(),
             broker: simulated_performance.broker,
             unrealized,
             realized,
