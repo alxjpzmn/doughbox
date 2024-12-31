@@ -4,7 +4,7 @@ import { Card, Title, List, ListItem } from "@tremor/react";
 import { useState } from "react";
 import { DatePicker } from "@tremor/react";
 import { format } from "date-fns";
-import { Position, PositionWithName } from "@/types/core";
+import { PositionWithName } from "@/types/core";
 
 const Positions = ({ }) => {
   const [selectedDate, setSelectedDate] = useState(new Date());

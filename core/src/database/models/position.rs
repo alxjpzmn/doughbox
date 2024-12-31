@@ -3,7 +3,6 @@ use serde::Serialize;
 use tabled::Tabled;
 use typeshare::typeshare;
 
-#[typeshare]
 #[derive(Debug, Tabled, Serialize)]
 pub struct Position {
     pub isin: String,

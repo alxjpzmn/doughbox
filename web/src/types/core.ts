@@ -19,11 +19,6 @@ export interface PerformanceSignal {
 	total_invested: string;
 }
 
-export interface Position {
-	isin: string;
-	units: string;
-}
-
 export interface PositionWithName {
 	isin: string;
 	name: string;

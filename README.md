@@ -17,7 +17,6 @@ If you need to take care of capital gains taxes in Austria, you can use Doughbox
 - Display Portfolio Allocation across brokerage accounts.
 - Display returns over time for the portfolio and individual positions (both open and closed).
 - Display a consolidated timeline across brokers of past trades, interest & dividend payments and fx conversions.
-- See the sum of past dividend payments and each individual payment.
 - Go back in time and view your past portfolio's holdings.
 - If a FRED (Federal Reserve Economic Data of the St. Louis Federal Reserve Bank) token is set, it also gives you a naive (e.g. no fees or taxes considered) benchmark against the S&P 500.
 - Fetches stock split data from polygon.io (hence, you will need an API token from Polygon).
