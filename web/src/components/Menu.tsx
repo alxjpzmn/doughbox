@@ -9,7 +9,6 @@ const menuItems = [
   { text: 'Portfolio', route: '/portfolio' },
   { text: 'Performance', route: '/performance' },
   { text: 'Timeline', route: '/timeline' },
-  { text: 'Dividends', route: '/dividends' },
   { text: 'Positions', route: '/positions' },
   { text: 'Taxation', route: '/taxation' }
 ]

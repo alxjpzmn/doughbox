@@ -6,7 +6,6 @@ import Login from "@/pages/Login";
 import Portfolio from "@/pages/dashboard/Portfolio";
 import Performance from "@/pages/dashboard/Performance";
 import Timeline from "@/pages/dashboard/Timeline";
-import Dividends from "@/pages/dashboard/Dividends";
 import Positions from "@/pages/dashboard/Positions";
 import Taxation from "@/pages/dashboard/Taxation";
 import useIsMobile from "@/hooks/useIsMobile";
@@ -40,7 +39,6 @@ export default function App() {
               <Route path="/portfolio" component={Portfolio} />
               <Route path="/performance" component={Performance} />
               <Route path="/timeline" component={Timeline} />
-              <Route path="/dividends" component={Dividends} />
               <Route path="/positions" component={Positions} />
               <Route path="/taxation" component={Taxation} />
             </Route>

@@ -1,7 +1,5 @@
 use crate::{
-    database::queries::{
-        dividend::get_dividends, performance::get_performance_signals, position::get_positions,
-    },
+    database::queries::{performance::get_performance_signals, position::get_positions},
     services::{
         events::get_events,
         parsers::parse_timestamp,
@@ -147,13 +145,6 @@ pub async fn timeline(
     timeline.sort_by(|a, b| b.date.cmp(&a.date));
 
     json_response(&timeline)
-}
-
-pub async fn dividends() -> anyhow::Result<impl IntoResponse, StatusCode> {
-    let dividends = get_dividends()
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    json_response(&dividends)
 }
 
 pub async fn taxation() -> anyhow::Result<impl IntoResponse, StatusCode> {
