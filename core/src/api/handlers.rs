@@ -1,5 +1,5 @@
 use crate::{
-    database::queries::{performance::get_performance_signals, position::get_positions},
+    database::queries::performance::get_performance_signals,
     services::{
         events::get_events,
         parsers::parse_timestamp,

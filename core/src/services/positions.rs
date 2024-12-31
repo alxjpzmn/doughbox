@@ -2,12 +2,9 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 
-use crate::{
-    api::handlers::positions,
-    database::{
-        models::position::PositionWithName,
-        queries::{instrument::batch_get_instrument_names, position::get_positions},
-    },
+use crate::database::{
+    models::position::PositionWithName,
+    queries::{instrument::batch_get_instrument_names, position::get_positions},
 };
 
 pub async fn get_positions_overview(
