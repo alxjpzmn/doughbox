@@ -10,6 +10,14 @@ pub struct Position {
     pub units: Decimal,
 }
 
+#[typeshare]
+#[derive(Debug, Tabled, Serialize)]
+pub struct PositionWithName {
+    pub isin: String,
+    pub name: String,
+    pub units: Decimal,
+}
+
 #[derive(Debug)]
 pub struct PositionWithValue {
     pub isin: String,

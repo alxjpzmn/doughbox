@@ -24,6 +24,12 @@ export interface Position {
 	units: string;
 }
 
+export interface PositionWithName {
+	isin: string;
+	name: string;
+	units: string;
+}
+
 export interface PositionWithValueAndAllocation {
 	isin: string;
 	name: string;

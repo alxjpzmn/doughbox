@@ -6,5 +6,6 @@ pub mod market_data;
 pub mod parsers;
 pub mod performance;
 pub mod portfolio;
+pub mod positions;
 pub mod shared;
 pub mod taxation;

@@ -36,21 +36,17 @@ pub async fn get_portfolio_overview() -> anyhow::Result<PortfolioOverview> {
     let current_positions = get_positions(None, None).await?;
     let mut total_position = dec!(0.0);
 
-    // Collect all ISINs
     let isins: Vec<_> = current_positions
         .iter()
         .map(|position| position.isin.clone())
         .collect();
 
-    // Fetch all prices and names in batches
     let prices = batch_get_instrument_prices(&isins).await?;
     let names = batch_get_instrument_names(&isins).await?;
 
-    // Map ISIN to price and name
     let price_map: HashMap<_, _> = isins.iter().zip(prices.iter()).collect();
     let name_map: HashMap<_, _> = isins.iter().zip(names.iter()).collect();
 
-    // Process positions with values
     let mut positions_with_value: Vec<PositionWithValue> = current_positions
         .iter()
         .map(|position| {
@@ -70,7 +66,6 @@ pub async fn get_portfolio_overview() -> anyhow::Result<PortfolioOverview> {
 
     positions_with_value.sort_by(|a, b| a.value.partial_cmp(&b.value).unwrap());
 
-    // Add allocations and names
     let positions_with_allocation: Vec<PositionWithValueAndAllocation> = positions_with_value
         .iter()
         .map(|position| {

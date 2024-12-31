@@ -4,6 +4,7 @@ use crate::{
         events::get_events,
         parsers::parse_timestamp,
         portfolio::get_portfolio_overview,
+        positions::get_positions_overview,
         shared::{
             constants::{OUT_DIR, SESSION_TOKEN_KEY},
             env::get_env_variable,
@@ -169,7 +170,7 @@ pub async fn positions(
     });
     let timestamp = parse_timestamp(format!("{} 19:00:00", date).as_str())
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let positions = get_positions(Some(timestamp), None)
+    let positions = get_positions_overview(Some(timestamp))
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     json_response(&positions)
