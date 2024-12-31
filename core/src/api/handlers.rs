@@ -1,11 +1,10 @@
 use crate::{
-    database::queries::{
-        dividend::get_dividends, performance::get_performance_signals, position::get_positions,
-    },
+    database::queries::{performance::get_performance_signals, position::get_positions},
     services::{
         events::get_events,
         parsers::parse_timestamp,
         portfolio::get_portfolio_overview,
+        positions::get_positions_overview,
         shared::{
             constants::{OUT_DIR, SESSION_TOKEN_KEY},
             env::get_env_variable,
@@ -149,13 +148,6 @@ pub async fn timeline(
     json_response(&timeline)
 }
 
-pub async fn dividends() -> anyhow::Result<impl IntoResponse, StatusCode> {
-    let dividends = get_dividends()
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    json_response(&dividends)
-}
-
 pub async fn taxation() -> anyhow::Result<impl IntoResponse, StatusCode> {
     let path = format!("{}/taxation.json", OUT_DIR);
     let data = fs::read_to_string(path).await.expect("Unable to read file");
@@ -178,7 +170,7 @@ pub async fn positions(
     });
     let timestamp = parse_timestamp(format!("{} 19:00:00", date).as_str())
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let positions = get_positions(Some(timestamp), None)
+    let positions = get_positions_overview(Some(timestamp))
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     json_response(&positions)

@@ -12,8 +12,8 @@ use tower_http::{
 use tower_sessions::{Expiry, MemoryStore, SessionManagerLayer};
 
 use super::handlers::{
-    auth_state, check_auth, dividends, login, logout, past_performance, performance, portfolio,
-    positions, taxation, timeline,
+    auth_state, check_auth, login, logout, past_performance, performance, portfolio, positions,
+    taxation, timeline,
 };
 
 pub fn create_router() -> anyhow::Result<Router> {
@@ -33,7 +33,6 @@ pub fn create_router() -> anyhow::Result<Router> {
         .route("/performance_overview", get(performance))
         .route("/past_performance", get(past_performance))
         .route("/timeline", get(timeline))
-        .route("/dividends", get(dividends))
         .route("/taxation", get(taxation))
         .route("/positions", get(positions))
         .route("/auth_state", get(auth_state))

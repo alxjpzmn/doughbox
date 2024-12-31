@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use chrono::Utc;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
@@ -7,13 +9,13 @@ use typeshare::typeshare;
 use crate::database::{
     models::position::{PositionWithValue, PositionWithValueAndAllocation},
     queries::{
-        instrument::get_current_instrument_price,
+        instrument::{batch_get_instrument_names, batch_get_instrument_prices},
         position::get_positions,
         trade::{get_realized_return, get_total_invested_value},
     },
 };
 
-use super::{instruments::names::get_current_instrument_name, shared::util::round_to_decimals};
+use super::shared::util::round_to_decimals;
 
 #[typeshare]
 #[derive(Debug, Serialize)]
@@ -33,33 +35,54 @@ pub async fn get_portfolio_overview() -> anyhow::Result<PortfolioOverview> {
 
     let current_positions = get_positions(None, None).await?;
     let mut total_position = dec!(0.0);
-    let mut positions_with_value: Vec<PositionWithValue> = vec![];
 
-    for position in current_positions.iter() {
-        let current_price = get_current_instrument_price(&position.isin).await?;
-        let position_with_value = PositionWithValue {
-            isin: position.isin.clone(),
-            value: current_price * position.units,
-            units: position.units,
-        };
-        positions_with_value.push(position_with_value);
-        total_position += current_price * position.units;
+    let isins: Vec<_> = current_positions
+        .iter()
+        .map(|position| position.isin.clone())
+        .collect();
+
+    let prices = batch_get_instrument_prices(&isins).await?;
+    let names = batch_get_instrument_names(&isins).await?;
+
+    let price_map: HashMap<_, _> = isins.iter().zip(prices.iter()).collect();
+    let name_map: HashMap<_, _> = isins.iter().zip(names.iter()).collect();
+
+    let mut positions_with_value: Vec<PositionWithValue> = current_positions
+        .iter()
+        .map(|position| {
+            let binding = dec!(0.0);
+            let current_price = *price_map.get(&position.isin).unwrap_or(&&binding);
+            PositionWithValue {
+                isin: position.isin.clone(),
+                value: current_price * position.units,
+                units: position.units,
+            }
+        })
+        .collect();
+
+    for position in &positions_with_value {
+        total_position += position.value;
     }
 
     positions_with_value.sort_by(|a, b| a.value.partial_cmp(&b.value).unwrap());
 
-    let mut positions_with_allocation: Vec<PositionWithValueAndAllocation> = vec![];
-    for position in positions_with_value {
-        let position_share = position.value / total_position;
-        let item = PositionWithValueAndAllocation {
-            isin: position.isin.clone(),
-            name: get_current_instrument_name(&position.isin).await?,
-            value: round_to_decimals(position.value),
-            units: round_to_decimals(position.units),
-            share: round_to_decimals(position_share * dec!(100.0)),
-        };
-        positions_with_allocation.push(item);
-    }
+    let positions_with_allocation: Vec<PositionWithValueAndAllocation> = positions_with_value
+        .iter()
+        .map(|position| {
+            let position_share = position.value / total_position;
+            PositionWithValueAndAllocation {
+                isin: position.isin.clone(),
+                name: name_map
+                    .get(&position.isin)
+                    .unwrap_or(&&position.isin.to_string())
+                    .to_string(),
+                value: round_to_decimals(position.value),
+                units: round_to_decimals(position.units),
+                share: round_to_decimals(position_share * dec!(100.0)),
+            }
+        })
+        .collect();
+
     let total_return_abs = round_to_decimals((total_position + realized) - invested);
 
     Ok(PortfolioOverview {
@@ -68,6 +91,6 @@ pub async fn get_portfolio_overview() -> anyhow::Result<PortfolioOverview> {
         total_return_rel: round_to_decimals(total_return_abs / invested * dec!(100.0)),
         total_return_abs,
         realized: round_to_decimals(realized),
-        positions: positions_with_allocation.clone(),
+        positions: positions_with_allocation,
     })
 }

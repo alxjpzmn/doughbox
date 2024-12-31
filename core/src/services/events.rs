@@ -1,3 +1,5 @@
+use std::collections::{HashMap, HashSet};
+
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
@@ -9,7 +11,10 @@ use typeshare::typeshare;
 use crate::{
     database::{
         db_client,
-        queries::{listing_change::get_listing_changes, stock_split::get_stock_splits},
+        queries::{
+            instrument::batch_get_instrument_names, listing_change::get_listing_changes,
+            stock_split::get_stock_splits,
+        },
     },
     services::instruments::{
         identifiers::get_changed_identifier,
@@ -68,7 +73,7 @@ pub async fn get_events(
     let mut events = Vec::new();
     events.extend(process_interest_rows(interest_rows)?);
     events.extend(process_fund_report_rows(fund_report_rows)?);
-    events.extend(process_dividend_rows(dividend_rows)?);
+    events.extend(process_dividend_rows(dividend_rows).await?);
     events.extend(process_trade_rows(trade_rows).await?);
     events.extend(process_fx_conversion_rows(fx_conversion_rows)?);
 
@@ -172,7 +177,7 @@ fn process_interest_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent>> 
                 row.get::<usize, Option<Decimal>>(4).unwrap_or(dec!(0.0))
                     / row.get::<usize, Decimal>(1),
             ),
-            total: row.get(1),
+            total: row.get(6),
             broker: row.get::<usize, String>(7),
         };
         events.push(event);
@@ -201,8 +206,19 @@ fn process_fund_report_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent
     Ok(events)
 }
 
-fn process_dividend_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent>> {
+async fn process_dividend_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent>> {
     let mut events = Vec::new();
+
+    let listing_changes = get_listing_changes().await?;
+    let isins: Vec<String> = rows
+        .iter()
+        .map(|row| get_changed_identifier(row.get(3), listing_changes.clone()))
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    let names = batch_get_instrument_names(&isins).await?;
+    let name_map: HashMap<_, _> = isins.iter().zip(names.iter()).collect();
+
     for row in rows {
         if row.get::<usize, Decimal>(4) != dec!(0.0)
             && row.get::<usize, String>(5) != row.get::<usize, String>(2)
@@ -216,7 +232,12 @@ fn process_dividend_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent>> 
         let event = PortfolioEvent {
             date: row.get(0),
             event_type: EventType::Dividend,
-            identifier: row.get(3),
+            identifier: Some(
+                name_map
+                    .get(&row.get::<usize, String>(3))
+                    .unwrap_or(&&row.get(3))
+                    .to_string(),
+            ),
             units: row.get(1),
             price_unit: dec!(1.00),
             currency: row.get(2),
@@ -237,6 +258,15 @@ fn process_dividend_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent>> 
 async fn process_trade_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent>> {
     let mut stock_split_information = get_stock_splits().await?;
     let listing_changes = get_listing_changes().await?;
+
+    let isins: Vec<String> = rows
+        .iter()
+        .map(|row| get_changed_identifier(row.get(4), listing_changes.clone()))
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    let names = batch_get_instrument_names(&isins).await?;
+    let name_map: HashMap<_, _> = isins.iter().zip(names.iter()).collect();
 
     let mut events = Vec::new();
     for row in rows {
@@ -277,7 +307,7 @@ async fn process_trade_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent
         let event = PortfolioEvent {
             date: row.get(0),
             event_type: EventType::Trade,
-            identifier: Some(isin),
+            identifier: Some(name_map.get(&isin).unwrap_or(&&isin).to_string()),
             units: split_adjusted_units,
             price_unit: split_adjusted_price_per_unit,
             currency: row.get(3),
