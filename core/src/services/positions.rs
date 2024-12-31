@@ -21,7 +21,7 @@ pub async fn get_positions_overview(
 
     let name_map: HashMap<_, _> = isins.iter().zip(names.iter()).collect();
 
-    let positions_with_name: Vec<PositionWithName> = positions
+    let mut positions_with_name: Vec<PositionWithName> = positions
         .iter()
         .map(|position| {
             let name = name_map
@@ -35,6 +35,8 @@ pub async fn get_positions_overview(
             }
         })
         .collect();
+
+    positions_with_name.sort_by(|a, b| b.name.partial_cmp(&a.name).unwrap());
 
     Ok(positions_with_name)
 }
