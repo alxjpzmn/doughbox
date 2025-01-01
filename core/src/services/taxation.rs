@@ -720,6 +720,10 @@ pub async fn get_capital_gains_tax_report() -> anyhow::Result<TaxationReport> {
         amounts.round_all(2);
     }
 
+    // to only have active positions in the taxation report
+    currency_wacs.retain(|_, wac| wac.units != dec!(0));
+    securities_wacs.retain(|_, sec_wac| sec_wac.units != dec!(0));
+
     for (_, wac) in currency_wacs.iter_mut() {
         wac.round_all();
     }
