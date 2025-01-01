@@ -167,14 +167,12 @@ const Performance = ({ }) => {
                 <TableBody>
                   {positions?.map((item) => (
                     <TableRow key={item.key}>
-                      <TableCell>
+                      <TableCell className="max-w-6 md:max-w-36 truncate">
                         <a
                           href={`https://duckduckgo.com/?q=${item.isin}`}
                           target="_blank"
                         >
-                          {item.name.length > 12
-                            ? `${item.name.substring(0, 12)}...`
-                            : item.name}
+                          {item.name}
                         </a>
                       </TableCell>
                       <TableCell>
