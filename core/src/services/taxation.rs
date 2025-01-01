@@ -19,16 +19,24 @@ use super::{
 
 #[typeshare]
 #[derive(Debug, Serialize, Tabled)]
-#[serde(rename_all = "camelCase")]
 pub struct AnnualTaxableAmounts {
+    #[serde(rename = "Cash Interest")]
     cash_interest: Decimal,
+    #[serde(rename = "Share Lending Interest")]
     share_lending_interest: Decimal,
+    #[serde(rename = "Capital Gains")]
     capital_gains: Decimal,
+    #[serde(rename = "Capital Losses")]
     capital_losses: Decimal,
+    #[serde(rename = "Dividends")]
     dividends: Decimal,
+    #[serde(rename = "FX Appreciation")]
     fx_appreciation: Decimal,
+    #[serde(rename = "Withheld Tax: Dividends")]
     witheld_tax_dividends: Decimal,
+    #[serde(rename = "Withheld Tax: Interest")]
     withheld_tax_interest: Decimal,
+    #[serde(rename = "Dividend Aequivalents")]
     dividend_aequivalents: Decimal,
 }
 
@@ -112,7 +120,7 @@ pub async fn get_tax_relevant_events(year: i32) -> anyhow::Result<Vec<PortfolioE
 }
 
 pub async fn get_capital_gains_tax_report() -> anyhow::Result<TaxationReport> {
-    // Austrian tax rates
+    // Austrian tax rates as of 12/2024
     let tax_rates = TaxRates {
         interest: dec!(0.25),
         capital_gains: dec!(0.275),
@@ -711,6 +719,10 @@ pub async fn get_capital_gains_tax_report() -> anyhow::Result<TaxationReport> {
     for (_, amounts) in taxable_amounts.iter_mut() {
         amounts.round_all(2);
     }
+
+    // to only have active positions in the taxation report
+    currency_wacs.retain(|_, wac| wac.units != dec!(0));
+    securities_wacs.retain(|_, sec_wac| sec_wac.units != dec!(0));
 
     for (_, wac) in currency_wacs.iter_mut() {
         wac.round_all();

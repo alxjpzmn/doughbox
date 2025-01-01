@@ -10,16 +10,16 @@ pub async fn calculate_taxes() -> anyhow::Result<()> {
     let taxation_report = get_capital_gains_tax_report().await?;
 
     let taxable_amounts_table = Table::new(&taxation_report.taxable_amounts).to_string();
+    let securities_wac_table = Table::new(&taxation_report.securities_wacs).to_string();
+    let currency_wac_table = Table::new(&taxation_report.currency_wacs).to_string();
 
     sp.stop();
     println!("Taxable amounts:");
     println!("{}", taxable_amounts_table);
-    println!("=========================");
-    println!("Currency WAC:");
-    println!("{:?}", taxation_report.currency_wacs);
-    println!("=========================");
     println!("Securities WAC:");
-    println!("{:?}", taxation_report.securities_wacs);
+    println!("{}", securities_wac_table);
+    println!("Currency WAC:");
+    println!("{}", currency_wac_table);
 
     Ok(())
 }
