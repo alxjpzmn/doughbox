@@ -13,18 +13,13 @@ import {
   Flex,
   Select,
   SelectItem,
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeaderCell,
-  TableRow,
   Text,
 } from "@tremor/react";
 import PositionPerformanceScatterChart from "@/components/Charts/PositionPerformanceChart";
 import { Switch } from "@/components/Switch";
 import { Label } from "@/components/Label";
 import { PortfolioPerformance, PositionPerformance } from "@/types/core";
+import { Table, TableBody, TableCell, TableHead, TableHeaderCell, TableRow } from "@/components/Table";
 
 interface PositionPerformanceWithKey extends PositionPerformance {
   key: string

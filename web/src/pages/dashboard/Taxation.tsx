@@ -5,6 +5,8 @@ import { AnnualTaxableAmounts, TaxationReport } from "@/types/core";
 
 const Taxation = () => {
   const { data } = useSwr<TaxationReport>(`${BASE_URL}/taxation`, fetcher);
+  console.log(data);
+
 
   return (
     <div>
