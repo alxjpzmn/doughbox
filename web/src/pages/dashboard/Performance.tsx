@@ -19,7 +19,7 @@ import PositionPerformanceScatterChart from "@/components/Charts/PositionPerform
 import { Switch } from "@/components/Switch";
 import { Label } from "@/components/Label";
 import { PortfolioPerformance, PositionPerformance } from "@/types/core";
-import { Table, TableBody, TableCell, TableHead, TableHeaderCell, TableRow } from "@/components/Table";
+import { Table, TableBody, TableCell, TableHead, TableHeaderCell, TableRoot, TableRow } from "@/components/Table";
 
 interface PositionPerformanceWithKey extends PositionPerformance {
   key: string
@@ -154,83 +154,85 @@ const Performance = ({ }) => {
               </Flex>
             </Flex>
             {!isLoading && (
-              <Table className="mt-4">
-                <TableHead>
-                  <TableRow>
-                    <TableHeaderCell>Name</TableHeaderCell>
-                    <TableHeaderCell>Total Return</TableHeaderCell>
-                    <TableHeaderCell>Realized</TableHeaderCell>
-                    <TableHeaderCell>Unrealized</TableHeaderCell>
-                    <TableHeaderCell>Alpha</TableHeaderCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {positions?.map((item) => (
-                    <TableRow key={item.key}>
-                      <TableCell className="max-w-6 md:max-w-36 truncate">
-                        <a
-                          href={`https://duckduckgo.com/?q=${item.isin}`}
-                          target="_blank"
-                        >
-                          {item.name}
-                        </a>
-                      </TableCell>
-                      <TableCell>
-                        <Text
-                          color={
-                            parseFloat(item.total_return) === 0
-                              ? "gray"
-                              : parseFloat(item.total_return) < 0
-                                ? "red"
-                                : "green"
-                          }
-                        >
-                          {formatRelativeAmount(parseFloat(item.total_return))}
-                        </Text>
-                      </TableCell>
-                      <TableCell>
-                        <Text
-                          color={
-                            parseFloat(item.realized) === 0
-                              ? "gray"
-                              : parseFloat(item.realized) < 0
-                                ? "red"
-                                : "green"
-                          }
-                        >
-                          {formatCurrency(parseFloat(item.realized))}
-                        </Text>
-                      </TableCell>
-                      <TableCell>
-                        <Text
-                          color={
-                            parseFloat(item.unrealized) === 0
-                              ? "gray"
-                              : parseFloat(item.unrealized) < 0
-                                ? "red"
-                                : "green"
-                          }
-                        >
-                          {formatCurrency(parseFloat(item.unrealized))}
-                        </Text>
-                      </TableCell>
-                      <TableCell>
-                        <Text
-                          color={
-                            parseFloat(item.alpha) === 0
-                              ? "gray"
-                              : parseFloat(item.alpha) < 0
-                                ? "red"
-                                : "green"
-                          }
-                        >
-                          {formatCurrency(parseFloat(item.alpha))}
-                        </Text>
-                      </TableCell>
+              <TableRoot>
+                <Table className="mt-4">
+                  <TableHead>
+                    <TableRow>
+                      <TableHeaderCell>Name</TableHeaderCell>
+                      <TableHeaderCell>Total Return</TableHeaderCell>
+                      <TableHeaderCell>Realized</TableHeaderCell>
+                      <TableHeaderCell>Unrealized</TableHeaderCell>
+                      <TableHeaderCell>Alpha</TableHeaderCell>
                     </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+                  </TableHead>
+                  <TableBody>
+                    {positions?.map((item) => (
+                      <TableRow key={item.key}>
+                        <TableCell className="truncate overflow-hidden whitespace-nowrap max-w-48">
+                          <a
+                            href={`https://duckduckgo.com/?q=${item.isin}`}
+                            target="_blank"
+                          >
+                            {item.name}
+                          </a>
+                        </TableCell>
+                        <TableCell>
+                          <Text
+                            color={
+                              parseFloat(item.total_return) === 0
+                                ? "gray"
+                                : parseFloat(item.total_return) < 0
+                                  ? "red"
+                                  : "green"
+                            }
+                          >
+                            {formatRelativeAmount(parseFloat(item.total_return))}
+                          </Text>
+                        </TableCell>
+                        <TableCell>
+                          <Text
+                            color={
+                              parseFloat(item.realized) === 0
+                                ? "gray"
+                                : parseFloat(item.realized) < 0
+                                  ? "red"
+                                  : "green"
+                            }
+                          >
+                            {formatCurrency(parseFloat(item.realized))}
+                          </Text>
+                        </TableCell>
+                        <TableCell>
+                          <Text
+                            color={
+                              parseFloat(item.unrealized) === 0
+                                ? "gray"
+                                : parseFloat(item.unrealized) < 0
+                                  ? "red"
+                                  : "green"
+                            }
+                          >
+                            {formatCurrency(parseFloat(item.unrealized))}
+                          </Text>
+                        </TableCell>
+                        <TableCell>
+                          <Text
+                            color={
+                              parseFloat(item.alpha) === 0
+                                ? "gray"
+                                : parseFloat(item.alpha) < 0
+                                  ? "red"
+                                  : "green"
+                            }
+                          >
+                            {formatCurrency(parseFloat(item.alpha))}
+                          </Text>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </TableRoot>
             )}
           </Card></>}
     </>

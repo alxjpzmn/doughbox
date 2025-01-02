@@ -30,7 +30,7 @@ const Positions = ({ }) => {
           <List>
             {data?.map((item) => (
               <ListItem key={`${item?.isin}`}>
-                <a href={`https://duckduckgo.com/?q=${item?.isin}`}>
+                <a href={`https://duckduckgo.com/?q=${item?.isin}`} className="truncate overflow-hidden whitespace-nowrap max-w-48">
                   {item?.name}
                 </a>
                 <span className="font-bold">
