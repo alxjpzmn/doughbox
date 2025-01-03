@@ -48,14 +48,22 @@ const useAuth = () => {
     }
   };
 
-  const login = async (password: String) => {
-    const res = await sendMutateRequest(`${BASE_URL}/login`, { password });
-    if (res.ok) {
-      mutate();
-      clearSWRCache(cache);
-      setLocation("/dashboard/portfolio");
+  const login = async (password: string) => {
+    try {
+      const res = await sendMutateRequest(`${BASE_URL}/login`, { password });
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw new Error(errorData.message || "Login failed");
+      } else {
+        mutate();
+        clearSWRCache(cache);
+        setLocation("/dashboard/portfolio");
+      }
+    } catch (err) {
+      throw err;
     }
   };
+
 
   return {
     loading,
