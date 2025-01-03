@@ -121,14 +121,14 @@ const Performance = ({ }) => {
           <Card className="mt-6">
             <Flex className="flex-col md:flex flex-wrap justify-between items-baseline gap-4">
               <Text className="flex-grow">Individiual Performance</Text>
-              <Flex className="flex md:justify-between gap-16">
+              <Flex className="flex-col items-start gap-4">
                 <Select
                   value={undefined}
                   defaultValue={sortBy}
                   //@ts-ignore
                   onValueChange={setSortBy}
                   placeholder="Sort by..."
-                  className="max-w-full"
+                  className="w-full"
                 >
                   <SelectItem value="ascTotalReturn">Return Ascending</SelectItem>
                   <SelectItem value="descTotalReturn">Return Descending</SelectItem>
