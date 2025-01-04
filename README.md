@@ -81,7 +81,7 @@ You can run the following commands in the CLI:
 
 `portfolio`: to show your current holdings and their allocation in the terminal.
 
-`pl`: this takes a while to run and calculates your return for the portfolio as such and each present and past position within it. It also benchmarks it against the S&P 500 if you've set a FRED API Token. Once you've run it, it will also be shown in the web interface.
+`performance`: this takes a while to run and calculates your return for the portfolio as such plus each present and past position within it. It also benchmarks it against the S&P 500 if you've set a FRED API Token. Once you've run it, it will also be shown in the web interface.
 
 `taxation`: also takes a while to run and will output your realized gains and losses, dividends, interest etc. using perpetual WAC. It will also display dividend aequivalents using OeKB data and withholding tax calc using Austrian tax rates and withheld tax from brokerage statements.
 
