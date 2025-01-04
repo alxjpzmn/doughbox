@@ -13,9 +13,10 @@ const Positions = ({ }) => {
     fetcher,
   );
 
+
   return (
-    <div className="min-h-screen">
-      <Card className="w-full flex flex-col justify-start mb-6">
+    <div>
+      < Card className="w-full flex flex-col justify-start mb-6" >
         <Title className="w-full mb-4">Positions</Title>
         <DatePicker
           enableYearNavigation
@@ -24,8 +25,8 @@ const Positions = ({ }) => {
           onValueChange={(value: string) => setSelectedDate(new Date(value))}
           enableClear={false}
         />
-      </Card>
-      {data && (
+      </Card >
+      {!!data?.length && (
         <Card>
           <List>
             {data?.map((item) => (
@@ -41,7 +42,7 @@ const Positions = ({ }) => {
           </List>
         </Card>
       )}
-    </div>
+    </div >
   );
 };
 

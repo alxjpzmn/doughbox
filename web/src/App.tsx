@@ -10,13 +10,11 @@ import Positions from "@/pages/dashboard/Positions";
 import Taxation from "@/pages/dashboard/Taxation";
 import useIsMobile from "@/hooks/useIsMobile";
 import { Menu, MobileMenu } from "@/components/Menu";
-import useAuth from "@/hooks/useAuth";
 
 
 
 export default function App() {
   const isMobile = useIsMobile();
-  const { loggedIn } = useAuth()
 
 
 
@@ -24,7 +22,6 @@ export default function App() {
     <SWRConfig
       value={{
         onError: (error) => {
-          console.log(loggedIn)
           console.error(error)
           return error;
         },

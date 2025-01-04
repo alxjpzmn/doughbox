@@ -19,6 +19,7 @@ import {
   getDeltaType,
 } from '@/util';
 import { PortfolioOverview, PositionWithValueAndAllocation } from '@/types/core';
+import EmptyState from '@/components/EmptyState';
 
 
 const Portfolio = () => {
@@ -37,6 +38,7 @@ const Portfolio = () => {
 
   return (
     <>
+      <EmptyState />
       {data && <>
         <Card key={overviewData.title} className="mb-6">
           <Subtitle>{overviewData.title}</Subtitle>
