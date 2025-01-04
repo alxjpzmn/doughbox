@@ -19,10 +19,11 @@ import {
   getDeltaType,
 } from '@/util';
 import { PortfolioOverview, PositionWithValueAndAllocation } from '@/types/core';
+import EmptyState, { EmptyStateVariants } from '@/components/EmptyState';
 
 
 const Portfolio = () => {
-  const { data, isLoading } = useSwr<PortfolioOverview>(`${BASE_URL}/portfolio`, fetcher);
+  const { data, isLoading, error } = useSwr<PortfolioOverview>(`${BASE_URL}/portfolio`, fetcher);
 
   let overviewData = {
     title: 'Current Portfolio Value',
@@ -37,6 +38,7 @@ const Portfolio = () => {
 
   return (
     <>
+      {error && !error.details.events_present && <EmptyState variant={EmptyStateVariants.WithCliInstructionImportTrades} docker={error.details?.in_docker} />}
       {data && <>
         <Card key={overviewData.title} className="mb-6">
           <Subtitle>{overviewData.title}</Subtitle>
@@ -57,21 +59,22 @@ const Portfolio = () => {
           <Text>Last updated {formatUnixTimestampRelative(data?.generated_at)}</Text>
         </Card>
 
-        <Card>
-          <Text>Portfolio</Text>
-          <BarList
-            data={data?.positions
-              .map((position: PositionWithValueAndAllocation) => {
-                return {
-                  name: `${position.share}% · ${position.name}`,
-                  value: parseFloat(position.value),
-                  href: `https://duckduckgo.com/?q=${position.isin}`,
-                };
-              })}
-            className="mt-4"
-            valueFormatter={formatCurrency}
-          />
-        </Card></>}
+        {data?.positions.length > 0 &&
+          <Card>
+            <Text>Portfolio</Text>
+            <BarList
+              data={data?.positions
+                .map((position: PositionWithValueAndAllocation) => {
+                  return {
+                    name: `${position.share}% · ${position.name}`,
+                    value: parseFloat(position.value),
+                    href: `https://duckduckgo.com/?q=${position.isin}`,
+                  };
+                })}
+              className="mt-4"
+              valueFormatter={formatCurrency}
+            />
+          </Card>}</>}
     </>
   );
 };

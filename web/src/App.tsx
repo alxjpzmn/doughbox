@@ -16,20 +16,11 @@ import useAuth from "@/hooks/useAuth";
 
 export default function App() {
   const isMobile = useIsMobile();
-  const { loggedIn } = useAuth()
-
-
+  // needs to be called to handle authentication at app level
+  useAuth();
 
   return (
-    <SWRConfig
-      value={{
-        onError: (error) => {
-          console.log(loggedIn)
-          console.error(error)
-          return error;
-        },
-      }}
-    >
+    <SWRConfig>
       <main className="w-full min-h-screen pt-4 pb-20 px-4 bg-tremor-background-muted dark:bg-dark-tremor-background-muted">
         <div className="max-w-2xl mx-auto">
           <Switch>

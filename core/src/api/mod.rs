@@ -2,6 +2,7 @@ use routes::create_router;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 
+pub mod errors;
 pub mod handlers;
 pub mod routes;
 

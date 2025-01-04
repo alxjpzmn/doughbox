@@ -9,6 +9,7 @@ use typeshare::typeshare;
 use crate::database::{
     models::position::{PositionWithValue, PositionWithValueAndAllocation},
     queries::{
+        composite::{events_exist, EventFilter},
         instrument::{batch_get_instrument_names, batch_get_instrument_prices},
         position::get_positions,
         trade::{get_realized_return, get_total_invested_value},
@@ -34,6 +35,7 @@ pub async fn get_portfolio_overview() -> anyhow::Result<PortfolioOverview> {
     let invested = get_total_invested_value().await?;
 
     let current_positions = get_positions(None, None).await?;
+
     let mut total_position = dec!(0.0);
 
     let isins: Vec<_> = current_positions
@@ -84,6 +86,17 @@ pub async fn get_portfolio_overview() -> anyhow::Result<PortfolioOverview> {
         .collect();
 
     let total_return_abs = round_to_decimals((total_position + realized) - invested);
+
+    if current_positions.is_empty() && !events_exist(EventFilter::TradesOnly).await? {
+        return Ok(PortfolioOverview {
+            generated_at: Utc::now().timestamp(),
+            total_value: dec!(0),
+            total_return_rel: dec!(0),
+            total_return_abs: dec!(0),
+            realized: dec!(0),
+            positions: vec![],
+        });
+    }
 
     Ok(PortfolioOverview {
         generated_at: Utc::now().timestamp(),

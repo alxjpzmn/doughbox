@@ -15,7 +15,11 @@ use shared::confirm_action;
 use taxation::calculate_taxes;
 
 use crate::{
-    api, database::queries::fx_rate::get_most_recent_rate,
+    api,
+    database::queries::{
+        composite::{events_exist, EventFilter},
+        fx_rate::get_most_recent_rate,
+    },
     services::market_data::fx_rates::fetch_historic_ecb_rates,
 };
 
@@ -56,7 +60,13 @@ pub async fn cli() -> anyhow::Result<()> {
 
     match args {
         Command::Portfolio => {
-            portfolio().await?;
+            if events_exist(EventFilter::TradesOnly).await? {
+                portfolio().await?;
+            } else {
+                println!(
+                    "\x1b[31mPlease import trades first. Run with --help to learn more.\x1b[0m"
+                );
+            }
         }
         Command::Import { path, silent } => {
             import(&path).await?;
@@ -77,13 +87,23 @@ pub async fn cli() -> anyhow::Result<()> {
             }
         }
         Command::Performance {} => {
-            performance().await?;
+            if events_exist(EventFilter::TradesOnly).await? {
+                performance().await?;
+            } else {
+                println!(
+                    "\x1b[31mPlease import trades first. Run with --help to learn more.\x1b[0m"
+                );
+            }
         }
         Command::Housekeeping {} => {
             housekeeping().await?;
         }
         Command::Taxation {} => {
-            calculate_taxes().await?;
+            if events_exist(EventFilter::All).await? {
+                calculate_taxes().await?;
+            } else {
+                println!("\x1b[31mPlease import events (e.g. trades, dividends) first. Run with --help to learn how.\x1b[0m");
+            }
         }
         Command::Api { silent: _ } => {
             println!("Starting web server...");

@@ -1,5 +1,8 @@
 use crate::{
-    database::queries::performance::get_performance_signals,
+    database::queries::{
+        composite::{events_exist, EventFilter},
+        performance::get_performance_signals,
+    },
     services::{
         events::get_events,
         parsers::parse_timestamp,
@@ -7,7 +10,7 @@ use crate::{
         positions::get_positions_overview,
         shared::{
             constants::{OUT_DIR, SESSION_TOKEN_KEY},
-            env::get_env_variable,
+            env::{get_env_variable, is_running_in_docker},
         },
     },
 };
@@ -22,6 +25,8 @@ use serde::Deserialize;
 
 use tokio::fs;
 use tower_sessions::Session;
+
+use super::errors::{ErrorDetails, ErrorResponse};
 
 fn json_response<T: serde::Serialize>(
     data: &T,
@@ -99,19 +104,98 @@ pub async fn logout(session: Session) -> anyhow::Result<impl IntoResponse, Statu
     Ok(StatusCode::OK)
 }
 
-pub async fn portfolio() -> anyhow::Result<impl IntoResponse, StatusCode> {
-    let portfolio_overview = get_portfolio_overview()
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    json_response(&portfolio_overview)
+pub async fn portfolio() -> Result<impl IntoResponse, ErrorResponse> {
+    match get_portfolio_overview().await {
+        Ok(portfolio_overview) => {
+            if portfolio_overview.positions.is_empty() {
+                let events_check_result =
+                    events_exist(EventFilter::TradesOnly).await.map_err(|e| {
+                        ErrorResponse::new(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "EventsExistError",
+                            &format!("Error while checking if events exist: {}", e),
+                            None,
+                        )
+                    })?;
+                let error_details = ErrorDetails {
+                    in_docker: Some(is_running_in_docker()),
+                    events_present: Some(events_check_result),
+                };
+
+                if !events_check_result {
+                    return Err(ErrorResponse::new(
+                        StatusCode::NOT_FOUND,
+                        "EmptyPortfolioError",
+                        "Empty portfolio without events",
+                        Some(error_details),
+                    ));
+                }
+            }
+            Ok(json_response(&portfolio_overview))
+        }
+        Err(_err) => {
+            let events_check_result = events_exist(EventFilter::TradesOnly).await.map_err(|e| {
+                ErrorResponse::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "EventsExistError",
+                    &format!("Error while checking if events exist: {}", e),
+                    None,
+                )
+            })?;
+            let error_details = ErrorDetails {
+                in_docker: Some(is_running_in_docker()),
+                events_present: Some(events_check_result),
+            };
+            // Handle the error by returning an ErrorResponse
+            Err(ErrorResponse::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "PortfolioRetrievalError",
+                "An error occurred while retrieving the portfolio overview.",
+                Some(error_details),
+            ))
+        }
+    }
 }
 
-pub async fn performance() -> anyhow::Result<impl IntoResponse, StatusCode> {
+pub async fn performance() -> anyhow::Result<impl IntoResponse, ErrorResponse> {
     let path = format!("{}/performance.json", OUT_DIR);
-    let data = fs::read_to_string(path).await.expect("Unable to read file");
-    let mut headers = HeaderMap::new();
-    headers.insert("Content-Type", "application/json".parse().unwrap());
-    Ok((StatusCode::OK, headers, data))
+    match fs::read_to_string(&path).await {
+        Ok(data) => {
+            let mut headers = HeaderMap::new();
+            headers.insert("Content-Type", "application/json".parse().unwrap());
+            Ok((StatusCode::OK, headers, data))
+        }
+        Err(err) => {
+            let events_check_result = events_exist(EventFilter::TradesOnly).await.map_err(|e| {
+                ErrorResponse::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "EventsExistError",
+                    &format!("Error while checking if events exist: {}", e),
+                    None,
+                )
+            })?;
+
+            let error_details = ErrorDetails {
+                in_docker: Some(is_running_in_docker()),
+                events_present: Some(events_check_result),
+            };
+            if err.kind() == std::io::ErrorKind::NotFound {
+                Err(ErrorResponse::new(
+                    StatusCode::NOT_FOUND,
+                    "FileNotFound",
+                    &format!("The file '{}' could not be found.", path),
+                    Some(error_details),
+                ))
+            } else {
+                Err(ErrorResponse::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "InternalServerError",
+                    "An unexpected error occurred while reading the file.",
+                    Some(error_details),
+                ))
+            }
+        }
+    }
 }
 
 pub async fn past_performance() -> anyhow::Result<impl IntoResponse, StatusCode> {
@@ -148,12 +232,45 @@ pub async fn timeline(
     json_response(&timeline)
 }
 
-pub async fn taxation() -> anyhow::Result<impl IntoResponse, StatusCode> {
+pub async fn taxation() -> anyhow::Result<impl IntoResponse, ErrorResponse> {
     let path = format!("{}/taxation.json", OUT_DIR);
-    let data = fs::read_to_string(path).await.expect("Unable to read file");
-    let mut headers = HeaderMap::new();
-    headers.insert("Content-Type", "application/json".parse().unwrap());
-    Ok((StatusCode::OK, headers, data))
+    match fs::read_to_string(&path).await {
+        Ok(data) => {
+            let mut headers = HeaderMap::new();
+            headers.insert("Content-Type", "application/json".parse().unwrap());
+            Ok((StatusCode::OK, headers, data))
+        }
+        Err(err) => {
+            let events_check_result = events_exist(EventFilter::All).await.map_err(|e| {
+                ErrorResponse::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "EventsExistError",
+                    &format!("Error while checking if events exist: {}", e),
+                    None,
+                )
+            })?;
+
+            let error_details = ErrorDetails {
+                in_docker: Some(is_running_in_docker()),
+                events_present: Some(events_check_result),
+            };
+            if err.kind() == std::io::ErrorKind::NotFound {
+                Err(ErrorResponse::new(
+                    StatusCode::NOT_FOUND,
+                    "FileNotFound",
+                    &format!("The file '{}' could not be found.", path),
+                    Some(error_details),
+                ))
+            } else {
+                Err(ErrorResponse::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "InternalServerError",
+                    "An unexpected error occurred while reading the file.",
+                    Some(error_details),
+                ))
+            }
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
