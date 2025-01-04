@@ -1,4 +1,5 @@
 use dotenvy::{dotenv, from_filename, var};
+use std::path::Path;
 
 pub fn check_for_env_variables() {
     // the first to env variables are necessary for operation, thus the app panics if they aren't
@@ -39,4 +40,8 @@ pub fn get_env_variable(variable_to_get: &str) -> Option<String> {
         _ => dotenv().ok(),
     };
     var(variable_to_get).ok()
+}
+
+pub fn is_running_in_docker() -> bool {
+    Path::new("/.dockerenv").exists()
 }

@@ -3,14 +3,15 @@ import { Card, Title, Text, List, ListItem, Grid } from "@tremor/react";
 import { BASE_URL, fetcher, formatCurrency, formatDate } from "@/util";
 import { AnnualTaxableAmounts, SecWac, TaxationReport, Wac } from "@/types/core";
 import { Table, TableBody, TableCell, TableHead, TableHeaderCell, TableRoot, TableRow } from "@/components/Table";
+import EmptyState, { EmptyStateVariants } from "@/components/EmptyState";
 
 const Taxation = () => {
-  const { data } = useSwr<TaxationReport>(`${BASE_URL}/taxation`, fetcher);
-  console.log(data);
-
+  const { data, error } = useSwr<TaxationReport>(`${BASE_URL}/taxation`, fetcher);
 
   return (
     <div>
+      {error && !error.details.events_present && <EmptyState variant={EmptyStateVariants.WithCliInstructionImport} docker={error.details?.in_docker} />}
+      {error && error.details.events_present && <EmptyState variant={EmptyStateVariants.WithCliInstructionTaxation} docker={error.details?.in_docker} />}
       {(data && !!data.created_at && !!data.taxable_amounts) && (
         <div>
           <Text color="slate" className="mb-4">

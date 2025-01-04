@@ -36,6 +36,37 @@ pub async fn get_used_currencies() -> anyhow::Result<Vec<String>> {
     Ok(used_currencies)
 }
 
+pub enum EventFilter {
+    All,
+    TradesOnly,
+}
+
+pub async fn events_exist(filter: EventFilter) -> anyhow::Result<bool> {
+    let client = db_client().await?;
+
+    let query = match filter {
+        EventFilter::All => "
+            SELECT 
+                EXISTS (SELECT 1 FROM trade LIMIT 1) OR
+                EXISTS (SELECT 1 FROM dividend LIMIT 1) OR
+                EXISTS (SELECT 1 FROM interest LIMIT 1) OR
+                EXISTS (SELECT 1 FROM fx_conversion LIMIT 1) AS any_event_table_has_entries
+        "
+        .to_string(),
+
+        EventFilter::TradesOnly => "
+            SELECT EXISTS (SELECT 1 FROM trade LIMIT 1) AS table_has_entries
+        "
+        .to_string(),
+    };
+
+    let row = client.query_one(&query, &[]).await?;
+
+    let table_has_entries: bool = row.get(0);
+
+    Ok(table_has_entries)
+}
+
 pub async fn get_used_isins() -> anyhow::Result<Vec<String>> {
     let client = db_client().await?;
 

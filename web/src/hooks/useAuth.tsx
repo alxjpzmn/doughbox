@@ -1,12 +1,14 @@
 import { useEffect } from "react";
 import useSWR, { useSWRConfig } from "swr";
-import { useLocation } from "wouter";
+import { useLocation, useRouter } from "wouter";
 import { BASE_URL, clearSWRCache, fetcher, sendMutateRequest } from "@/util";
-import { navigate } from "wouter/use-browser-location";
+import { useBrowserLocation } from "wouter/use-browser-location";
 
 const useAuth = () => {
   const { cache } = useSWRConfig();
-  const [location, setLocation] = useLocation();
+  const router = useRouter();
+  const [location, navigate] = useLocation();
+  const [_browserLocation, setBrowserlocation] = useBrowserLocation();
 
   const { isLoading, mutate, error } = useSWR(
     `${BASE_URL}/auth_state`,
@@ -21,16 +23,18 @@ const useAuth = () => {
     },
   );
 
+
+  const routeRequiresAuth = router.base === "/dashboard";
   const loading = isLoading;
   const loggedOut = !!error && error.status === 401;
   const loggedIn = !loggedOut;
 
   if (!isLoading && loggedIn && (location === "/login" || location === '/')) {
-    setLocation("/dashboard/portfolio");
+    navigate("/dashboard/portfolio");
   }
 
-  if (!isLoading && loggedOut && (location.includes("/dashboard") || location === '/')) {
-    setLocation("/login");
+  if (!isLoading && loggedOut && (routeRequiresAuth || location === '/')) {
+    setBrowserlocation("/login", { replace: true });
   }
 
   useEffect(() => {
@@ -57,7 +61,7 @@ const useAuth = () => {
       } else {
         mutate();
         clearSWRCache(cache);
-        setLocation("/dashboard/portfolio");
+        navigate("/dashboard/portfolio");
       }
     } catch (err) {
       throw err;

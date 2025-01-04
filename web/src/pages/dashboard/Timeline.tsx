@@ -5,6 +5,7 @@ import { Card, DatePicker, Title } from "@tremor/react";
 import { BASE_URL, fetcher } from "@/util";
 import { DividendCard, FxCard, InterestCard, TradeCard } from "@/components/EventCard";
 import { EventType, PortfolioEvent } from "@/types/core";
+import EmptyState from "@/components/EmptyState";
 
 export const Timeline = () => {
 
@@ -28,7 +29,8 @@ export const Timeline = () => {
           enableClear={false}
         />
       </Card>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+
+      {data?.length === 0 ? <EmptyState /> : <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {data?.
           map((timelineEvent: PortfolioEvent) => {
             let eventComponent;
@@ -58,7 +60,7 @@ export const Timeline = () => {
 
           }
           )}
-      </div>
+      </div>}
     </div>
   )
 }

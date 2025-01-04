@@ -20,6 +20,7 @@ import { Switch } from "@/components/Switch";
 import { Label } from "@/components/Label";
 import { PortfolioPerformance, PositionPerformance } from "@/types/core";
 import { Table, TableBody, TableCell, TableHead, TableHeaderCell, TableRoot, TableRow } from "@/components/Table";
+import EmptyState, { EmptyStateVariants } from "@/components/EmptyState";
 
 interface PositionPerformanceWithKey extends PositionPerformance {
   key: string
@@ -36,7 +37,7 @@ type sortByMethods =
   | "descAlpha";
 
 const Performance = ({ }) => {
-  const { data, isLoading } = useSwr<PortfolioPerformance>(`${BASE_URL}/performance_overview`, fetcher);
+  const { data, isLoading, error } = useSwr<PortfolioPerformance>(`${BASE_URL}/performance_overview`, fetcher);
 
   const sorting = (method: sortByMethods): (a: PositionPerformance, b: PositionPerformance) => number => {
     switch (method) {
@@ -98,6 +99,8 @@ const Performance = ({ }) => {
 
   return (
     <>
+      {error && !error.details.events_present && <EmptyState variant={EmptyStateVariants.WithCliInstructionImportTrades} docker={error.details?.in_docker} />}
+      {error && error.details.events_present && <EmptyState variant={EmptyStateVariants.WithCliInstructionPerformance} docker={error.details?.in_docker} />}
       {data &&
         <>
           <Card className="grid grid-cols-1 gap-2">

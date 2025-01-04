@@ -95,7 +95,6 @@ pub async fn parse_file_for_import(file: &[u8]) -> anyhow::Result<()> {
         FileFormat::Pdf => {
             let mut text = pdf_extract::extract_text_from_mem(file)?;
             text = deunicode(&text).replace('\0', "").replace("[?]", "");
-
             let broker = detect_broker_from_pdf_text(&text);
 
             match broker {

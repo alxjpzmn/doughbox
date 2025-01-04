@@ -5,6 +5,7 @@ import { useState } from "react";
 import { DatePicker } from "@tremor/react";
 import { format } from "date-fns";
 import { PositionWithName } from "@/types/core";
+import EmptyState from "@/components/EmptyState";
 
 const Positions = ({ }) => {
   const [selectedDate, setSelectedDate] = useState(new Date());
@@ -17,16 +18,17 @@ const Positions = ({ }) => {
   return (
     <div>
       < Card className="w-full flex flex-col justify-start mb-6" >
-        <Title className="w-full mb-4">Positions</Title>
+        <Title className="w-full mb-4">Date</Title>
         <DatePicker
           enableYearNavigation
           className="max-w-sm"
           // @ts-ignore
           onValueChange={(value: string) => setSelectedDate(new Date(value))}
           enableClear={false}
+          defaultValue={new Date()}
         />
       </Card >
-      {!!data?.length && (
+      {data?.length === 0 ? <EmptyState /> : (
         <Card>
           <List>
             {data?.map((item) => (
