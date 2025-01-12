@@ -57,10 +57,12 @@ pub async fn extract_erste_bank_record(text: &str) -> anyhow::Result<()> {
                 text,
             )?
             .split_off(10)
+            .replace("\n", "")
             .replace("STK", "")
             .replace(" ", "")
             .replace(".", "")
             .replace(',', ".")
+            .trim()
             .parse::<Decimal>()?;
 
             let order_type = if does_match_exist(r"\sKauf", text) {
@@ -71,9 +73,10 @@ pub async fn extract_erste_bank_record(text: &str) -> anyhow::Result<()> {
 
             let mut fees = dec!(0.0);
             if !does_match_exist(
-                r"Fur diese Transaktion fielen keine Dienstleistungskosten an.",
+                r"Für diese Transaktion fielen keine Dienstleistungskosten an.",
                 text,
-            ) && !does_match_exist("Es sind keine Kosten angefallen.", text)
+            ) && !does_match_exist(r"Für diese Transaktion sind keine Kosten angefallen", text)
+                && !does_match_exist("Es sind keine Kosten angefallen.", text)
             {
                 fees =
                     return_first_match(r"Summe der Dienstleistungskosten EUR \d{1,},\d{1,}", text)?

@@ -37,9 +37,9 @@ enum TradeToken {
     IsinKeyword,
     #[regex(r"STK", priority = 2)]
     SharesKeyword,
-    #[regex(r"Verwahrart", priority = 2)]
+    #[regex(r"Kurswert", priority = 2)]
     PriceKeyword,
-    #[regex(r"\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}:\d{2}", priority = 1)]
+    #[regex(r"\d{2}\.\d{2}\.\d{4}\n\d{2}:\d{2}:\d{2}", priority = 1)]
     Date,
     #[regex(r"[A-Z]{2}[A-Z0-9]{9}\d")]
     Isin,
@@ -113,11 +113,6 @@ fn extract_trade_details(text: &str) -> Option<(String, String, String, String, 
             }
             _ => {}
         }
-        // println!("{:?}", order_date);
-        // println!("{:?}", price);
-        // println!("{:?}", id);
-        // println!("{:?}", shares);
-        // println!("{:?}", isin);
 
         if order_date.is_some()
             && isin.is_some()
@@ -173,11 +168,9 @@ fn extract_dividend_details(text: &str) -> Option<(String, String, String)> {
 
 pub async fn extract_scalable_record(text: &str) -> anyhow::Result<()> {
     let broker = "Scalable".to_string();
-    println!("{:?}", text);
 
     match detect_record_type(text) {
         RecordType::EquityTrade => {
-            println!("{:?}", extract_trade_details(text));
             if let Some((order_date, isin, shares, price, id)) = extract_trade_details(text) {
                 let trade = Trade {
                     broker,

@@ -30,12 +30,12 @@ enum RecordType {
 }
 
 fn detect_record_type(text: &str) -> anyhow::Result<RecordType> {
-    let dividend_patterns = Regex::new(r"(Dividende|COUPON|Aussch.ttung)")?;
-    let bond_trade_pattern = Regex::new(r"St.ckzinsen")?;
+    let dividend_patterns = Regex::new(r"(Dividende|COUPON|Ausschüttung)")?;
+    let bond_trade_pattern = Regex::new(r"Stückzinsen")?;
     let interest_pattern = Regex::new(r"Zinsen")?;
     let liquidation_pattern = Regex::new(r"Tilgung")?;
-    let investment_plan_pattern = Regex::new(r"(Sparplanausfuhrung|Saveback)")?;
-    let portfolio_transfer_pattern = Regex::new(r"Depot.bertrag")?;
+    let investment_plan_pattern = Regex::new(r"(Sparplanausführung|Saveback)")?;
+    let portfolio_transfer_pattern = Regex::new(r"Depotübertrag")?;
 
     Ok(match text {
         _ if dividend_patterns.is_match(text) => RecordType::Dividend,
@@ -98,8 +98,8 @@ pub async fn extract_trade_republic_record(text: &str) -> anyhow::Result<()> {
                 .replace(" ", "")
                 .parse::<Decimal>()?;
 
-            let id = return_first_match(r"AUSFUHRUNG\s*(\S+)", text)?
-                .replace("AUSFUHRUNG", "")
+            let id = return_first_match(r"AUSFÜHRUNG\s*(\S+)", text)?
+                .replace("AUSFÜHRUNG", "")
                 .replace(" ", "")
                 .replace("\n", "");
 
@@ -227,8 +227,8 @@ pub async fn extract_trade_republic_record(text: &str) -> anyhow::Result<()> {
                     .parse::<Decimal>()?;
             };
 
-            let id = return_first_match(r"AUSFUHRUNG\s*(\S+)", text)?
-                .replace("AUSFUHRUNG", "")
+            let id = return_first_match(r"AUSFÜHRUNG\s*(\S+)", text)?
+                .replace("AUSFÜHRUNG", "")
                 .replace(" ", "")
                 .replace("\n", "");
 
@@ -341,8 +341,8 @@ pub async fn extract_trade_republic_record(text: &str) -> anyhow::Result<()> {
                     .parse::<Decimal>()?;
             };
 
-            let id = return_first_match(r"AUSFUHRUNG\s*(\S+)", text)?
-                .replace("AUSFUHRUNG", "")
+            let id = return_first_match(r"AUSFÜHRUNG\s*(\S+)", text)?
+                .replace("AUSFÜHRUNG", "")
                 .replace(" ", "")
                 .replace("\n", "");
 
