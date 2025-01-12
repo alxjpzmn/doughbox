@@ -14,6 +14,7 @@ use super::importers::{
     wise::extract_wise_record,
 };
 
+#[derive(Debug)]
 pub enum FileFormat {
     Pdf,
     Csv,
@@ -73,18 +74,25 @@ pub fn detect_broker_from_pdf_text(text: &str) -> Option<Broker> {
 }
 
 pub fn detect_file_format(file: &[u8]) -> FileFormat {
-    let file_content = file;
-    // Check for PDF (starts with '%PDF')
-    if file_content.starts_with(b"%PDF") {
-        return FileFormat::Pdf;
+    if file.is_empty() {
+        return FileFormat::Unsupported; // No file content
     }
-    // Check for CSV (basic heuristic: check for common CSV delimiters like ',' and line breaks)
-    // Look for commas and newlines as basic indicators of CSV
-    if file_content.contains(&b',' as &u8)
-        && (file_content.contains(&b'\n' as &u8) || file_content.contains(&b'\r' as &u8))
+
+    if file.starts_with(b"%PDF") {
+        if let Some(pos) = file.windows(5).position(|window| window == b"%%EOF") {
+            if pos > file.len() - 1000 {
+                return FileFormat::Pdf;
+            }
+        }
+    }
+
+    if file.contains(&b',' as &u8)
+        && (file.contains(&b'\n' as &u8) || file.contains(&b'\r' as &u8))
+        && file.windows(5).any(|window| window == b"data,")
     {
         return FileFormat::Csv;
     }
+
     FileFormat::Unsupported
 }
 
@@ -93,9 +101,19 @@ pub async fn parse_file_for_import(file: &[u8]) -> anyhow::Result<()> {
 
     match file_format {
         FileFormat::Pdf => {
-            let mut text = pdf_extract::extract_text_from_mem(file)?;
-            text = deunicode(&text).replace('\0', "").replace("[?]", "");
-            let broker = detect_broker_from_pdf_text(&text);
+            let text = pdf_extract::extract_text_from_mem(file)?;
+            let re = Regex::new(r"\s+").unwrap();
+            let cleaned_text = deunicode(&text)
+                .replace('\0', "")
+                .replace("[?]", "")
+                .replace("\n", " ")
+                .replace("\r", " ")
+                .trim()
+                .to_string();
+
+            let final_text = re.replace_all(&cleaned_text, " ").to_string();
+
+            let broker = detect_broker_from_pdf_text(&final_text);
 
             match broker {
                 Some(Broker::TradeRepublic) => {

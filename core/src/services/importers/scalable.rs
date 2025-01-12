@@ -32,13 +32,14 @@ fn detect_record_type(text: &str) -> RecordType {
 enum TradeToken {
     #[regex(r"Auftragszeit", priority = 2)]
     DateKeyword,
+
     #[regex(r"ISIN", priority = 2)]
     IsinKeyword,
     #[regex(r"STK", priority = 2)]
     SharesKeyword,
     #[regex(r"Verwahrart", priority = 2)]
     PriceKeyword,
-    #[regex(r"Vorgangs-Nr.", priority = 2)]
+    #[regex(r"\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}:\d{2}", priority = 1)]
     Date,
     #[regex(r"[A-Z]{2}[A-Z0-9]{9}\d")]
     Isin,
@@ -46,9 +47,9 @@ enum TradeToken {
     Number,
     #[regex(r"\d{1,3}(?:[\.,]\d{3})*(?:[\.,]\d{2,3})?", priority = 1)]
     Price,
-    #[regex(r"[:\s]+", logos::skip)]
+    #[regex(r"Vorgangs-Nr.", priority = 2)]
     IdKeyword,
-    #[regex(r"\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}:\d{2}", priority = 1)]
+    #[regex(r"[:\s]+", logos::skip)]
     Separator,
 }
 
@@ -112,6 +113,11 @@ fn extract_trade_details(text: &str) -> Option<(String, String, String, String, 
             }
             _ => {}
         }
+        // println!("{:?}", order_date);
+        // println!("{:?}", price);
+        // println!("{:?}", id);
+        // println!("{:?}", shares);
+        // println!("{:?}", isin);
 
         if order_date.is_some()
             && isin.is_some()
@@ -137,7 +143,6 @@ fn extract_dividend_details(text: &str) -> Option<(String, String, String)> {
     let mut details = (None, None, None);
 
     while let Some(token) = lexer.next() {
-        println!("{:?}", details);
         match token {
             Ok(DividendToken::DateKeyword) => {
                 if let Some(Ok(DividendToken::Date)) = lexer.next() {
@@ -168,6 +173,7 @@ fn extract_dividend_details(text: &str) -> Option<(String, String, String)> {
 
 pub async fn extract_scalable_record(text: &str) -> anyhow::Result<()> {
     let broker = "Scalable".to_string();
+    println!("{:?}", text);
 
     match detect_record_type(text) {
         RecordType::EquityTrade => {
