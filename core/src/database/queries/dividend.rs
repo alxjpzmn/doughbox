@@ -19,6 +19,7 @@ pub async fn add_dividend_to_db(dividend: Dividend) -> anyhow::Result<()> {
             &[&hash, &dividend.isin, &dividend.date, &dividend.amount, &dividend.broker, &dividend.currency, &dividend.amount_eur, &dividend.withholding_tax, &dividend.witholding_tax_currency],
         )
     .await?;
+    println!("💵 Dividend added: {:?}", dividend);
 
     Ok(())
 }
