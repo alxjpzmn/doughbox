@@ -179,7 +179,7 @@ pub async fn extract_trade_republic_record(text: &str) -> anyhow::Result<()> {
                 currency_denomination: "EUR".to_string(),
                 date_added: Utc::now(),
                 fees: dec!(0.0),
-                // TR doesn't withhold any tax
+                // TR doesn't withhold any tax in AT
                 withholding_tax: dec!(0.0),
                 witholding_tax_currency: "EUR".to_string(),
             };
@@ -246,7 +246,7 @@ pub async fn extract_trade_republic_record(text: &str) -> anyhow::Result<()> {
                 currency_denomination: "EUR".to_string(),
                 date_added: Utc::now(),
                 fees,
-                // TR doesn't withhold any tax
+                // TR doesn't withhold any tax in AT
                 withholding_tax: dec!(0.0),
                 witholding_tax_currency: "EUR".to_string(),
             };
@@ -277,7 +277,7 @@ pub async fn extract_trade_republic_record(text: &str) -> anyhow::Result<()> {
                 // Trade Republic only supports EUR
                 currency: "EUR".to_string(),
                 amount_eur: amount,
-                // TR doesn't withhold any tax
+                // TR doesn't withhold any tax in AT
                 withholding_tax: dec!(0.0),
                 witholding_tax_currency: "EUR".to_string(),
             };
@@ -360,7 +360,7 @@ pub async fn extract_trade_republic_record(text: &str) -> anyhow::Result<()> {
                 currency_denomination: "EUR".to_string(),
                 date_added: Utc::now(),
                 fees,
-                // TR doesn't withhold any tax
+                // TR doesn't withhold any tax in AT
                 withholding_tax: dec!(0.0),
                 witholding_tax_currency: "EUR".to_string(),
             };
@@ -387,7 +387,7 @@ pub async fn extract_trade_republic_record(text: &str) -> anyhow::Result<()> {
                 // Trade Republic only supports EUR
                 currency: "EUR".to_string(),
                 amount_eur: amount,
-                // TR doesn't withhold any tax
+                // TR doesn't withhold any tax in AT
                 withholding_tax: dec!(0.0),
                 witholding_tax_currency: "EUR".to_string(),
             };

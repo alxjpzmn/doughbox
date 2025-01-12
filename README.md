@@ -83,7 +83,7 @@ You can run the following commands in the CLI:
 
 `performance`: this takes a while to run and calculates your return for the portfolio as such plus each present and past position within it. It also benchmarks it against the S&P 500 if you've set a FRED API Token. Once you've run it, it will also be shown in the web interface.
 
-`taxation`: also takes a while to run and will output your realized gains and losses, dividends, interest etc. using perpetual WAC. It will also display dividend aequivalents using OeKB data and withholding tax calc using Austrian tax rates and withheld tax from brokerage statements.
+`taxation`: also takes a while to run and will output your realized gains and losses, dividends, interest etc. using perpetual WAC. It will also display dividend aequivalents using OeKB data and withheld tax from brokerage statements.
 
 `api`: the command to run the web server that serves both the web frontend and the API. The docker container automatically runs this.
 
@@ -95,7 +95,7 @@ Trade Republic doesn't support any bulk export or direct, documented API access 
 
 ### Fetch current prices
 
-Since Doughbox doesn't have any direct way to fetch current asset prices (if you know a good free API for asset prices with good European coverage, please let me know), you'll need to either update them manually when you want to check your current portfolio value or you automate it by using the `/api/active_units` endpoint to fetch your current holdings, then fetch the current EUR price for the respective ISIN from a data source and update the `instruments` table accordingly.
+Since Doughbox doesn't have any direct way to fetch current asset prices (if you know a good free API for asset prices with good European coverage, please let me know), you'll need to either update them manually when you want to check your current portfolio value or you automate it by using the `/api/positions` endpoint to fetch your current holdings, then fetch the current EUR price for the respective ISIN from a data source and update the `instruments` table accordingly.
 
 ### Manual imports
 
