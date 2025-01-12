@@ -96,24 +96,28 @@ pub fn detect_file_format(file: &[u8]) -> FileFormat {
     FileFormat::Unsupported
 }
 
+pub fn extract_pdf_text(file: &[u8]) -> anyhow::Result<String> {
+    let text = pdf_extract::extract_text_from_mem(file)?;
+    let re = Regex::new(r"\s+").unwrap();
+    let cleaned_text = deunicode(&text)
+        .replace('\0', "")
+        .replace("[?]", "")
+        .replace("\n", " ")
+        .replace("\r", " ")
+        .trim()
+        .to_string();
+
+    Ok(re.replace_all(&cleaned_text, " ").to_string())
+}
+
 pub async fn parse_file_for_import(file: &[u8]) -> anyhow::Result<()> {
     let file_format = detect_file_format(file);
 
     match file_format {
         FileFormat::Pdf => {
-            let text = pdf_extract::extract_text_from_mem(file)?;
-            let re = Regex::new(r"\s+").unwrap();
-            let cleaned_text = deunicode(&text)
-                .replace('\0', "")
-                .replace("[?]", "")
-                .replace("\n", " ")
-                .replace("\r", " ")
-                .trim()
-                .to_string();
+            let text = extract_pdf_text(file)?;
 
-            let final_text = re.replace_all(&cleaned_text, " ").to_string();
-
-            let broker = detect_broker_from_pdf_text(&final_text);
+            let broker = detect_broker_from_pdf_text(&text);
 
             match broker {
                 Some(Broker::TradeRepublic) => {

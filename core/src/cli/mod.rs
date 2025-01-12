@@ -5,6 +5,8 @@ pub mod portfolio;
 pub mod shared;
 pub mod taxation;
 
+use std::fs;
+
 use chrono::{Duration, Utc};
 use clap::{Parser, Subcommand};
 use housekeeping::housekeeping;
@@ -20,7 +22,7 @@ use crate::{
         composite::{events_exist, EventFilter},
         fx_rate::get_most_recent_rate,
     },
-    services::market_data::fx_rates::fetch_historic_ecb_rates,
+    services::{market_data::fx_rates::fetch_historic_ecb_rates, parsers::extract_pdf_text},
 };
 
 #[derive(Parser, Debug)]
@@ -40,6 +42,9 @@ enum Command {
     Portfolio,
     Performance {},
     Taxation {},
+    DebugPdf {
+        path: String,
+    },
     Api {
         #[arg(short, long)]
         silent: bool,
@@ -109,6 +114,15 @@ pub async fn cli() -> anyhow::Result<()> {
             println!("Starting web server...");
             api().await?;
         }
+        Command::DebugPdf { path } => match fs::read(path.clone()) {
+            Ok(buffer) => {
+                let text = extract_pdf_text(&buffer)?;
+                println!("{}", text);
+            }
+            Err(e) => {
+                eprintln!("Failed to read {}: {:?}", path, e);
+            }
+        },
     }
     Ok(())
 }

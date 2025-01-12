@@ -71,11 +71,13 @@ pub async fn extract_erste_bank_record(text: &str) -> anyhow::Result<()> {
                 "Sell"
             };
 
+            println!("{}", text);
+
             let mut fees = dec!(0.0);
             if !does_match_exist(
                 r"Für diese Transaktion fielen keine Dienstleistungskosten an.",
                 text,
-            ) && !does_match_exist(r"Für diese Transaktion sind keine Kosten angefallen", text)
+            ) && !does_match_exist(r"Fur diese Transaktion sind keine Kosten angefallen", text)
                 && !does_match_exist("Es sind keine Kosten angefallen.", text)
             {
                 fees =
