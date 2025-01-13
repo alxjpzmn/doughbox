@@ -43,24 +43,24 @@ pub fn create_router() -> anyhow::Result<Router> {
         .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
         .allow_headers([axum::http::header::CONTENT_TYPE]);
 
-    let router = Router::new()
-        .nest("/api", public_routes)
-        .nest("/api", protected_routes)
+    let public_router = Router::new().nest("/api", public_routes);
+    let protected_router = Router::new().nest("/api", protected_routes);
+    let static_service =
+        get_service(ServeDir::new("./dist").precompressed_gzip()).handle_error(|_| async move {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to serve static assets.",
+            )
+        });
+
+    let static_router = Router::new().fallback_service(static_service);
+
+    let app = public_router
+        .merge(protected_router)
+        .merge(static_router)
         .layer(session_layer)
         .layer(cors_layer)
-        .layer(TraceLayer::new_for_http())
-        .nest_service(
-            "/",
-            Router::new().fallback_service(
-                get_service(ServeDir::new("./dist").precompressed_gzip()).handle_error(
-                    |_| async move {
-                        (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "failed to serve static assets.",
-                        )
-                    },
-                ),
-            ),
-        );
-    Ok(router)
+        .layer(TraceLayer::new_for_http());
+
+    Ok(app)
 }
