@@ -32,14 +32,13 @@ fn detect_record_type(text: &str) -> RecordType {
 enum TradeToken {
     #[regex(r"Auftragszeit", priority = 2)]
     DateKeyword,
-
     #[regex(r"ISIN", priority = 2)]
     IsinKeyword,
-    #[regex(r"STK", priority = 2)]
+    #[regex(r"NominaleSTK", priority = 2)]
     SharesKeyword,
-    #[regex(r"Kurswert", priority = 2)]
+    #[regex(r"EURKurswert", priority = 2)]
     PriceKeyword,
-    #[regex(r"\d{2}\.\d{2}\.\d{4}\n\d{2}:\d{2}:\d{2}", priority = 1)]
+    #[regex(r"\d{2}\.\d{2}\.\d{4}\d{2}:\d{2}:\d{2}", priority = 1)]
     Date,
     #[regex(r"[A-Z]{2}[A-Z0-9]{9}\d")]
     Isin,
