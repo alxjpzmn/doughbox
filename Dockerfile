@@ -11,7 +11,7 @@ COPY --from=frontend /app/web/dist /app/dist
 RUN cd /app && cargo build --release
 
 
-FROM rust:latest
+FROM gcr.io/distroless/cc
 WORKDIR /app
 COPY --from=backend /app/target/release /app
 COPY --from=frontend /app/web/dist /app/dist
