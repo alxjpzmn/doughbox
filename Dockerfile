@@ -13,10 +13,8 @@ RUN cd /app && cargo build --release
 
 FROM gcr.io/distroless/cc
 WORKDIR /app
-COPY --from=backend /app/target/release /app
+COPY --from=backend /app/target/release/doughbox /app
 COPY --from=frontend /app/web/dist /app/dist
-
-RUN apt-get update && apt-get install -y openssl libssl-dev
 
 EXPOSE 8084
 
