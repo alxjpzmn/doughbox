@@ -93,6 +93,10 @@ You can run the following commands in the CLI:
 
 Trade Republic doesn't support any bulk export or direct, documented API access currently. Luckily, there's a great tool to bulk download all of your statements: https://github.com/pytr-org/pytr. Once you've downloaded all of your statements, you can then import the PDF files (e.g. in `Abrechnung` or `Sparplan`) by copying them into the `input` folder of Doughbox.
 
+### Interactive Brokers Trade Export via Flex Query
+
+To import your Interactive Brokers trades into Doughbox, set up a Flex Query: log into IBKR, click "Performance & Reports" > "Flex Queries" > "Create", Select "Trades" under sections, then "Select All". Choose "CSV" under "Format". Give the query a name, tap "Next", then review and "Confirm".
+
 ### Fetch current prices
 
 Since Doughbox doesn't have any direct way to fetch current asset prices (if you know a good free API for asset prices with good European coverage, please let me know), you'll need to either update them manually when you want to check your current portfolio value or you automate it by using the `/api/positions` endpoint to fetch your current holdings, then fetch the current EUR price for the respective ISIN from a data source and update the `instruments` table accordingly.
