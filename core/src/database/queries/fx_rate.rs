@@ -33,7 +33,7 @@ pub async fn get_exchange_rate(
         let query = "SELECT EXISTS (SELECT 1 FROM fx_rate WHERE currency_to = $1)";
         let stmt = client.prepare(query).await?;
         let rows = client.query(&stmt, &[&currency]).await?;
-        Ok(rows.first().map_or(false, |row| row.get(0)))
+        Ok(rows.first().is_some_and(|row| row.get(0)))
     }
 
     let mut rates_fetched = false;

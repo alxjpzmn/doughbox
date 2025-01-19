@@ -16,7 +16,7 @@ pub async fn import(directory_path: &str) -> anyhow::Result<()> {
 
         match fs::read(file_path) {
             Ok(buffer) => {
-                if let Err(e) = parse_file_for_import(&buffer).await {
+                if let Err(e) = parse_file_for_import(&buffer, file_path).await {
                     eprintln!("Failed to process {}: {:?}", file_path.display(), e);
                     continue;
                 }
