@@ -1,17 +1,42 @@
-import { Drawer, DrawerTrigger, DrawerContent, DrawerHeader, DrawerTitle, DrawerBody, DrawerFooter, DrawerClose } from "@/components/Drawer";
-import { Button } from "@/components/Button";
 import useAuth from "@/hooks/useAuth";
-import { Text } from "@tremor/react";
 import { Link, useLocation } from "wouter";
 import { TabNavigation, TabNavigationLink } from "@/components/TabNavigation";
+import { RiFileListFill, RiFileListLine, RiLineChartFill, RiLineChartLine, RiPieChartFill, RiPieChartLine, RiTableFill, RiTableLine, RiTimeFill, RiTimeLine } from "@remixicon/react";
+
+
 
 const menuItems = [
-  { text: 'Portfolio', route: '/portfolio' },
-  { text: 'Performance', route: '/performance' },
-  { text: 'Timeline', route: '/timeline' },
-  { text: 'Positions', route: '/positions' },
-  { text: 'Taxation', route: '/taxation' }
-]
+  {
+    text: 'Portfolio',
+    route: '/portfolio',
+    iconOutline: (props: any) => <RiPieChartLine {...props} />,
+    iconFill: (props: any) => <RiPieChartFill {...props} />
+  },
+  {
+    text: 'Performance',
+    route: '/performance',
+    iconOutline: (props: any) => <RiLineChartLine {...props} />,
+    iconFill: (props: any) => <RiLineChartFill {...props} />
+  },
+  {
+    text: 'Timeline',
+    route: '/timeline',
+    iconOutline: (props: any) => <RiTimeLine {...props} />,
+    iconFill: (props: any) => <RiTimeFill {...props} />
+  },
+  {
+    text: 'Positions',
+    route: '/positions',
+    iconOutline: (props: any) => <RiTableLine {...props} />,
+    iconFill: (props: any) => <RiTableFill {...props} />
+  },
+  {
+    text: 'Taxation',
+    route: '/taxation',
+    iconOutline: (props: any) => <RiFileListLine {...props} />,
+    iconFill: (props: any) => <RiFileListFill {...props} />
+  }
+];
 
 const Menu = () => {
   const { logout } = useAuth();
@@ -32,33 +57,13 @@ const Menu = () => {
 }
 
 const MobileMenu = () => {
-  const { logout } = useAuth();
   const [location] = useLocation();
 
   return (
-    <div className="w-full mb-4 flex justify-end">
-      <Drawer>
-        <DrawerTrigger asChild>
-          <Button variant="secondary">Menu</Button>
-        </DrawerTrigger>
-        <DrawerContent className="sm:max-w-lg">
-          <DrawerHeader>
-            <DrawerTitle>Menu</DrawerTitle>
-          </DrawerHeader>
-          <DrawerBody className="flex flex-col">
-            <Text className="grid grid-cols-1 gap-6 text-lg font-bold">
-              {menuItems.map(menuItem =>
-                <span className="flex items-center" key={menuItem.route}>{location === `${menuItem.route}` && <span className="w-2 h-2 mr-2 bg-green-400 rounded-full" />}<Link href={menuItem.route}><DrawerClose>{menuItem.text}</DrawerClose></Link></span>
-              )}
-            </Text>
-          </DrawerBody>
-          <DrawerFooter className="mt-6">
-            <DrawerClose className="text-red-400 text-lg pb-2 font-bold" onClick={async () => {
-              await logout()
-            }} type='button'>Logout</DrawerClose>
-          </DrawerFooter>
-        </DrawerContent>
-      </Drawer>
+    <div className="w-full fixed z-10 left-0 bottom-0 h-24 bg-black border-t border-gray-800 pt-6 pb-10 px-8 flex justify-between items-center gap-2">
+      {menuItems.map(menuItem =>
+        <span className="flex items-center" key={menuItem.route}><Link href={menuItem.route}>{location !== menuItem.route ? menuItem.iconOutline({ className: 'text-gray-500', size: 24 }) : menuItem.iconFill({ className: 'text-blue-700', size: 24 })}</Link></span>
+      )}
     </div>
   )
 }
