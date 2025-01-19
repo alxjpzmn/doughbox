@@ -7,7 +7,10 @@ use csv::Writer;
 use serde::Serialize;
 use serde_json::json;
 
-use super::shared::constants::{IN_DIR, OUT_DIR};
+use super::{
+    parsers::ImportFileFormat,
+    shared::constants::{IN_DIR, OUT_DIR},
+};
 
 fn create_dir_if_nonexistent(directory_path: &str) {
     let path = Path::new(directory_path);
@@ -49,4 +52,20 @@ where
     std::fs::write(format!("{}/{}.json", OUT_DIR, file_name), json_data)?;
 
     Ok(())
+}
+
+pub fn detect_file_format(file: &[u8], file_path: &Path) -> ImportFileFormat {
+    if file.is_empty() {
+        return ImportFileFormat::Unsupported;
+    }
+
+    if file_path.extension() == Some(std::ffi::OsStr::new("pdf")) && file.starts_with(b"%PDF-") {
+        return ImportFileFormat::Pdf;
+    }
+
+    if file_path.extension() == Some(std::ffi::OsStr::new("csv")) {
+        return ImportFileFormat::Csv;
+    }
+
+    ImportFileFormat::Unsupported
 }

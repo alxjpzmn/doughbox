@@ -1,21 +1,24 @@
 use anyhow::anyhow;
 use chrono::prelude::*;
 use fancy_regex::Regex;
-use std::io::Cursor;
+use std::{io::Cursor, path::Path};
 
 use csv::ReaderBuilder;
 use deunicode::deunicode;
 
-use super::importers::{
-    erste_bank::extract_erste_bank_record, ibkr::extract_ibkr_record,
-    lightyear::extract_lightyear_record, manual::extract_manual_record,
-    revolut::extract_revolut_record, scalable::extract_scalable_record,
-    trade_republic::extract_trade_republic_record, trading212::extract_trading212_record,
-    wise::extract_wise_record,
+use super::{
+    files::detect_file_format,
+    importers::{
+        erste_bank::extract_erste_bank_record, ibkr::extract_ibkr_record,
+        lightyear::extract_lightyear_record, manual::extract_manual_record,
+        revolut::extract_revolut_record, scalable::extract_scalable_record,
+        trade_republic::extract_trade_republic_record, trading212::extract_trading212_record,
+        wise::extract_wise_record,
+    },
 };
 
 #[derive(Debug)]
-pub enum FileFormat {
+pub enum ImportFileFormat {
     Pdf,
     Csv,
     Unsupported,
@@ -73,29 +76,6 @@ pub fn detect_broker_from_pdf_text(text: &str) -> Option<Broker> {
     None
 }
 
-pub fn detect_file_format(file: &[u8]) -> FileFormat {
-    if file.is_empty() {
-        return FileFormat::Unsupported; // No file content
-    }
-
-    if file.starts_with(b"%PDF") {
-        if let Some(pos) = file.windows(5).position(|window| window == b"%%EOF") {
-            if pos > file.len() - 1000 {
-                return FileFormat::Pdf;
-            }
-        }
-    }
-
-    if file.contains(&b',' as &u8)
-        && (file.contains(&b'\n' as &u8) || file.contains(&b'\r' as &u8))
-        && file.windows(5).any(|window| window == b"data,")
-    {
-        return FileFormat::Csv;
-    }
-
-    FileFormat::Unsupported
-}
-
 pub fn extract_pdf_text(file: &[u8]) -> anyhow::Result<String> {
     let text = pdf_extract::extract_text_from_mem(file)?;
     let re = Regex::new(r"\s+").unwrap();
@@ -110,11 +90,11 @@ pub fn extract_pdf_text(file: &[u8]) -> anyhow::Result<String> {
     Ok(re.replace_all(&cleaned_text, " ").to_string())
 }
 
-pub async fn parse_file_for_import(file: &[u8]) -> anyhow::Result<()> {
-    let file_format = detect_file_format(file);
+pub async fn parse_file_for_import(file: &[u8], file_path: &Path) -> anyhow::Result<()> {
+    let file_format = detect_file_format(file, file_path);
 
     match file_format {
-        FileFormat::Pdf => {
+        ImportFileFormat::Pdf => {
             let text = extract_pdf_text(file)?;
 
             let broker = detect_broker_from_pdf_text(&text);
@@ -133,7 +113,7 @@ pub async fn parse_file_for_import(file: &[u8]) -> anyhow::Result<()> {
                 None => println!("No broker matched"),
             }
         }
-        FileFormat::Csv => {
+        ImportFileFormat::Csv => {
             let file_content = file;
 
             let cursor = Cursor::new(file_content);
@@ -165,7 +145,7 @@ pub async fn parse_file_for_import(file: &[u8]) -> anyhow::Result<()> {
                 None => println!("No broker matched"),
             }
         }
-        FileFormat::Unsupported => println!("File unsupported, skipping"),
+        ImportFileFormat::Unsupported => println!("File unsupported, skipping"),
     }
     Ok(())
 }
