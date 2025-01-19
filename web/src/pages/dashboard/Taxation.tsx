@@ -15,7 +15,7 @@ const Taxation = () => {
       {(data && !!data.created_at && !!data.taxable_amounts) && (
         <div>
           <Text color="slate" className="mb-4">
-            Report from {formatDate(new Date(data?.created_at))}
+            Report (🇦🇹) from {formatDate(new Date(data?.created_at))}
           </Text>
           <Grid className="grid-col-1 gap-4">
             {Object.entries(data?.taxable_amounts).map(([year, taxItems]) => (
