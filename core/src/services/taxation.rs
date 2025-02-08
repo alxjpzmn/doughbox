@@ -1,17 +1,22 @@
-use chrono::{DateTime, NaiveDate, Utc};
+use anyhow::{Context, Result};
+use chrono::TimeZone;
+use chrono::{DateTime, Utc};
+use rust_decimal::Decimal;
+use rust_decimal_macros::dec;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use tabled::Tabled;
 use typeshare::typeshare;
 
-use rust_decimal::Decimal;
-use rust_decimal_macros::dec;
-
+use crate::database::queries::stock_split::get_stock_splits;
 use crate::{
     database::queries::{composite::get_active_years, fund_report::get_oekb_fund_report_by_id},
     services::market_data::fx_rates::convert_amount,
 };
 
+use super::instruments::stock_splits::{
+    get_split_adjusted_price_per_unit, get_split_adjusted_units, StockSplit,
+};
 use super::{
     events::{get_events, EventType, PortfolioEvent, TradeDirection},
     files::export_json,
@@ -30,27 +35,34 @@ pub struct AnnualTaxableAmounts {
     capital_losses: Decimal,
     #[serde(rename = "Dividends")]
     dividends: Decimal,
+    #[serde(rename = "Dividend Equivalents")]
+    dividend_equivalents: Decimal,
     #[serde(rename = "FX Appreciation")]
     fx_appreciation: Decimal,
+    #[serde(rename = "Withheld Tax: Capital Gains")]
+    withheld_tax_capital_gains: Decimal,
     #[serde(rename = "Withheld Tax: Dividends")]
-    witheld_tax_dividends: Decimal,
+    withheld_tax_dividends: Decimal,
     #[serde(rename = "Withheld Tax: Interest")]
     withheld_tax_interest: Decimal,
-    #[serde(rename = "Dividend Aequivalents")]
-    dividend_aequivalents: Decimal,
 }
 
 impl AnnualTaxableAmounts {
     fn round_all(&mut self, dp: u32) {
-        self.cash_interest = self.cash_interest.round_dp(dp);
-        self.share_lending_interest = self.share_lending_interest.round_dp(dp);
-        self.capital_gains = self.capital_gains.round_dp(dp);
-        self.dividends = self.dividends.round_dp(dp);
-        self.fx_appreciation = self.fx_appreciation.round_dp(dp);
-        self.dividend_aequivalents = self.dividend_aequivalents.round_dp(dp);
-        self.capital_losses = self.capital_losses.round_dp(dp);
-        self.witheld_tax_dividends = self.witheld_tax_dividends.round_dp(dp);
-        self.withheld_tax_interest = self.withheld_tax_interest.round_dp(dp);
+        let fields = [
+            &mut self.cash_interest,
+            &mut self.share_lending_interest,
+            &mut self.capital_gains,
+            &mut self.dividends,
+            &mut self.fx_appreciation,
+            &mut self.dividend_equivalents,
+            &mut self.capital_losses,
+            &mut self.withheld_tax_dividends,
+            &mut self.withheld_tax_interest,
+        ];
+        for field in fields {
+            *field = field.round_dp(dp);
+        }
     }
 }
 
@@ -60,20 +72,26 @@ pub struct TaxationReport {
     pub created_at: DateTime<Utc>,
     pub taxable_amounts: BTreeMap<i32, AnnualTaxableAmounts>,
     pub securities_wacs: BTreeMap<String, SecWac>,
-    pub currency_wacs: BTreeMap<String, Wac>,
+    pub currency_wacs: BTreeMap<String, FxWac>,
 }
 
 #[typeshare]
 #[derive(Debug, Tabled, Serialize)]
-pub struct Wac {
+pub struct FxWac {
     pub units: Decimal,
-    pub average_cost: Decimal,
+    pub avg_rate: Decimal,
 }
 
-impl Wac {
+impl FxWac {
     fn round_all(&mut self) {
         self.units = self.units.round_dp(4);
-        self.average_cost = self.average_cost.round_dp(2);
+        self.avg_rate = self.avg_rate.round_dp(2);
+    }
+
+    fn update(&mut self, new_units: Decimal, new_rate: Decimal) {
+        let total_units = self.units + new_units;
+        self.avg_rate = (self.units * self.avg_rate + new_units * new_rate) / total_units;
+        self.units = total_units;
     }
 }
 
@@ -91,6 +109,24 @@ impl SecWac {
         self.average_cost = self.average_cost.round_dp(2);
         self.weighted_avg_fx_rate = self.weighted_avg_fx_rate.round_dp(2);
     }
+
+    fn update(&mut self, event: &PortfolioEvent) -> Result<()> {
+        let new_units = event.units;
+        let new_cost = event.price_unit;
+        let fx_rate = event
+            .applied_fx_rate
+            .context("Missing FX rate for security trade")?;
+
+        let total_cost = self.units * self.average_cost + new_units * new_cost;
+        self.weighted_avg_fx_rate = (self.weighted_avg_fx_rate * self.units * self.average_cost
+            + new_units * new_cost * fx_rate)
+            / total_cost;
+
+        self.average_cost = total_cost / (self.units + new_units);
+        self.units += new_units;
+
+        Ok(())
+    }
 }
 
 pub struct TaxRates {
@@ -99,647 +135,503 @@ pub struct TaxRates {
     pub dividends: Decimal,
 }
 
-pub async fn get_tax_relevant_events(year: i32) -> anyhow::Result<Vec<PortfolioEvent>> {
-    let year_start_date_str = format!("{}-01-01", year);
-    let year_start_timestamp = DateTime::<Utc>::from_naive_utc_and_offset(
-        NaiveDate::parse_from_str(&year_start_date_str, "%Y-%m-%d")?
-            .and_hms_opt(0, 0, 0)
-            .unwrap(),
-        Utc,
-    );
-
-    let year_end_date_str = format!("{}-01-01", year + 1);
-    let year_end_timestamp = DateTime::<Utc>::from_naive_utc_and_offset(
-        NaiveDate::parse_from_str(&year_end_date_str, "%Y-%m-%d")?
-            .and_hms_opt(0, 0, 0)
-            .unwrap(),
-        Utc,
-    );
-
-    get_events(year_start_timestamp, year_end_timestamp).await
+struct ProcessingContext<'a> {
+    taxable_amounts: &'a mut BTreeMap<i32, AnnualTaxableAmounts>,
+    currency_wacs: &'a mut BTreeMap<String, FxWac>,
+    securities_wacs: &'a mut BTreeMap<String, SecWac>,
+    tax_rates: &'a TaxRates,
+    year: i32,
+    stock_split_information: &'a mut [StockSplit],
 }
 
-pub async fn get_capital_gains_tax_report() -> anyhow::Result<TaxationReport> {
-    // Austrian tax rates as of 12/2024
+impl ProcessingContext<'_> {
+    fn get_year_entry(&mut self) -> &mut AnnualTaxableAmounts {
+        self.taxable_amounts
+            .entry(self.year)
+            .or_insert_with(|| AnnualTaxableAmounts {
+                cash_interest: dec!(0.0),
+                share_lending_interest: dec!(0.0),
+                capital_gains: dec!(0.0),
+                dividends: dec!(0.0),
+                fx_appreciation: dec!(0.0),
+                dividend_equivalents: dec!(0.0),
+                capital_losses: dec!(0.0),
+                withheld_tax_capital_gains: dec!(0.0),
+                withheld_tax_dividends: dec!(0.0),
+                withheld_tax_interest: dec!(0.0),
+            })
+    }
+}
+
+async fn process_event(event: PortfolioEvent, ctx: &mut ProcessingContext<'_>) -> Result<()> {
+    match event.event_type {
+        EventType::CashInterest | EventType::ShareInterest | EventType::Dividend => {
+            process_interest_or_dividend(event, ctx).await
+        }
+        EventType::Trade => process_trade(event, ctx).await,
+        EventType::FxConversion => process_fx_conversion(event, ctx).await,
+        EventType::DividendAequivalent => process_dividend_aequivalent(event, ctx).await,
+    }
+}
+
+async fn process_interest_or_dividend(
+    event: PortfolioEvent,
+    ctx: &mut ProcessingContext<'_>,
+) -> Result<()> {
+    let currency = &event.currency;
+    let fx_rate = event
+        .applied_fx_rate
+        .context("Missing FX rate for currency conversion")?;
+
+    if currency != "EUR" {
+        ctx.currency_wacs
+            .entry(currency.clone())
+            .and_modify(|wac| wac.update(event.units, fx_rate))
+            .or_insert(FxWac {
+                units: event.units,
+                avg_rate: fx_rate,
+            });
+    }
+
+    let (taxed_amount, withheld_tax) = calculate_taxable_values(&event, ctx, fx_rate)?;
+    let tax_type = match event.event_type {
+        EventType::CashInterest => "interest",
+        EventType::ShareInterest => "capital_gains",
+        EventType::Dividend => "dividends",
+        _ => unreachable!(),
+    };
+
+    apply_taxation(ctx, tax_type, taxed_amount, withheld_tax)
+}
+
+fn calculate_taxable_values(
+    event: &PortfolioEvent,
+    ctx: &mut ProcessingContext<'_>,
+    fx_rate: Decimal,
+) -> Result<(Decimal, Decimal)> {
+    let taxable_remainder = event.units * event.price_unit;
+    let withheld_tax_percent = event
+        .withholding_tax_percent
+        .context("Missing withholding tax percentage")?;
+
+    // e.g. for Belgian Tax (30%, used for cash interest by Wise, one can only offset up to 25% of
+    // Austrian KESt)
+    let remaining_withholding_tax_percent = match event.event_type {
+        EventType::CashInterest => {
+            if withheld_tax_percent > ctx.tax_rates.interest {
+                ctx.tax_rates.interest
+            } else {
+                withheld_tax_percent
+            }
+        }
+        EventType::ShareInterest => {
+            if withheld_tax_percent > ctx.tax_rates.capital_gains {
+                ctx.tax_rates.capital_gains
+            } else {
+                withheld_tax_percent
+            }
+        }
+        EventType::Dividend => {
+            if withheld_tax_percent > ctx.tax_rates.dividends {
+                ctx.tax_rates.dividends
+            } else {
+                withheld_tax_percent
+            }
+        }
+        _ => unreachable!(),
+    };
+
+    let (taxed_amount, withheld_tax) = if event.currency == "EUR" {
+        (
+            taxable_remainder,
+            remaining_withholding_tax_percent * taxable_remainder,
+        )
+    } else {
+        (
+            taxable_remainder / fx_rate,
+            (remaining_withholding_tax_percent * taxable_remainder) * fx_rate,
+        )
+    };
+
+    Ok((taxed_amount, withheld_tax))
+}
+
+fn apply_taxation(
+    ctx: &mut ProcessingContext<'_>,
+    tax_type: &str,
+    taxed_amount: Decimal,
+    withheld_tax: Decimal,
+) -> Result<()> {
+    let year_entry = ctx.get_year_entry();
+
+    match tax_type {
+        "interest" => {
+            year_entry.cash_interest += taxed_amount + withheld_tax;
+            year_entry.withheld_tax_interest += withheld_tax;
+        }
+        "capital_gains" => {
+            year_entry.share_lending_interest += taxed_amount + withheld_tax;
+            year_entry.withheld_tax_dividends += withheld_tax;
+        }
+        "dividends" => {
+            year_entry.dividends += taxed_amount + withheld_tax;
+            year_entry.withheld_tax_dividends += withheld_tax;
+        }
+        _ => return Err(anyhow::anyhow!("Invalid tax type")),
+    }
+
+    Ok(())
+}
+
+async fn process_trade(event: PortfolioEvent, ctx: &mut ProcessingContext<'_>) -> Result<()> {
+    let direction = event.clone().direction.context("Missing trade direction")?;
+
+    match direction {
+        TradeDirection::Buy => process_buy(event, ctx).await,
+        TradeDirection::Sell => process_sell(event, ctx).await,
+    }
+}
+
+async fn process_buy(event: PortfolioEvent, ctx: &mut ProcessingContext<'_>) -> Result<()> {
+    ctx.securities_wacs
+        .entry(
+            event
+                .identifier
+                .clone()
+                .context("Missing security identifier")?,
+        )
+        .and_modify(|sec_wac| {
+            sec_wac
+                .update(&event)
+                .expect("Failed to update security WAC")
+        })
+        .or_insert({
+            let mut sec_wac = SecWac {
+                units: dec!(0.0),
+                average_cost: dec!(0.0),
+                weighted_avg_fx_rate: dec!(0.0),
+            };
+            sec_wac.update(&event)?;
+            sec_wac
+        });
+
+    if event.currency != "EUR" {
+        process_fx_buy(event, ctx).await?;
+    }
+
+    Ok(())
+}
+
+async fn process_sell(event: PortfolioEvent, ctx: &mut ProcessingContext<'_>) -> Result<()> {
+    let identifier = event
+        .identifier
+        .clone()
+        .context("Missing security identifier")?;
+    let units = event.units;
+
+    if let Some(sec_wac) = ctx.securities_wacs.get_mut(&identifier) {
+        sec_wac.units = get_split_adjusted_units(
+            &identifier,
+            sec_wac.units,
+            event.date,
+            ctx.stock_split_information,
+        );
+        sec_wac.units -= units;
+        sec_wac.average_cost = get_split_adjusted_price_per_unit(
+            &identifier,
+            sec_wac.average_cost,
+            event.date,
+            ctx.stock_split_information,
+        )
+    }
+
+    if let Some(wht_percent) = event.withholding_tax_percent {
+        let wht_percent_to_consider = wht_percent.min(ctx.tax_rates.capital_gains);
+        let wht_currency_agnostic = wht_percent_to_consider * (event.price_unit * event.units);
+
+        let withheld_tax = if event.currency == "EUR" {
+            wht_currency_agnostic
+        } else {
+            wht_currency_agnostic * event.applied_fx_rate.unwrap()
+        };
+        ctx.get_year_entry().withheld_tax_capital_gains += withheld_tax;
+    }
+
+    if event.currency == "EUR" {
+        process_eur_sell(event, ctx, &identifier)?;
+    } else {
+        process_fx_sell(event, ctx, &identifier).await?;
+    }
+
+    Ok(())
+}
+
+fn process_eur_sell(
+    event: PortfolioEvent,
+    ctx: &mut ProcessingContext<'_>,
+    identifier: &str,
+) -> Result<()> {
+    let sec_wac = ctx
+        .securities_wacs
+        .get(identifier)
+        .context("Security WAC not found for sell transaction")?;
+
+    let taxable_amount = (event.price_unit - sec_wac.average_cost) * event.units;
+    let year_entry = ctx.get_year_entry();
+
+    if taxable_amount > dec!(0.0) {
+        year_entry.capital_gains += taxable_amount;
+    } else {
+        year_entry.capital_losses -= taxable_amount;
+    }
+
+    Ok(())
+}
+
+async fn process_fx_sell(
+    event: PortfolioEvent,
+    ctx: &mut ProcessingContext<'_>,
+    identifier: &str,
+) -> Result<()> {
+    let sec_wac = ctx
+        .securities_wacs
+        .get(identifier)
+        .context("Security WAC not found for FX sell")?;
+
+    let gain_foreign = (event.price_unit - sec_wac.average_cost) * event.units;
+    let eur_rate =
+        convert_amount(dec!(1.0), &event.date.date_naive(), "EUR", &event.currency).await?;
+    let gain_eur = gain_foreign / eur_rate;
+
+    let fx_wac = ctx
+        .currency_wacs
+        .entry(event.currency.clone())
+        .or_insert(FxWac {
+            units: dec!(0.0),
+            avg_rate: dec!(0.0),
+        });
+
+    let fx_rate_for_buy = if fx_wac.units > event.units * event.price_unit {
+        fx_wac.avg_rate
+    } else {
+        sec_wac.weighted_avg_fx_rate
+    };
+
+    let original_eur_cost = (sec_wac.average_cost / fx_rate_for_buy) * event.units;
+    let eur_sell = (event.price_unit / eur_rate) * event.units;
+    let total_taxable = eur_sell - original_eur_cost;
+    let fx_portion = total_taxable - gain_eur;
+
+    let year_entry = ctx.get_year_entry();
+    if gain_eur > dec!(0.0) {
+        year_entry.capital_gains += gain_eur;
+    } else {
+        year_entry.capital_losses -= gain_eur;
+    }
+    year_entry.fx_appreciation += fx_portion;
+
+    Ok(())
+}
+
+async fn process_fx_conversion(
+    event: PortfolioEvent,
+    ctx: &mut ProcessingContext<'_>,
+) -> Result<()> {
+    let direction = event
+        .direction
+        .as_ref()
+        .context("Missing FX conversion direction")?;
+
+    match direction {
+        TradeDirection::Buy => process_fx_buy(event, ctx).await,
+        TradeDirection::Sell => process_fx_sell_conversion(event, ctx).await,
+    }
+}
+
+async fn process_fx_buy(event: PortfolioEvent, ctx: &mut ProcessingContext<'_>) -> Result<()> {
+    let identifier = event.identifier.context("Missing FX identifier")?;
+
+    let currency = if event.event_type == EventType::Trade {
+        event.currency.clone()
+    } else {
+        identifier[identifier.len() - 3..].to_string()
+    };
+
+    if currency == "EUR" {
+        return Ok(());
+    }
+
+    let fx_rate = event.applied_fx_rate.context("Missing FX rate")?;
+
+    ctx.currency_wacs
+        .entry(currency)
+        .and_modify(|wac| wac.update(event.units, fx_rate))
+        .or_insert(FxWac {
+            units: event.units,
+            avg_rate: fx_rate,
+        });
+
+    Ok(())
+}
+
+async fn process_fx_sell_conversion(
+    event: PortfolioEvent,
+    ctx: &mut ProcessingContext<'_>,
+) -> Result<()> {
+    let identifier = event.identifier.context("Missing FX identifier")?;
+    let origin_currency = if event.event_type == EventType::Trade {
+        event.currency.clone()
+    } else {
+        identifier[..3].to_string()
+    };
+
+    let taxed_amount = {
+        let fx_wac = ctx
+            .currency_wacs
+            .get_mut(&origin_currency)
+            .context("Currency WAC not found for conversion")?;
+
+        let eur_rate =
+            convert_amount(dec!(1.0), &event.date.date_naive(), "EUR", &origin_currency).await?;
+        let fx_delta = fx_wac.avg_rate - eur_rate;
+        let taxed_amount = ((fx_delta / eur_rate) * event.units) / eur_rate;
+
+        fx_wac.units -= event.units;
+        if fx_wac.units < dec!(0.0) {
+            fx_wac.units = dec!(0.0);
+        }
+
+        taxed_amount
+    };
+
+    ctx.get_year_entry().fx_appreciation += taxed_amount;
+
+    Ok(())
+}
+
+async fn process_dividend_aequivalent(
+    event: PortfolioEvent,
+    ctx: &mut ProcessingContext<'_>,
+) -> Result<()> {
+    let report_id = event
+        .identifier
+        .context("Missing fund report ID")?
+        .parse::<i32>()?;
+    let full_report = get_oekb_fund_report_by_id(report_id).await?;
+
+    let wacs = ctx
+        .securities_wacs
+        .entry(full_report.isin.clone())
+        .or_insert(SecWac {
+            units: dec!(0.0),
+            average_cost: dec!(0.0),
+            weighted_avg_fx_rate: dec!(1.0),
+        });
+
+    let taxed_amount =
+        (full_report.dividend_aequivalent + full_report.intermittent_dividends) * wacs.units;
+
+    let taxed_eur = convert_amount(
+        taxed_amount,
+        &full_report.date.date_naive(),
+        &full_report.currency,
+        "EUR",
+    )
+    .await?;
+
+    let withheld_tax = full_report.withheld_dividend * wacs.units;
+    let withheld_eur = convert_amount(
+        withheld_tax,
+        &full_report.date.date_naive(),
+        &full_report.currency,
+        "EUR",
+    )
+    .await?;
+
+    let year_entry = ctx.get_year_entry();
+    year_entry.dividend_equivalents += taxed_eur;
+    year_entry.withheld_tax_dividends += withheld_eur;
+
+    let cost_adjustment = convert_amount(
+        full_report.wac_adjustment,
+        &full_report.date.date_naive(),
+        &full_report.currency,
+        "EUR",
+    )
+    .await?;
+
+    if let Some(sec_wac) = ctx.securities_wacs.get_mut(&full_report.isin) {
+        sec_wac.average_cost += cost_adjustment;
+    }
+
+    Ok(())
+}
+
+pub async fn get_capital_gains_tax_report() -> Result<TaxationReport> {
+    let mut stock_split_information = get_stock_splits().await?;
+
     let tax_rates = TaxRates {
         interest: dec!(0.25),
         capital_gains: dec!(0.275),
         dividends: dec!(0.275),
     };
 
-    // get all years from the first trades until now
     let tax_relevant_years = get_active_years().await?;
-
-    // create hashmap with tax categories for each year
     let mut taxable_amounts = BTreeMap::new();
-
-    // set up Hashmap for keeping track of WAC for different currencies
     let mut currency_wacs = BTreeMap::new();
-    // set up Hashmap for keeping track of WAC for different isins
     let mut securities_wacs = BTreeMap::new();
 
     for year in tax_relevant_years {
-        // set up taxable amount for the respective year
-        taxable_amounts.insert(
+        let mut ctx = ProcessingContext {
+            taxable_amounts: &mut taxable_amounts,
+            currency_wacs: &mut currency_wacs,
+            securities_wacs: &mut securities_wacs,
+            tax_rates: &tax_rates,
             year,
-            AnnualTaxableAmounts {
-                cash_interest: dec!(0.0),
-                share_lending_interest: dec!(0.0),
-                capital_gains: dec!(0.0),
-                dividends: dec!(0.0),
-                fx_appreciation: dec!(0.0),
-                dividend_aequivalents: dec!(0.0),
-                capital_losses: dec!(0.0),
-                witheld_tax_dividends: dec!(0.0),
-                withheld_tax_interest: dec!(0.0),
-            },
-        );
-        // get all tax relevant events for the current year, ordered by date
-        let tax_relevant_events = get_tax_relevant_events(year).await?;
-        for event in tax_relevant_events {
-            match event.event_type {
-                EventType::CashInterest => {
-                    // ======== CASH INTEREST =========
-                    // IF not in EUR, add units to fx pool (basically, you've gotten them for exactly the cost of the
-                    // current WAC of said currency, they neither reduce nor increase the currency WAC)
-                    // apply the difference of withholding tax in EUR and 25% on those
-                    if event.currency != *"EUR" {
-                        currency_wacs
-                            .entry(event.currency.clone())
-                            .and_modify(|entry: &mut Wac| {
-                                entry.average_cost = (entry.units * entry.average_cost
-                                    + event.applied_fx_rate.unwrap() * event.units)
-                                    / (event.units + entry.units);
-                            })
-                            .and_modify(|entry: &mut Wac| entry.units += event.units)
-                            .or_insert(Wac {
-                                units: event.units,
-                                average_cost: event.applied_fx_rate.unwrap(),
-                            });
-                    };
+            stock_split_information: &mut stock_split_information,
+        };
 
-                    let taxable_remainder = event.units * event.price_unit;
-
-                    let taxed_amount_eur = if event.currency == "EUR" {
-                        taxable_remainder
-                    } else {
-                        taxable_remainder / event.applied_fx_rate.unwrap()
-                    };
-
-                    let withheld_tax =
-                        event.withholding_tax_percent.unwrap() * event.price_unit * event.units;
-
-                    let mut withheld_tax_eur = if event.currency == "EUR" {
-                        withheld_tax
-                    } else {
-                        withheld_tax * event.applied_fx_rate.unwrap()
-                    };
-
-                    // e.g. for Belgian Tax (30%, used for cash interest by Wise, one can only offset up to 25% of
-                    // Austrian KESt)
-                    let tax_rate_left =
-                        tax_rates.interest - event.withholding_tax_percent.unwrap_or(dec!(0.0));
-                    if tax_rate_left < dec!(0) {
-                        withheld_tax_eur = withheld_tax_eur
-                            - (taxed_amount_eur + withheld_tax_eur) * (tax_rate_left * dec!(-1))
-                    }
-
-                    taxable_amounts
-                        .entry(year)
-                        .and_modify(|year: &mut AnnualTaxableAmounts| {
-                            year.cash_interest += taxed_amount_eur + withheld_tax_eur
-                        })
-                        .and_modify(|year: &mut AnnualTaxableAmounts| {
-                            year.withheld_tax_interest += withheld_tax_eur
-                        });
-                }
-                EventType::ShareInterest => {
-                    // ======== SHARE LENDING INTEREST =========
-                    // for each year, get all interest rate entries (type needs to be shares) for the year, sorted
-                    // by date
-                    // apply the difference of withholding tax in EUR and 27.5% on those
-                    // IF not in EUR, add to fx pool as the currency units were "acquired" at the
-                    // current WAC of said currency, they neither reduce nor increase the currency WAC)
-
-                    if event.currency != *"EUR" {
-                        currency_wacs
-                            .entry(event.currency.clone())
-                            .and_modify(|entry: &mut Wac| {
-                                entry.average_cost = (entry.units * entry.average_cost
-                                    + event.applied_fx_rate.unwrap() * event.units)
-                                    / (event.units + entry.units);
-                            })
-                            .and_modify(|entry: &mut Wac| entry.units += event.units)
-                            .or_insert(Wac {
-                                units: event.units,
-                                average_cost: event.applied_fx_rate.unwrap(),
-                            });
-                    };
-
-                    let taxable_remainder = event.units * event.price_unit;
-
-                    let taxed_amount_eur = if event.currency == "EUR" {
-                        taxable_remainder
-                    } else {
-                        taxable_remainder / event.applied_fx_rate.unwrap()
-                    };
-
-                    let withheld_tax =
-                        event.withholding_tax_percent.unwrap() * event.price_unit * event.units;
-
-                    let mut withheld_tax_eur = if event.currency == "EUR" {
-                        withheld_tax
-                    } else {
-                        withheld_tax * event.applied_fx_rate.unwrap()
-                    };
-
-                    // e.g. for Belgian Tax (30%, used for cash interest by Wise, one can only offset up to 25% of
-                    // Austrian KESt)
-                    let tax_rate_left = tax_rates.capital_gains
-                        - event.withholding_tax_percent.unwrap_or(dec!(0.0));
-                    if tax_rate_left < dec!(0) {
-                        withheld_tax_eur = withheld_tax_eur
-                            - (taxed_amount_eur + withheld_tax_eur) * (tax_rate_left * dec!(-1))
-                    }
-
-                    taxable_amounts
-                        .entry(year)
-                        .and_modify(|year: &mut AnnualTaxableAmounts| {
-                            year.share_lending_interest += taxed_amount_eur + withheld_tax_eur
-                        })
-                        .and_modify(|year: &mut AnnualTaxableAmounts| {
-                            year.witheld_tax_dividends += withheld_tax_eur
-                        });
-                }
-                EventType::Dividend => {
-                    // ======== DIVIDENDS =========
-                    // for each year, get all dividend entries (type needs to be cash) for the year, sorted by date
-                    // apply the difference of withholding tax in EUR and 27.5% on those
-                    // IF not in EUR, add to fx pool (basically, they were "acquired" for exactly the cost of the
-                    // current WAC of said currency, they neither reduce nor increase the currency WAC)
-                    if event.currency != *"EUR" {
-                        currency_wacs
-                            .entry(event.currency.clone())
-                            .and_modify(|entry: &mut Wac| {
-                                entry.average_cost = (entry.units * entry.average_cost
-                                    + event.applied_fx_rate.unwrap() * event.units)
-                                    / (event.units + entry.units);
-                            })
-                            .and_modify(|entry: &mut Wac| entry.units += event.units)
-                            .or_insert(Wac {
-                                units: event.units,
-                                average_cost: event.applied_fx_rate.unwrap(),
-                            });
-                    };
-
-                    let taxable_remainder = event.units * event.price_unit;
-
-                    let taxed_amount_eur = if event.currency == "EUR" {
-                        taxable_remainder
-                    } else {
-                        taxable_remainder / event.applied_fx_rate.unwrap()
-                    };
-
-                    let withheld_tax =
-                        event.withholding_tax_percent.unwrap() * event.price_unit * event.units;
-
-                    let mut withheld_tax_eur = if event.currency == "EUR" {
-                        withheld_tax
-                    } else {
-                        withheld_tax * event.applied_fx_rate.unwrap()
-                    };
-
-                    // e.g. for Belgian Tax (30%, used for cash interest by Wise, you can only offset up to 25% of
-                    // Austrian KESt)
-                    let tax_rate_left =
-                        tax_rates.dividends - event.withholding_tax_percent.unwrap_or(dec!(0.0));
-                    if tax_rate_left < dec!(0) {
-                        withheld_tax_eur = withheld_tax_eur
-                            - (taxed_amount_eur + withheld_tax_eur) * (tax_rate_left * dec!(-1))
-                    }
-
-                    taxable_amounts
-                        .entry(year)
-                        .and_modify(|year: &mut AnnualTaxableAmounts| {
-                            year.dividends += taxed_amount_eur + withheld_tax_eur
-                        })
-                        .and_modify(|year: &mut AnnualTaxableAmounts| {
-                            year.witheld_tax_dividends += withheld_tax_eur
-                        });
-                }
-                EventType::Trade => {
-                    // ======== TRADES =========
-                    // for each isin:
-                    // create or update entry in WAC hashmap (isin: (units: xx.xx, wac: xx.xx))
-                    // IF BUY:
-                    //  1. adjust WAC in hashmap: units_in_hashmap * wac + new_trade_units * new_trade_price_per_unit /
-                    // (units_in_hashmap + new_trade_units)
-                    //  2. adjust total units in hashmap
-                    //  3. check whether trade is in fx. if true, get wac for currency and take delta of current
-                    //     price vs. wac and add to currency trade list, reduce count of USD @ x.xx
-
-                    match event.clone().direction.unwrap() {
-                        TradeDirection::Buy => {
-                            securities_wacs
-                                .entry(event.clone().identifier.unwrap())
-                                .and_modify(|entry: &mut SecWac| {
-                                    entry.weighted_avg_fx_rate = (entry.weighted_avg_fx_rate
-                                        * entry.units
-                                        * entry.average_cost
-                                        + event.units
-                                            * event.price_unit
-                                            * event.applied_fx_rate.unwrap())
-                                        / (entry.units * entry.average_cost
-                                            + event.units * event.price_unit)
-                                })
-                                .and_modify(|entry: &mut SecWac| {
-                                    entry.average_cost = (entry.average_cost * entry.units
-                                        + event.units * event.price_unit)
-                                        / (entry.units + event.units)
-                                })
-                                .and_modify(|entry: &mut SecWac| entry.units += event.units)
-                                .or_insert(SecWac {
-                                    units: event.units,
-                                    average_cost: event.price_unit,
-                                    weighted_avg_fx_rate: event.applied_fx_rate.unwrap(),
-                                });
-
-                            if event.currency != "EUR" {
-                                // count as sell from the outgoing currency
-                                let trade_currency = event.currency.clone();
-
-                                let fx_wac =
-                                    currency_wacs.entry(trade_currency.clone()).or_insert(Wac {
-                                        units: dec!(0.0),
-                                        average_cost: dec!(0.0),
-                                    });
-
-                                if fx_wac.units > dec!(0.0) {
-                                    let eur_exchange_rate = convert_amount(
-                                        dec!(1.0),
-                                        &event.date.date_naive(),
-                                        "EUR",
-                                        &trade_currency,
-                                    )
-                                    .await?;
-
-                                    let fx_delta = fx_wac.average_cost - eur_exchange_rate;
-
-                                    let taxed_amount_eur = ((fx_delta / eur_exchange_rate)
-                                        * event.units
-                                        * event.price_unit)
-                                        / eur_exchange_rate;
-
-                                    taxable_amounts.entry(year).and_modify(
-                                        |year: &mut AnnualTaxableAmounts| {
-                                            year.fx_appreciation += taxed_amount_eur
-                                        },
-                                    );
-
-                                    currency_wacs
-                                        .entry(trade_currency)
-                                        .and_modify(|entry: &mut Wac| entry.units -= event.units)
-                                        .and_modify(|entry: &mut Wac| {
-                                            if entry.units < dec!(0) {
-                                                entry.units = dec!(0.0)
-                                            }
-                                        });
-                                }
-                            }
-                        }
-                        TradeDirection::Sell => {
-                            // IF SELL:
-                            //  1. adjust units in hashmap: units_in_hashmap - new_trade_units
-                            securities_wacs
-                                .entry(event.identifier.as_ref().unwrap().clone())
-                                .and_modify(|entry: &mut SecWac| entry.units -= event.units);
-
-                            //  2. add difference of sell_price and WAC to tax hashmap for the respective year
-                            if event.currency == *"EUR" {
-                                let taxable_amount = (event.price_unit
-                                    - securities_wacs
-                                        .get(&event.identifier.clone().unwrap())
-                                        .unwrap()
-                                        .average_cost)
-                                    * event.units;
-                                if taxable_amount > dec!(0.0) {
-                                    taxable_amounts.entry(year).and_modify(
-                                        |year: &mut AnnualTaxableAmounts| {
-                                            year.capital_gains += taxable_amount
-                                        },
-                                    );
-                                } else {
-                                    taxable_amounts.entry(year).and_modify(
-                                        |year: &mut AnnualTaxableAmounts| {
-                                            year.capital_losses -= taxable_amount
-                                        },
-                                    );
-                                }
-                            } else {
-                                //  3. IF in FX:
-                                //      - get total gain of trade in USD
-                                //      - get current_fx_rate for pair
-                                //      - get wac_fx_rate
-                                //      - calculate share wac usd * exchange rate wac * pcs sold => original_cost_eur
-                                //      - calculate share_wac usd * pcs sold => original_cost_usd
-                                //      - calculate sell_price * pcs sold => sell_amount_usd
-                                //      - calculate sell_amount_usd * current_fx_rate => sell_amount_eur
-                                //      - calculate (sell_amount_usd - original_cost_usd) * current_fx_rate =>
-                                //      capital_gains_eur
-                                //      - calculate sell_amount_eur - original_cost_eur => total_taxable_gains_eur
-                                //      - total_taxable_gains_eur - capital_gains_eur => fx_appreciation_eur
-                                let gain_in_foreign_currency = (event.price_unit
-                                    - securities_wacs
-                                        .get(&event.identifier.clone().unwrap())
-                                        .unwrap()
-                                        .average_cost)
-                                    * event.units;
-
-                                let eur_exchange_rate = convert_amount(
-                                    dec!(1.0),
-                                    &event.date.date_naive(),
-                                    "EUR",
-                                    &event.currency,
-                                )
-                                .await?;
-
-                                let gain_in_eur = gain_in_foreign_currency / eur_exchange_rate;
-
-                                let fx_wac =
-                                    currency_wacs.entry(event.currency.clone()).or_insert(Wac {
-                                        units: dec!(0.0),
-                                        average_cost: dec!(0.0),
-                                    });
-
-                                let instrument_wac = securities_wacs
-                                    .entry(event.identifier.clone().unwrap())
-                                    .or_insert(SecWac {
-                                        units: dec!(0.0),
-                                        average_cost: dec!(0.0),
-                                        weighted_avg_fx_rate: dec!(0.0),
-                                    });
-
-                                let fx_rate_for_buy =
-                                    if fx_wac.units > event.units * event.price_unit {
-                                        fx_wac.average_cost
-                                    } else {
-                                        // here, take the weighted average exchange rate during buy
-                                        instrument_wac.weighted_avg_fx_rate
-                                    };
-
-                                let original_eur_cost =
-                                    (instrument_wac.average_cost / fx_rate_for_buy) * event.units;
-
-                                let eur_sell = (event.price_unit / eur_exchange_rate) * event.units;
-
-                                let total_taxable = eur_sell - original_eur_cost;
-
-                                let fx_portion = total_taxable - gain_in_eur;
-
-                                if gain_in_eur > dec!(0.0) {
-                                    taxable_amounts.entry(year).and_modify(
-                                        |year: &mut AnnualTaxableAmounts| {
-                                            year.capital_gains += gain_in_eur
-                                        },
-                                    );
-                                } else {
-                                    taxable_amounts.entry(year).and_modify(
-                                        |year: &mut AnnualTaxableAmounts| {
-                                            year.capital_losses -= gain_in_eur
-                                        },
-                                    );
-                                }
-
-                                taxable_amounts.entry(year).and_modify(
-                                    |year: &mut AnnualTaxableAmounts| {
-                                        year.fx_appreciation += fx_portion
-                                    },
-                                );
-                            }
-                        }
-                    }
-                }
-                EventType::FxConversion => {
-                    // ======== FX CONVERSIONS ==
-                    // for each exchange, update wac and unit count:
-                    // on exchange FROM eur, calculate wac + increase unit count
-                    // on exchange TO eur, calculate currency appreciation + decrease unit count
-                    let fx_conversion_direction = event.clone().direction.unwrap();
-                    match fx_conversion_direction {
-                        TradeDirection::Buy => {
-                            // revolut stores some top ups as conversions, resulting in EUREUR
-                            // identifiers
-                            if event.identifier.clone().unwrap() == *"EUREUR" {
-                                continue;
-                            }
-                            currency_wacs
-                                .entry(
-                                    event.identifier.clone().unwrap()
-                                        [event.identifier.unwrap().len() - 3..]
-                                        .to_string(),
-                                )
-                                .and_modify(|entry: &mut Wac| {
-                                    entry.average_cost = (entry.units * entry.average_cost
-                                        + event.applied_fx_rate.unwrap() * event.units)
-                                        / (event.units + entry.units);
-                                })
-                                .and_modify(|entry: &mut Wac| {
-                                    entry.units += event.units * event.applied_fx_rate.unwrap()
-                                })
-                                .or_insert(Wac {
-                                    units: event.units * event.applied_fx_rate.unwrap(),
-                                    average_cost: event.applied_fx_rate.unwrap(),
-                                });
-                        }
-                        TradeDirection::Sell => {
-                            let applied_fx_rate_reversed =
-                                dec!(1.0) / event.applied_fx_rate.unwrap();
-
-                            let destination_currency = event.identifier.clone().unwrap()
-                                [event.identifier.clone().unwrap().len() - 3..]
-                                .to_string();
-                            let origin_currency =
-                                event.identifier.clone().unwrap()[..3].to_string();
-
-                            let fx_delta = currency_wacs
-                                .get(origin_currency.as_str())
-                                .unwrap()
-                                .average_cost
-                                - applied_fx_rate_reversed;
-
-                            if destination_currency == *"EUR" {
-                                let taxed_amount_eur = ((fx_delta / applied_fx_rate_reversed)
-                                    * event.units)
-                                    / applied_fx_rate_reversed;
-
-                                taxable_amounts.entry(year).and_modify(
-                                    |year: &mut AnnualTaxableAmounts| {
-                                        year.fx_appreciation += taxed_amount_eur
-                                    },
-                                );
-
-                                currency_wacs
-                                    .entry(origin_currency)
-                                    .and_modify(|entry: &mut Wac| entry.units -= event.units)
-                                    .and_modify(|entry: &mut Wac| {
-                                        if entry.units < dec!(0) {
-                                            entry.units = dec!(0.0)
-                                        }
-                                    });
-                            } else {
-                                // conversion is e.g. GPBUSD or USDGBP, so doesn't involve EUR
-                                // in this case, this counts as sell of the outgoing currency, so
-                                // GBP in the case of GBPUSD, which is added to taxable amounts and
-                                // reduces unit count
-                                // also, it counts as buy of the incoming currency, in the case of
-                                // GBPUSD, USD.
-
-                                // count as sell from the outgoing currency
-                                let destination_currency = event.identifier.clone().unwrap()
-                                    [event.identifier.clone().unwrap().len() - 3..]
-                                    .to_string();
-                                let origin_currency =
-                                    event.identifier.clone().unwrap()[..3].to_string();
-                                let eur_exchange_rate = convert_amount(
-                                    dec!(1.0),
-                                    &event.date.date_naive(),
-                                    "EUR",
-                                    &origin_currency,
-                                )
-                                .await
-                                .unwrap();
-
-                                let fx_delta = currency_wacs
-                                    .get(origin_currency.as_str())
-                                    .unwrap()
-                                    .average_cost
-                                    - eur_exchange_rate;
-                                let taxed_amount_eur = ((fx_delta / eur_exchange_rate)
-                                    * event.units)
-                                    / eur_exchange_rate;
-
-                                taxable_amounts.entry(year).and_modify(
-                                    |year: &mut AnnualTaxableAmounts| {
-                                        year.fx_appreciation += taxed_amount_eur
-                                    },
-                                );
-
-                                currency_wacs
-                                    .entry(origin_currency)
-                                    .and_modify(|entry: &mut Wac| entry.units -= event.units);
-
-                                // take the exchange rate that's applied to the outgoing currency
-                                let eur_to_destination_exchange_rate = convert_amount(
-                                    dec!(1.0),
-                                    &event.date.date_naive(),
-                                    "EUR",
-                                    &destination_currency,
-                                )
-                                .await?;
-
-                                // against eur as the price_unit for the new currency
-                                // add to units in destination currency
-                                currency_wacs
-                                    .entry(
-                                        event.identifier.clone().unwrap()
-                                            [event.identifier.unwrap().len() - 3..]
-                                            .to_string(),
-                                    )
-                                    .and_modify(|entry: &mut Wac| {
-                                        entry.average_cost = (entry.average_cost * entry.units
-                                            + event.units * eur_to_destination_exchange_rate)
-                                            / (entry.units
-                                                + event.units * eur_to_destination_exchange_rate)
-                                    })
-                                    .and_modify(|entry: &mut Wac| {
-                                        entry.units += event.units * event.applied_fx_rate.unwrap()
-                                    })
-                                    .or_insert(Wac {
-                                        units: event.units * event.applied_fx_rate.unwrap(),
-                                        average_cost: eur_to_destination_exchange_rate,
-                                    });
-                            };
-                        }
-                    }
-                } // ======== DIVIDEND AEQUIVALENTS ==
-                EventType::DividendAequivalent => {
-                    let full_report = get_oekb_fund_report_by_id(
-                        event.identifier.unwrap().parse::<i32>().unwrap(),
-                    )
-                    .await?;
-
-                    let report_date = &full_report.date.date_naive();
-                    let wacs = securities_wacs
-                        .entry(full_report.isin.clone())
-                        .or_insert(SecWac {
-                            average_cost: dec!(0),
-                            units: dec!(0),
-                            weighted_avg_fx_rate: dec!(1),
-                        });
-
-                    let taxed_amount = (full_report.dividend_aequivalent
-                        + full_report.intermittent_dividends)
-                        * wacs.units;
-
-                    let taxed_amount_eur =
-                        convert_amount(taxed_amount, report_date, &full_report.currency, "EUR")
-                            .await?;
-
-                    let withheld_tax = full_report.withheld_dividend * wacs.units;
-
-                    let withheld_tax_eur =
-                        convert_amount(withheld_tax, report_date, &full_report.currency, "EUR")
-                            .await?;
-
-                    taxable_amounts
-                        .entry(year)
-                        .and_modify(|year: &mut AnnualTaxableAmounts| {
-                            year.dividend_aequivalents += taxed_amount_eur
-                        })
-                        .and_modify(|year: &mut AnnualTaxableAmounts| {
-                            year.witheld_tax_dividends += withheld_tax_eur
-                        });
-
-                    let cost_adjustment_eur = convert_amount(
-                        full_report.wac_adjustment,
-                        report_date,
-                        &full_report.currency,
-                        "EUR",
-                    )
-                    .await?;
-
-                    // todo verify currency here too (might be that user is holding that isin in USD)
-                    securities_wacs
-                        .entry(full_report.isin)
-                        .and_modify(|entry: &mut SecWac| entry.average_cost += cost_adjustment_eur);
-                }
-            }
+        let start_date = Utc.with_ymd_and_hms(year, 1, 1, 0, 0, 0).unwrap();
+        let end_date = Utc.with_ymd_and_hms(year, 12, 31, 23, 59, 59).unwrap();
+        let events = get_events(start_date, end_date).await?;
+        for event in events {
+            process_event(event, &mut ctx).await?;
         }
     }
-    for (_, amounts) in taxable_amounts.iter_mut() {
-        amounts.round_all(2);
-    }
 
-    // to only have active positions in the taxation report
-    currency_wacs.retain(|_, wac| wac.units != dec!(0));
-    securities_wacs.retain(|_, sec_wac| sec_wac.units != dec!(0));
+    post_process(
+        &mut taxable_amounts,
+        &mut currency_wacs,
+        &mut securities_wacs,
+    );
 
-    for (_, wac) in currency_wacs.iter_mut() {
-        wac.round_all();
-    }
-
-    for (_, sec_wac) in securities_wacs.iter_mut() {
-        sec_wac.round_all();
-    }
-
-    let taxation_report = TaxationReport {
+    let report = TaxationReport {
         created_at: Utc::now(),
         taxable_amounts,
         securities_wacs,
         currency_wacs,
     };
 
-    export_json(&taxation_report, "taxation")?;
+    export_json(&report, "taxation")?;
+    Ok(report)
+}
 
-    Ok(taxation_report)
+fn post_process(
+    taxable_amounts: &mut BTreeMap<i32, AnnualTaxableAmounts>,
+    currency_wacs: &mut BTreeMap<String, FxWac>,
+    securities_wacs: &mut BTreeMap<String, SecWac>,
+) {
+    for amounts in taxable_amounts.values_mut() {
+        amounts.round_all(2);
+    }
+
+    currency_wacs.retain(|_, wac| wac.units > dec!(0));
+    securities_wacs.retain(|_, sec_wac| sec_wac.units > dec!(0));
+
+    for wac in currency_wacs.values_mut() {
+        wac.round_all();
+    }
+    for sec_wac in securities_wacs.values_mut() {
+        sec_wac.round_all();
+    }
 }
