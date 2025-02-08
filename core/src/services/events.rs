@@ -30,7 +30,7 @@ pub enum TradeDirection {
 }
 
 #[typeshare]
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub enum EventType {
     CashInterest,
     ShareInterest,
