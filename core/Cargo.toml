@@ -17,10 +17,9 @@ reqwest = { version = "0.12.9", features = ["json", "rustls-tls"] }
 serde_json = "1.0.133"
 tokio-postgres = { version = "0.7.12", features = ["with-chrono-0_4"] }
 clap = { version = "4.5.23", features = ["derive"] }
-openssl = { version = "0.10.68", features = ["vendored"] }
 blake3 = "1.5.4"
 num-format = "0.4.4"
-tabled = "0.17.0"
+tabled = "0.18.0"
 owo-colors = "4.1.0"
 spinners-rs = "2.3.0"
 itertools = "0.14.0"
