@@ -60,9 +60,9 @@ const MobileMenu = () => {
   const [location] = useLocation();
 
   return (
-    <div className="w-full fixed z-10 left-0 bottom-0 h-24 bg-black border-t border-gray-800 pt-6 pb-10 px-8 flex justify-between items-center gap-2">
+    <div className="w-full fixed z-10 left-0 bottom-0 h-24 bg-gray-50 dark:bg-gray-900 border-t border-gray-200 dark:border-gray-800 pt-6 pb-10 px-8 flex justify-between items-center gap-2">
       {menuItems.map(menuItem =>
-        <span className="flex items-center" key={menuItem.route}><Link href={menuItem.route}>{location !== menuItem.route ? menuItem.iconOutline({ className: 'text-gray-500', size: 24 }) : menuItem.iconFill({ className: 'text-blue-700', size: 24 })}</Link></span>
+        <span className="flex items-center" key={menuItem.route}><Link href={menuItem.route}>{location !== menuItem.route ? menuItem.iconOutline({ className: 'text-gray-500', size: 24 }) : menuItem.iconFill({ className: 'text-blue-500', size: 24 })}</Link></span>
       )}
     </div>
   )

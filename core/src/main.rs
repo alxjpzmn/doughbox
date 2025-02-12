@@ -9,8 +9,8 @@ use database::run_migrations;
 use services::{files::create_necessary_directories, shared::env::check_for_env_variables};
 
 async fn run_doughbox() -> anyhow::Result<()> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
-        .format_timestamp(None)
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
         .init();
     check_for_env_variables();
     create_necessary_directories();
