@@ -38,6 +38,8 @@ anyhow = "1.0.94"
 typeshare = "1.0.4"
 futures = "0.3.31"
 logos = "0.14.4"
+log = "0.4.25"
+env_logger = "0.11.6"
 
 [build-dependencies]
 static-files = "0.2.4"

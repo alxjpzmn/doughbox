@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use chrono::TimeZone;
 use chrono::{DateTime, Utc};
+use log::{debug, info, trace};
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use serde::Serialize;
@@ -49,6 +50,7 @@ pub struct AnnualTaxableAmounts {
 
 impl AnnualTaxableAmounts {
     fn round_all(&mut self, dp: u32) {
+        trace!(target: "tax_report", "Rounding AnnualTaxableAmounts to {} decimal places", dp);
         let fields = [
             &mut self.cash_interest,
             &mut self.share_lending_interest,
@@ -84,11 +86,15 @@ pub struct FxWac {
 
 impl FxWac {
     fn round_all(&mut self) {
+        trace!(target: "tax_report", "Rounding FX WAC values");
+
         self.units = self.units.round_dp(4);
         self.avg_rate = self.avg_rate.round_dp(2);
     }
 
     fn update(&mut self, new_units: Decimal, new_rate: Decimal) {
+        debug!(target: "tax_report", "Updating FX WAC with {} units at rate {}", new_units, new_rate);
+
         let total_units = self.units + new_units;
         self.avg_rate = (self.units * self.avg_rate + new_units * new_rate) / total_units;
         self.units = total_units;
@@ -105,12 +111,16 @@ pub struct SecWac {
 
 impl SecWac {
     fn round_all(&mut self) {
+        trace!(target: "tax_report", "Rounding SecWAC values");
+
         self.units = self.units.round_dp(4);
         self.average_cost = self.average_cost.round_dp(2);
         self.weighted_avg_fx_rate = self.weighted_avg_fx_rate.round_dp(2);
     }
 
     fn update(&mut self, event: &PortfolioEvent) -> Result<()> {
+        debug!(target: "tax_report", "Updating security WAC for event: {:?}", event);
+
         let new_units = event.units;
         let new_cost = event.price_unit;
         let fx_rate = event
@@ -164,6 +174,8 @@ impl ProcessingContext<'_> {
 }
 
 async fn process_event(event: PortfolioEvent, ctx: &mut ProcessingContext<'_>) -> Result<()> {
+    info!(target: "tax_report", "Processing event: {:?} ({:?}) on {:?}", event.identifier.clone().unwrap_or("No identifier".to_string()), event.event_type, event.date);
+
     match event.event_type {
         EventType::CashInterest | EventType::ShareInterest | EventType::Dividend => {
             process_interest_or_dividend(event, ctx).await
@@ -178,6 +190,13 @@ async fn process_interest_or_dividend(
     event: PortfolioEvent,
     ctx: &mut ProcessingContext<'_>,
 ) -> Result<()> {
+    debug!(target: "tax_report",
+        "Processing {:?} event for {} {}",
+        event.event_type,
+        event.units,
+        event.currency
+    );
+
     let currency = &event.currency;
     let fx_rate = event
         .applied_fx_rate
@@ -284,6 +303,8 @@ fn apply_taxation(
 }
 
 async fn process_trade(event: PortfolioEvent, ctx: &mut ProcessingContext<'_>) -> Result<()> {
+    debug!(target: "tax_report", "Processing trade of {} units", event.units);
+
     let direction = event.clone().direction.context("Missing trade direction")?;
 
     match direction {
@@ -293,6 +314,8 @@ async fn process_trade(event: PortfolioEvent, ctx: &mut ProcessingContext<'_>) -
 }
 
 async fn process_buy(event: PortfolioEvent, ctx: &mut ProcessingContext<'_>) -> Result<()> {
+    info!(target: "tax_report", "Processing BUY transaction for {:?}", event.identifier);
+
     ctx.securities_wacs
         .entry(
             event
@@ -323,6 +346,8 @@ async fn process_buy(event: PortfolioEvent, ctx: &mut ProcessingContext<'_>) -> 
 }
 
 async fn process_sell(event: PortfolioEvent, ctx: &mut ProcessingContext<'_>) -> Result<()> {
+    info!(target: "tax_report", "Processing SELL transaction for {:?}", event.identifier);
+
     let identifier = event
         .identifier
         .clone()
@@ -568,13 +593,23 @@ async fn process_dividend_aequivalent(
 }
 
 pub async fn get_capital_gains_tax_report() -> Result<TaxationReport> {
+    info!(target: "tax_report", "Starting capital gains tax report generation");
+
     let mut stock_split_information = get_stock_splits().await?;
+
+    debug!(target: "tax_report", "Loaded {} stock splits", stock_split_information.len());
 
     let tax_rates = TaxRates {
         interest: dec!(0.25),
         capital_gains: dec!(0.275),
         dividends: dec!(0.275),
     };
+
+    info!(target: "tax_report", "Using tax rates: Interest {}%, Capital Gains {}%, Dividends {}%",
+        tax_rates.interest * dec!(100),
+        tax_rates.capital_gains * dec!(100),
+        tax_rates.dividends * dec!(100)
+    );
 
     let tax_relevant_years = get_active_years().await?;
     let mut taxable_amounts = BTreeMap::new();
@@ -612,7 +647,10 @@ pub async fn get_capital_gains_tax_report() -> Result<TaxationReport> {
         currency_wacs,
     };
 
+    info!(target: "tax_report", "Exporting taxation report to JSON");
     export_json(&report, "taxation")?;
+    info!(target: "tax_report", "Tax report generated successfully");
+
     Ok(report)
 }
 
@@ -634,4 +672,5 @@ fn post_process(
     for sec_wac in securities_wacs.values_mut() {
         sec_wac.round_all();
     }
+    info!(target: "tax_report", "Post-processing report data");
 }

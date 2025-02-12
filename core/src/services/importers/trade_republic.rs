@@ -1,3 +1,4 @@
+use log::info;
 use regex::Regex;
 use rust_decimal_macros::dec;
 use std::io;
@@ -27,15 +28,17 @@ enum RecordType {
     InvestmentPlanExecution,
     InterestPayment,
     PortfolioTransfer,
+    Unmatched,
 }
 
 fn detect_record_type(text: &str) -> anyhow::Result<RecordType> {
-    let dividend_patterns = Regex::new(r"(Dividende|COUPON|Ausschüttung)")?;
-    let bond_trade_pattern = Regex::new(r"Stückzinsen")?;
+    let dividend_patterns = Regex::new(r"(Dividende|COUPON|Ausschuttung)")?;
+    let bond_trade_pattern = Regex::new(r"Stuckzinsen")?;
     let interest_pattern = Regex::new(r"Zinsen")?;
     let liquidation_pattern = Regex::new(r"Tilgung")?;
-    let investment_plan_pattern = Regex::new(r"(Sparplanausführung|Saveback)")?;
-    let portfolio_transfer_pattern = Regex::new(r"Depotübertrag")?;
+    let investment_plan_pattern = Regex::new(r"(Sparplanausfuhrung|Saveback)")?;
+    let portfolio_transfer_pattern = Regex::new(r"Depotubertrag")?;
+    let trade_patterns = Regex::new(r"Market-Order|Limit-Order|Stop-Market-Order")?;
 
     Ok(match text {
         _ if dividend_patterns.is_match(text) => RecordType::Dividend,
@@ -44,7 +47,8 @@ fn detect_record_type(text: &str) -> anyhow::Result<RecordType> {
         _ if liquidation_pattern.is_match(text) => RecordType::Liquidation,
         _ if investment_plan_pattern.is_match(text) => RecordType::InvestmentPlanExecution,
         _ if portfolio_transfer_pattern.is_match(text) => RecordType::PortfolioTransfer,
-        _ => RecordType::EquityTrade,
+        _ if trade_patterns.is_match(text) => RecordType::EquityTrade,
+        _ => RecordType::Unmatched,
     })
 }
 
@@ -98,8 +102,8 @@ pub async fn extract_trade_republic_record(text: &str) -> anyhow::Result<()> {
                 .replace(" ", "")
                 .parse::<Decimal>()?;
 
-            let id = return_first_match(r"AUSFÜHRUNG\s*(\S+)", text)?
-                .replace("AUSFÜHRUNG", "")
+            let id = return_first_match(r"AUSFUHRUNG\s*(\S+)", text)?
+                .replace("AUSFUHRUNG", "")
                 .replace(" ", "")
                 .replace("\n", "");
 
@@ -227,8 +231,9 @@ pub async fn extract_trade_republic_record(text: &str) -> anyhow::Result<()> {
                     .parse::<Decimal>()?;
             };
 
-            let id = return_first_match(r"AUSFÜHRUNG\s*(\S+)", text)?
-                .replace("AUSFÜHRUNG", "")
+            let id = return_first_match(r"AUSFUHRUNG\s*(\S+)|Ausfuhrung\s*(\S+))", text)?
+                .replace("AUSFUHRUNG", "")
+                .replace("AusfUhrung", "")
                 .replace(" ", "")
                 .replace("\n", "");
 
@@ -341,10 +346,11 @@ pub async fn extract_trade_republic_record(text: &str) -> anyhow::Result<()> {
                     .parse::<Decimal>()?;
             };
 
-            let id = return_first_match(r"AUSFÜHRUNG\s*(\S+)", text)?
-                .replace("AUSFÜHRUNG", "")
-                .replace(" ", "")
-                .replace("\n", "");
+            let id = return_first_match(r"(?i)ausfuhrung\s*(\S+)", text)? // `(?i)` makes it case-insensitive
+                .split_whitespace() // Removes spaces and newlines
+                .last() // Extracts the captured value
+                .unwrap_or("")
+                .to_uppercase(); // Or `.to_lowercase()`, depending on your needs
 
             let trade = Trade {
                 broker,
@@ -394,7 +400,12 @@ pub async fn extract_trade_republic_record(text: &str) -> anyhow::Result<()> {
 
             add_interest_to_db(interest_payment).await?;
         }
-        RecordType::PortfolioTransfer => (),
+        RecordType::PortfolioTransfer => {
+            info!("Portfolio transfer, skipping.")
+        }
+        RecordType::Unmatched => {
+            info!("No valid statement found, skipping.")
+        }
     }
     Ok(())
 }
