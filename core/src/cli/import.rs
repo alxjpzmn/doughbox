@@ -1,4 +1,5 @@
 use fancy_regex::Regex;
+use log::info;
 use std::fs;
 use std::io::{self, Write};
 use std::process;
@@ -13,6 +14,8 @@ pub async fn import(directory_path: &str) -> anyhow::Result<()> {
         .filter(|e| e.file_type().is_file())
     {
         let file_path = entry.path();
+
+        info!(target: "import", "Importing {:?}", file_path);
 
         match fs::read(file_path) {
             Ok(buffer) => {

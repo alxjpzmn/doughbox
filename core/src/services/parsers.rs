@@ -1,6 +1,7 @@
 use anyhow::anyhow;
 use chrono::prelude::*;
 use fancy_regex::Regex;
+use log::info;
 use std::{io::Cursor, path::Path};
 
 use csv::ReaderBuilder;
@@ -101,12 +102,15 @@ pub async fn parse_file_for_import(file: &[u8], file_path: &Path) -> anyhow::Res
 
             match broker {
                 Some(Broker::TradeRepublic) => {
+                    info!("Statement from Trade Republic detected.");
                     extract_trade_republic_record(&text).await?;
                 }
                 Some(Broker::Scalable) => {
+                    info!("Statement from Scalable detected.");
                     extract_scalable_record(&text).await?;
                 }
                 Some(Broker::ErsteBank) => {
+                    info!("Statement from Erste Bank detected.");
                     extract_erste_bank_record(&text).await?;
                 }
                 Some(_) => panic!("Broker wrongly matched"),
