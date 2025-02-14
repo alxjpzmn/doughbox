@@ -128,9 +128,15 @@ impl SecWac {
             .context("Missing FX rate for security trade")?;
 
         let total_cost = self.units * self.average_cost + new_units * new_cost;
-        self.weighted_avg_fx_rate = (self.weighted_avg_fx_rate * self.units * self.average_cost
-            + new_units * new_cost * fx_rate)
-            / total_cost;
+
+        if total_cost != dec!(0) {
+            self.weighted_avg_fx_rate =
+                (self.weighted_avg_fx_rate * self.units * self.average_cost
+                    + new_units * new_cost * fx_rate)
+                    / total_cost;
+        } else {
+            self.weighted_avg_fx_rate = dec!(0);
+        }
 
         self.average_cost = total_cost / (self.units + new_units);
         self.units += new_units;
