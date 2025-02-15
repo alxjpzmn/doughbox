@@ -23,9 +23,7 @@ import EmptyState, { EmptyStateVariants } from '@/components/EmptyState';
 import { Skeleton } from '@/components/Skeleton';
 
 const Portfolio = () => {
-  // const { data, isLoading, error } = useSwr<PortfolioOverview>(`${BASE_URL}/portfolio`, fetcher);
-  const { data, error } = useSwr<PortfolioOverview>(`${BASE_URL}/portfolio`, fetcher);
-  const isLoading = true;
+  const { data, isLoading, error } = useSwr<PortfolioOverview>(`${BASE_URL}/portfolio`, fetcher);
 
   let overviewData = {
     title: 'Current Portfolio Value',

@@ -6,10 +6,11 @@ import { DatePicker } from "@tremor/react";
 import { format } from "date-fns";
 import { PositionWithName } from "@/types/core";
 import EmptyState from "@/components/EmptyState";
+import { Skeleton } from "@/components/Skeleton";
 
-const Positions = ({ }) => {
+const Positions = () => {
   const [selectedDate, setSelectedDate] = useState(new Date());
-  const { data } = useSwr<PositionWithName[]>(
+  const { data, isLoading } = useSwr<PositionWithName[]>(
     `${BASE_URL}/positions?date=${format(selectedDate, "yyyy-LL-dd")}`,
     fetcher,
   );
@@ -17,7 +18,7 @@ const Positions = ({ }) => {
 
   return (
     <div>
-      < Card className="w-full flex flex-col justify-start mb-6" >
+      <Card className="w-full flex flex-col justify-start mb-6">
         <Title className="w-full mb-4">Date</Title>
         <DatePicker
           enableYearNavigation
@@ -27,8 +28,17 @@ const Positions = ({ }) => {
           enableClear={false}
           defaultValue={new Date()}
         />
-      </Card >
-      {data?.length === 0 ? <EmptyState /> : (
+      </Card>
+      {isLoading ? (
+        <Card>
+          {Array.from({ length: 100 }).map((_, index) => (
+            <div key={index} className='flex justify-between gap-6 p-2'>
+              <Skeleton className="h-6 w-3/4" />
+              <Skeleton className="h-6 w-1/4" />
+            </div>
+          ))}
+        </Card>
+      ) : data?.length === 0 ? <EmptyState /> : (
         <Card>
           <List>
             {data?.map((item) => (
@@ -44,8 +54,9 @@ const Positions = ({ }) => {
           </List>
         </Card>
       )}
-    </div >
+    </div>
   );
 };
+
 
 export default Positions;
