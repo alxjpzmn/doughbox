@@ -1,7 +1,7 @@
 import useSwr from "swr";
 import { Card, Title, Text, List, ListItem, Grid } from "@tremor/react";
 import { BASE_URL, fetcher, formatCurrency, formatDate } from "@/util";
-import { AnnualTaxableAmounts, SecWac, TaxationReport, Wac } from "@/types/core";
+import { AnnualTaxableAmounts, SecWac, TaxationReport, FxWac } from "@/types/core";
 import { Table, TableBody, TableCell, TableHead, TableHeaderCell, TableRoot, TableRow } from "@/components/Table";
 import EmptyState, { EmptyStateVariants } from "@/components/EmptyState";
 
@@ -48,7 +48,7 @@ const Taxation = () => {
                   <TableBody>
                     {Object.entries(data?.securities_wacs as SecWac[])?.map(([key, value]) => <TableRow key={key}>
                       <TableCell className="truncate overflow-hidden whitespace-nowrap max-w-48">{
-                        key
+                        value.name
                       }
                       </TableCell>
                       <TableCell>
@@ -78,7 +78,7 @@ const Taxation = () => {
                     </TableRow>
                   </TableHead>
                   <TableBody>
-                    {Object.entries(data?.currency_wacs as Wac[])?.map(([key, value]) => <TableRow key={key}>
+                    {Object.entries(data?.currency_wacs as FxWac[])?.map(([key, value]) => <TableRow key={key}>
                       <TableCell>{
                         key
                       }
@@ -87,7 +87,7 @@ const Taxation = () => {
                         {value.units}
                       </TableCell>
                       <TableCell>
-                        {value.average_cost}
+                        {value.avg_rate}
                       </TableCell>
                     </TableRow>)}
                   </TableBody>

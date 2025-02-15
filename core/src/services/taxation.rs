@@ -26,25 +26,15 @@ use super::{
 #[typeshare]
 #[derive(Debug, Serialize, Tabled)]
 pub struct AnnualTaxableAmounts {
-    #[serde(rename = "Cash Interest")]
     cash_interest: Decimal,
-    #[serde(rename = "Share Lending Interest")]
     share_lending_interest: Decimal,
-    #[serde(rename = "Capital Gains")]
     capital_gains: Decimal,
-    #[serde(rename = "Capital Losses")]
     capital_losses: Decimal,
-    #[serde(rename = "Dividends")]
     dividends: Decimal,
-    #[serde(rename = "Dividend Equivalents")]
     dividend_equivalents: Decimal,
-    #[serde(rename = "FX Appreciation")]
     fx_appreciation: Decimal,
-    #[serde(rename = "Withheld Tax: Capital Gains")]
     withheld_tax_capital_gains: Decimal,
-    #[serde(rename = "Withheld Tax: Dividends")]
     withheld_tax_dividends: Decimal,
-    #[serde(rename = "Withheld Tax: Interest")]
     withheld_tax_interest: Decimal,
 }
 
@@ -107,6 +97,7 @@ pub struct SecWac {
     pub units: Decimal,
     pub average_cost: Decimal,
     pub weighted_avg_fx_rate: Decimal,
+    pub name: String,
 }
 
 impl SecWac {
@@ -339,6 +330,10 @@ async fn process_buy(event: PortfolioEvent, ctx: &mut ProcessingContext<'_>) -> 
                 units: dec!(0.0),
                 average_cost: dec!(0.0),
                 weighted_avg_fx_rate: dec!(0.0),
+                name: event
+                    .name
+                    .clone()
+                    .unwrap_or(event.identifier.clone().unwrap()),
             };
             sec_wac.update(&event)?;
             sec_wac
@@ -546,6 +541,7 @@ async fn process_dividend_aequivalent(
 ) -> Result<()> {
     let report_id = event
         .identifier
+        .clone()
         .context("Missing fund report ID")?
         .parse::<i32>()?;
     let full_report = get_oekb_fund_report_by_id(report_id).await?;
@@ -557,6 +553,7 @@ async fn process_dividend_aequivalent(
             units: dec!(0.0),
             average_cost: dec!(0.0),
             weighted_avg_fx_rate: dec!(1.0),
+            name: full_report.isin.clone(),
         });
 
     let taxed_amount =
