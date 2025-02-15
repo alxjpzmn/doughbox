@@ -22,7 +22,7 @@ export default function App() {
 
   return (
     <SWRConfig>
-      <main className="w-full min-h-screen pt-4 pb-20 px-4 bg-tremor-background-muted dark:bg-dark-tremor-background-muted h-screen overflow-y-auto scrollbar-gutter-stable">
+      <main className="w-full min-h-screen pt-4 pb-safe-or-32 md:pb-safe-or-8 px-4 bg-tremor-background-muted dark:bg-dark-tremor-background-muted h-screen overflow-y-auto scrollbar-gutter-stable">
         <div className="max-w-2xl mx-auto">
           <Switch>
             <Route path="/login" component={Login} />
