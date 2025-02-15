@@ -49,6 +49,7 @@ pub struct PortfolioEvent {
     pub units: Decimal,
     pub price_unit: Decimal,
     pub identifier: Option<String>,
+    pub name: Option<String>,
     pub direction: Option<TradeDirection>,
     pub applied_fx_rate: Option<Decimal>,
     pub withholding_tax_percent: Option<Decimal>,
@@ -168,6 +169,7 @@ fn process_interest_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent>> 
                 EventType::ShareInterest
             },
             identifier: None,
+            name: None,
             units: row.get(1),
             price_unit: dec!(1.00),
             currency: row.get(2),
@@ -192,6 +194,7 @@ fn process_fund_report_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent
             date: row.get(0),
             event_type: EventType::DividendAequivalent,
             identifier: Some(row.get::<usize, i32>(1).to_string()),
+            name: None,
             units: dec!(1.00),
             price_unit: dec!(1.00),
             currency: row.get(2),
@@ -238,6 +241,7 @@ async fn process_dividend_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEv
                     .unwrap_or(&&row.get(3))
                     .to_string(),
             ),
+            name: None,
             units: row.get(1),
             price_unit: dec!(1.00),
             currency: row.get(2),
@@ -307,7 +311,8 @@ async fn process_trade_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent
         let event = PortfolioEvent {
             date: row.get(0),
             event_type: EventType::Trade,
-            identifier: Some(name_map.get(&isin).unwrap_or(&&isin).to_string()),
+            identifier: Some(isin.to_string()),
+            name: Some(name_map.get(&isin).unwrap_or(&&isin).to_string()),
             units: split_adjusted_units,
             price_unit: split_adjusted_price_per_unit,
             currency: row.get(3),
@@ -346,6 +351,7 @@ fn process_fx_conversion_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEve
                 row.get::<usize, String>(3),
                 row.get::<usize, String>(4)
             )),
+            name: None,
             direction: Some(if row.get::<usize, String>(3) == *"EUR" {
                 TradeDirection::Buy
             } else {

@@ -40,6 +40,7 @@ export interface PortfolioEvent {
 	units: string;
 	price_unit: string;
 	identifier?: string;
+	name?: string;
 	direction?: TradeDirection;
 	applied_fx_rate?: string;
 	withholding_tax_percent?: string;
@@ -77,15 +78,16 @@ export interface PortfolioOverview {
 }
 
 export interface AnnualTaxableAmounts {
-	cashInterest: string;
-	shareLendingInterest: string;
-	capitalGains: string;
-	capitalLosses: string;
+	cash_interest: string;
+	share_lending_interest: string;
+	capital_gains: string;
+	capital_losses: string;
 	dividends: string;
-	fxAppreciation: string;
-	witheldTaxDividends: string;
-	withheldTaxInterest: string;
-	dividendAequivalents: string;
+	dividend_equivalents: string;
+	fx_appreciation: string;
+	withheld_tax_capital_gains: string;
+	withheld_tax_dividends: string;
+	withheld_tax_interest: string;
 }
 
 export interface TaxationReport {
@@ -95,15 +97,16 @@ export interface TaxationReport {
 	currency_wacs: any;
 }
 
-export interface Wac {
+export interface FxWac {
 	units: string;
-	average_cost: string;
+	avg_rate: string;
 }
 
 export interface SecWac {
 	units: string;
 	average_cost: string;
 	weighted_avg_fx_rate: string;
+	name: string;
 }
 
 export enum TradeDirection {
