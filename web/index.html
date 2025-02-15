@@ -20,7 +20,21 @@
       media="(prefers-color-scheme: dark)"
     />
   </head>
-  <body>
+  <style>
+    body {
+      background-color: #f9fafb;
+      margin: 0;
+      padding: 0;
+    }
+    @media (prefers-color-scheme: dark) {
+      body {
+        background-color: #131a2b;
+      }
+    }
+  </style>
+  <body
+    class="w-full min-h-screen pt-4 px-2 bg-tremor-background-muted dark:bg-dark-tremor-background-muted h-screen overflow-y-auto scrollbar-gutter-stable"
+  >
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

@@ -10,8 +10,6 @@ import Taxation from "@/pages/dashboard/Taxation";
 import useIsMobile from "@/hooks/useIsMobile";
 import { Menu, MobileMenu } from "@/components/Menu";
 import useAuth from "@/hooks/useAuth";
-import { Text } from "@tremor/react";
-import { Callout } from "./components/Callout";
 
 
 
@@ -22,7 +20,7 @@ export default function App() {
 
   return (
     <SWRConfig>
-      <main className="w-full min-h-screen pt-4 pb-safe-or-32 md:pb-safe-or-8 px-4 bg-tremor-background-muted dark:bg-dark-tremor-background-muted h-screen overflow-y-auto scrollbar-gutter-stable">
+      <main className="pb-safe-or-32  md:pb-safe-or-8">
         <div className="max-w-2xl mx-auto">
           <Switch>
             <Route path="/login" component={Login} />
@@ -35,11 +33,6 @@ export default function App() {
               <Route path="/taxation" component={Taxation} />
             </Route>
           </Switch>
-          <Text className="mb-6 py-6">
-          </Text>
-          <Callout variant="default" title="Disclaimer">
-            Doughbox is <a href="https://github.com/alxjpzmn/doughbox" target="_blank" className="underline">open source software</a> under the <a href="https://github.com/alxjpzmn/doughbox/blob/main/LICENSE" className="underline" target="_blank">MIT license</a>. It comes without any warranty or responsibility taken for the accuracy or completeness of the data shown.
-          </Callout>
         </div >
       </main >
     </SWRConfig >

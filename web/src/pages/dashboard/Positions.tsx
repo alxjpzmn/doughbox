@@ -7,6 +7,7 @@ import { format } from "date-fns";
 import { PositionWithName } from "@/types/core";
 import EmptyState from "@/components/EmptyState";
 import { Skeleton } from "@/components/Skeleton";
+import { Disclaimer } from "@/components/Disclaimer";
 
 const Positions = () => {
   const [selectedDate, setSelectedDate] = useState(new Date());
@@ -39,20 +40,23 @@ const Positions = () => {
           ))}
         </Card>
       ) : data?.length === 0 ? <EmptyState /> : (
-        <Card>
-          <List>
-            {data?.map((item) => (
-              <ListItem key={`${item?.isin}`}>
-                <a href={`https://duckduckgo.com/?q=${item?.isin}`} className="truncate overflow-hidden whitespace-nowrap max-w-48">
-                  {item?.name}
-                </a>
-                <span className="font-bold">
-                  {item?.units}
-                </span>
-              </ListItem>
-            ))}
-          </List>
-        </Card>
+        <>
+          <Card>
+            <List>
+              {data?.map((item) => (
+                <ListItem key={`${item?.isin}`}>
+                  <a href={`https://duckduckgo.com/?q=${item?.isin}`} className="truncate overflow-hidden whitespace-nowrap max-w-48">
+                    {item?.name}
+                  </a>
+                  <span className="font-bold">
+                    {item?.units}
+                  </span>
+                </ListItem>
+              ))}
+            </List>
+          </Card>
+          <Disclaimer />
+        </>
       )}
     </div>
   );
