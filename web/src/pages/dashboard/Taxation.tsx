@@ -5,6 +5,21 @@ import { AnnualTaxableAmounts, SecWac, TaxationReport, FxWac } from "@/types/cor
 import { Table, TableBody, TableCell, TableHead, TableHeaderCell, TableRoot, TableRow } from "@/components/Table";
 import EmptyState, { EmptyStateVariants } from "@/components/EmptyState";
 
+
+const labelMap: Record<keyof AnnualTaxableAmounts, string> = {
+  cash_interest: "Cash Interest",
+  share_lending_interest: "Share Lending Interest",
+  capital_gains: "Capital Gains",
+  capital_losses: "Capital Losses",
+  dividends: "Dividends",
+  dividend_equivalents: "Dividend Equivalents",
+  fx_appreciation: "FX Appreciation",
+  withheld_tax_capital_gains: "Withheld Tax (Capital Gains)",
+  withheld_tax_dividends: "Withheld Tax (Dividends)",
+  withheld_tax_interest: "Withheld Tax (Interest)",
+};
+
+
 const Taxation = () => {
   const { data, error } = useSwr<TaxationReport>(`${BASE_URL}/taxation`, fetcher);
 
@@ -24,7 +39,7 @@ const Taxation = () => {
                 <List>
                   {Object.entries(taxItems as AnnualTaxableAmounts)?.map(([key, value]) => (
                     <ListItem key={`${key}`}>
-                      {key}
+                      {labelMap[key as keyof AnnualTaxableAmounts]}
                       <span className="font-bold">
                         {formatCurrency(parseFloat(value))}
                       </span>
