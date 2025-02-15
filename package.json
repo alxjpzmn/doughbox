@@ -12,8 +12,8 @@
     "typeshare": "typeshare ./core --lang=typescript --output-file=./web/src/types/core.ts"
   },
   "devDependencies": {
-    "concurrently": "^9.0.1",
+    "concurrently": "^9.1.2",
     "cross-var": "^1.1.0",
-    "dotenv-cli": "^7.4.2"
+    "dotenv-cli": "^7.4.4"
   }
 }
