@@ -21,18 +21,14 @@ export const Timeline = () => {
       {/* Skeleton for Date Picker Card */}
       <Card className="w-full flex flex-col justify-start mb-6">
         <Title className="w-full mb-4">Start Date</Title>
-        {isLoading ? (
-          <Skeleton className="h-10 w-96" /> // Placeholder for DatePicker
-        ) : (
-          <DatePicker
-            enableYearNavigation
-            className="max-w-sm"
-            value={selectedDate}
-            // @ts-ignore
-            onValueChange={(value) => setSelectedDate(new Date(value))}
-            enableClear={false}
-          />
-        )}
+        <DatePicker
+          enableYearNavigation
+          className="max-w-sm"
+          value={selectedDate}
+          // @ts-ignore
+          onValueChange={(value) => setSelectedDate(new Date(value))}
+          enableClear={false}
+        />
       </Card>
 
       {/* Skeleton for Timeline Events */}
