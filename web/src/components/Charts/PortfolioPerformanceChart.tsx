@@ -3,6 +3,7 @@ import React from "react";
 import useSwr from "swr";
 import { BASE_URL, fetcher, formatDate, formatRelativeAmount } from "@/util";
 import { PerformanceSignal } from "@/types/core";
+import { Skeleton } from "../Skeleton";
 
 interface PerformanceChartProps { }
 
@@ -44,7 +45,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ }) => {
           showLegend={false}
         />
       ) : (
-        <div className="h-64 bg-slate-200 rounded mt-4 animate-pulse" />
+        <Skeleton className="h-64" />
       )}
     </>
   );

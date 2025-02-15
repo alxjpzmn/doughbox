@@ -59,15 +59,26 @@ const MobileMenu = () => {
   const [location] = useLocation();
 
   return (
-    <div className="w-full fixed z-10 left-0 bottom-0 h-24 bg-gray-50 dark:bg-gray-900 border-t border-gray-200 dark:border-gray-800 pt-6 pb-12 px-8 flex justify-between items-center gap-1">
-      {menuItems.map(menuItem =>
-        <span className="flex items-center" key={menuItem.route}>
-          <Link href={menuItem.route} className='flex flex-col items-center gap-2'>
-            {location !== menuItem.route ? menuItem.iconOutline({ className: 'text-gray-500', size: 24 }) : menuItem.iconFill({ className: 'text-blue-500', size: 24 })}
-            <p className={cx('text-xs', location !== menuItem.route ? 'text-gray-500' : 'text-blue-500')}>{menuItem.text}</p>
-          </Link>
-        </span>
-      )}
+    <div className="w-full fixed z-10 left-0 bottom-0 h-24 bg-gray-50 dark:bg-gray-900 border-t border-gray-200 dark:border-gray-800 pt-6 pb-12 flex justify-around items-center">
+      {menuItems.map((menuItem) => (
+        <Link
+          href={menuItem.route}
+          key={menuItem.route}
+          className="flex flex-col items-center gap-1 flex-1"
+        >
+          {location !== menuItem.route
+            ? menuItem.iconOutline({ className: 'text-gray-500', size: 24 })
+            : menuItem.iconFill({ className: 'text-blue-500', size: 24 })}
+          <p
+            className={cx(
+              'text-xs max-[389px]:hidden min-[390px]:block', // Hide text on iPhone SE-sized screens
+              location !== menuItem.route ? 'text-gray-500' : 'text-blue-500'
+            )}
+          >
+            {menuItem.text}
+          </p>
+        </Link>
+      ))}
     </div>
   )
 }
