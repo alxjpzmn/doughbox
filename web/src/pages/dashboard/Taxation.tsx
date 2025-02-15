@@ -5,6 +5,7 @@ import { AnnualTaxableAmounts, SecWac, TaxationReport, FxWac } from "@/types/cor
 import { Table, TableBody, TableCell, TableHead, TableHeaderCell, TableRoot, TableRow } from "@/components/Table";
 import EmptyState, { EmptyStateVariants } from "@/components/EmptyState";
 import { Skeleton } from "@/components/Skeleton";
+import { Disclaimer } from "@/components/Disclaimer";
 
 const labelMap: Record<keyof AnnualTaxableAmounts, string> = {
   cash_interest: "Cash Interest",
@@ -170,6 +171,7 @@ const Taxation = () => {
               </TableRoot>
             </Card>
           </Grid>
+          <Disclaimer />
         </div>
       ) : null}
     </div>

@@ -7,6 +7,7 @@ import { DividendCard, FxCard, InterestCard, TradeCard } from "@/components/Even
 import { EventType, PortfolioEvent } from "@/types/core";
 import EmptyState from "@/components/EmptyState";
 import { Skeleton } from "@/components/Skeleton";
+import { Disclaimer } from "@/components/Disclaimer";
 
 export const Timeline = () => {
   const [selectedDate, setSelectedDate] = useState<Date>(new Date(new Date().setMonth(new Date().getMonth() - 3)));
@@ -79,6 +80,7 @@ export const Timeline = () => {
           })}
         </div>
       )}
+      <Disclaimer />
     </div>
   );
 };

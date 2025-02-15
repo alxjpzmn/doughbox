@@ -22,6 +22,7 @@ import { PortfolioPerformance, PositionPerformance } from "@/types/core";
 import { Table, TableBody, TableCell, TableHead, TableHeaderCell, TableRoot, TableRow } from "@/components/Table";
 import EmptyState, { EmptyStateVariants } from "@/components/EmptyState";
 import { Skeleton } from "@/components/Skeleton";
+import { Disclaimer } from "@/components/Disclaimer";
 
 interface PositionPerformanceWithKey extends PositionPerformance {
   key: string;
@@ -286,6 +287,7 @@ const Performance = ({ }) => {
               </Table>
             </TableRoot>
           </Card>
+          <Disclaimer />
         </>
       )}
     </>

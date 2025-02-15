@@ -21,6 +21,7 @@ import {
 import { PortfolioOverview, PositionWithValueAndAllocation } from '@/types/core';
 import EmptyState, { EmptyStateVariants } from '@/components/EmptyState';
 import { Skeleton } from '@/components/Skeleton';
+import { Disclaimer } from '@/components/Disclaimer';
 
 const Portfolio = () => {
   const { data, isLoading, error } = useSwr<PortfolioOverview>(`${BASE_URL}/portfolio`, fetcher);
@@ -100,6 +101,7 @@ const Portfolio = () => {
               />
             </Card>
           )}
+          <Disclaimer />
         </>
       )}
     </>
