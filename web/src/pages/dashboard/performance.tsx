@@ -1,28 +1,18 @@
 import { useEffect, useState } from "react";
-import {
-  BASE_URL,
-  formatCurrency,
-  fetcher,
-  formatUnixTimestampRelative,
-  formatRelativeAmount,
-} from "@/util";
 import useSwr from "swr";
-import PerformanceChart from "@/components/Charts/PortfolioPerformanceChart";
-import {
-  Card,
-  Flex,
-  Select,
-  SelectItem,
-  Text,
-} from "@tremor/react";
-import PositionPerformanceScatterChart from "@/components/Charts/PositionPerformanceChart";
-import { Switch } from "@/components/Switch";
-import { Label } from "@/components/Label";
+import PerformanceChart from "@/components/charts/portfolio-performance-chart";
+import PositionPerformanceChart from "@/components/charts/position-performance-chart";
 import { PortfolioPerformance, PositionPerformance } from "@/types/core";
-import { Table, TableBody, TableCell, TableHead, TableHeaderCell, TableRoot, TableRow } from "@/components/Table";
-import EmptyState, { EmptyStateVariants } from "@/components/EmptyState";
-import { Skeleton } from "@/components/Skeleton";
-import { Disclaimer } from "@/components/Disclaimer";
+import EmptyState, { EmptyStateVariants } from "@/components/composite/empty-state";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Disclaimer } from "@/components/composite/disclaimer";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Label } from "@/components/ui/label";
+import { BASE_URL, fetcher } from "@/lib/http";
+import { formatCurrency, formatUnixTimestampRelative, formatRelativeAmount } from "@/lib/utils";
 
 interface PositionPerformanceWithKey extends PositionPerformance {
   key: string;
@@ -106,45 +96,50 @@ const Performance = ({ }) => {
         <>
           {/* Skeleton for Performance Card */}
           <Card className="grid grid-cols-1 gap-2">
-            <Flex className="justify-between items-baseline truncate">
+            <CardHeader>
               <Skeleton className="h-6 w-1/4" />
-              <Skeleton className="h-6 w-1/4" />
-            </Flex>
-            <Skeleton className="h-64 w-full" /> {/* Placeholder for PerformanceChart */}
-            <Flex className="justify-between items-baseline truncate">
-              <Skeleton className="h-6 w-1/3" />
-            </Flex>
+              <Skeleton className="h-4 w-1/2" />
+            </CardHeader>
+            <CardContent>
+              <Skeleton className="h-64 w-full" /> {/* Placeholder for PerformanceChart */}
+            </CardContent>
           </Card>
 
           {/* Skeleton for Conviction vs. Result Card */}
           <Card className="mt-6">
-            <Skeleton className="h-6 w-1/4 mb-4" /> {/* Placeholder for "Conviction vs. Result" text */}
-            <Skeleton className="h-64 w-full" /> {/* Placeholder for PositionPerformanceScatterChart */}
+            <CardHeader>
+              <Skeleton className="h-6 w-1/4" /> {/* Placeholder for "Conviction vs. Result" text */}
+            </CardHeader>
+            <CardContent>
+              <Skeleton className="h-64 w-full" /> {/* Placeholder for PositionPerformanceScatterChart */}
+            </CardContent>
           </Card>
 
           {/* Skeleton for Individual Performance Card */}
           <Card className="mt-6">
-            <Flex className="flex-col md:flex flex-wrap justify-between items-baseline gap-4">
+            <CardHeader>
               <Skeleton className="h-6 w-1/4" /> {/* Placeholder for "Individual Performance" text */}
-              <Flex className="flex-col items-start gap-4">
-                <Skeleton className="h-10 w-full" /> {/* Placeholder for Select */}
-                <div className="flex items-center justify-center gap-2 min-w-max">
-                  <Skeleton className="h-6 w-6" /> {/* Placeholder for Switch */}
-                  <Skeleton className="h-6 w-20" /> {/* Placeholder for Label */}
+            </CardHeader>
+            <CardContent>
+              <div className="flex flex-col md:flex flex-wrap justify-between items-baseline gap-4">
+                <div className="flex flex-col items-start gap-4">
+                  <Skeleton className="h-10 w-full" /> {/* Placeholder for Select */}
+                  <div className="flex items-center justify-center gap-2 min-w-max">
+                    <Skeleton className="h-6 w-6" /> {/* Placeholder for Switch */}
+                    <Skeleton className="h-6 w-20" /> {/* Placeholder for Label */}
+                  </div>
                 </div>
-              </Flex>
-            </Flex>
-            <TableRoot>
+              </div>
               <Table className="mt-4">
-                <TableHead>
+                <TableHeader>
                   <TableRow>
-                    <TableHeaderCell><Skeleton className="h-6 w-24" /></TableHeaderCell>
-                    <TableHeaderCell><Skeleton className="h-6 w-24" /></TableHeaderCell>
-                    <TableHeaderCell><Skeleton className="h-6 w-24" /></TableHeaderCell>
-                    <TableHeaderCell><Skeleton className="h-6 w-24" /></TableHeaderCell>
-                    <TableHeaderCell><Skeleton className="h-6 w-24" /></TableHeaderCell>
+                    <TableHead><Skeleton className="h-6 w-24" /></TableHead>
+                    <TableHead><Skeleton className="h-6 w-24" /></TableHead>
+                    <TableHead><Skeleton className="h-6 w-24" /></TableHead>
+                    <TableHead><Skeleton className="h-6 w-24" /></TableHead>
+                    <TableHead><Skeleton className="h-6 w-24" /></TableHead>
                   </TableRow>
-                </TableHead>
+                </TableHeader>
                 <TableBody>
                   {Array.from({ length: 10 }).map((_, index) => (
                     <TableRow key={index}>
@@ -157,67 +152,83 @@ const Performance = ({ }) => {
                   ))}
                 </TableBody>
               </Table>
-            </TableRoot>
+            </CardContent>
           </Card>
         </>
       ) : data && (
         <>
           <Card className="grid grid-cols-1 gap-2">
-            <Flex className="justify-between items-baseline truncate">
-              <Text>Performance</Text>
-              <Text>Total alpha: {formatCurrency(parseFloat(data?.alpha))}</Text>
-            </Flex>
-            <PerformanceChart />
-            <Flex className="justify-between items-baseline truncate">
-              <Text color="gray">
-                Last updated {formatUnixTimestampRelative(data?.generated_at)}
-              </Text>
-            </Flex>
+            <CardHeader>
+              <CardTitle>
+                Performance
+              </CardTitle>
+              <CardDescription>
+                Total alpha: {formatCurrency(parseFloat(data?.alpha))}, last updated {formatUnixTimestampRelative(data?.generated_at)}
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <PerformanceChart />
+            </CardContent>
           </Card>
 
           <Card className="mt-6">
-            <Text>Conviction vs. Result</Text>
-            <PositionPerformanceScatterChart />
+            <CardHeader>
+              <CardTitle>
+                Conviction vs. Result
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <PositionPerformanceChart />
+            </CardContent>
           </Card>
 
           <Card className="mt-6">
-            <Flex className="flex-col md:flex flex-wrap justify-between items-baseline gap-4">
-              <Text className="flex-grow">Individual Performance</Text>
-              <Flex className="flex-col items-start gap-4">
-                <Select
-                  value={undefined}
-                  defaultValue={sortBy}
-                  //@ts-ignore
-                  onValueChange={setSortBy}
-                  placeholder="Sort by..."
-                  className="w-full"
-                >
-                  <SelectItem value="ascTotalReturn">Return Ascending</SelectItem>
-                  <SelectItem value="descTotalReturn">Return Descending</SelectItem>
-                  <SelectItem value="ascRealized">Realized Ascending</SelectItem>
-                  <SelectItem value="descRealized">Realized Descending</SelectItem>
-                  <SelectItem value="ascUnrealized">Unrealized Ascending</SelectItem>
-                  <SelectItem value="descUnrealized">Unrealized Descending</SelectItem>
-                  <SelectItem value="ascAlpha">Alpha Ascending</SelectItem>
-                  <SelectItem value="descAlpha">Alpha Descending</SelectItem>
-                </Select>
-                <div className="flex items-center justify-center gap-2 min-w-max">
-                  <Switch id="r1" checked={showOnlyActivePositions} onCheckedChange={() => setShowOnlyActivePositions(!showOnlyActivePositions)} />
-                  <Label htmlFor="r1">Active only</Label>
+            <CardHeader>
+              <CardTitle>
+                Individual Performance
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="flex flex-col md:flex flex-wrap justify-between items-baseline gap-4">
+                <div className="flex flex-col items-start gap-4">
+                  <Select
+                    value={undefined}
+                    defaultValue={sortBy}
+                    //@ts-ignore
+                    onValueChange={setSortBy}
+                    placeholder="Sort by..."
+                    className="w-full"
+                  >
+                    <SelectTrigger className="w-xs">
+                      <SelectValue placeholder="Sort by..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="ascTotalReturn">Return Ascending</SelectItem>
+                      <SelectItem value="descTotalReturn">Return Descending</SelectItem>
+                      <SelectItem value="ascRealized">Realized Ascending</SelectItem>
+                      <SelectItem value="descRealized">Realized Descending</SelectItem>
+                      <SelectItem value="ascUnrealized">Unrealized Ascending</SelectItem>
+                      <SelectItem value="descUnrealized">Unrealized Descending</SelectItem>
+                      <SelectItem value="ascAlpha">Alpha Ascending</SelectItem>
+                      <SelectItem value="descAlpha">Alpha Descending</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <div className="flex items-center justify-center gap-2 min-w-max">
+                    <Switch id="r1" checked={showOnlyActivePositions} onCheckedChange={() => setShowOnlyActivePositions(!showOnlyActivePositions)} />
+                    <Label htmlFor="r1">Active only</Label>
+                  </div>
                 </div>
-              </Flex>
-            </Flex>
-            <TableRoot>
+              </div>
               <Table className="mt-4">
-                <TableHead>
+                <TableHeader>
                   <TableRow>
-                    <TableHeaderCell>Name</TableHeaderCell>
-                    <TableHeaderCell>Total Return</TableHeaderCell>
-                    <TableHeaderCell>Realized</TableHeaderCell>
-                    <TableHeaderCell>Unrealized</TableHeaderCell>
-                    <TableHeaderCell>Alpha</TableHeaderCell>
+                    <TableHead>Name</TableHead>
+                    <TableHead>Total Return</TableHead>
+                    <TableHead>Realized</TableHead>
+                    <TableHead>Unrealized</TableHead>
+                    <TableHead>Alpha</TableHead>
                   </TableRow>
-                </TableHead>
+                </TableHeader>
                 <TableBody>
                   {positions?.map((item) => (
                     <TableRow key={item.key}>
@@ -230,20 +241,20 @@ const Performance = ({ }) => {
                         </a>
                       </TableCell>
                       <TableCell>
-                        <Text
-                          color={
+                        <p
+                          className={
                             parseFloat(item.total_return) === 0
-                              ? "gray"
+                              ? "text-muted-foreground"
                               : parseFloat(item.total_return) < 0
-                                ? "red"
-                                : "green"
+                                ? "text-destructive-foreground"
+                                : "text-success-foreground"
                           }
                         >
                           {formatRelativeAmount(parseFloat(item.total_return))}
-                        </Text>
+                        </p>
                       </TableCell>
                       <TableCell>
-                        <Text
+                        <p
                           color={
                             parseFloat(item.realized) === 0
                               ? "gray"
@@ -253,10 +264,10 @@ const Performance = ({ }) => {
                           }
                         >
                           {formatCurrency(parseFloat(item.realized))}
-                        </Text>
+                        </p>
                       </TableCell>
                       <TableCell>
-                        <Text
+                        <p
                           color={
                             parseFloat(item.unrealized) === 0
                               ? "gray"
@@ -266,10 +277,10 @@ const Performance = ({ }) => {
                           }
                         >
                           {formatCurrency(parseFloat(item.unrealized))}
-                        </Text>
+                        </p>
                       </TableCell>
                       <TableCell>
-                        <Text
+                        <p
                           color={
                             parseFloat(item.alpha) === 0
                               ? "gray"
@@ -279,14 +290,15 @@ const Performance = ({ }) => {
                           }
                         >
                           {formatCurrency(parseFloat(item.alpha))}
-                        </Text>
+                        </p>
                       </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
               </Table>
-            </TableRoot>
+            </CardContent>
           </Card>
+
           <Disclaimer />
         </>
       )}

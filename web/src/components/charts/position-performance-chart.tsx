@@ -10,8 +10,9 @@ import {
   Cell,
 } from "recharts";
 import useSwr from "swr";
-import { BASE_URL, formatCurrency, fetcher } from "@/util";
 import { PortfolioPerformance } from "@/types/core";
+import { BASE_URL, fetcher } from "@/lib/http";
+import { formatCurrency } from "@/lib/utils";
 
 interface ChartDataItem {
   total_return: number;
@@ -19,7 +20,7 @@ interface ChartDataItem {
   name: string;
 }
 
-const PositionPerformanceScatterChart: React.FC = () => {
+const PositionPerformanceChart: React.FC = () => {
   const { data, isLoading } = useSwr<PortfolioPerformance>(
     `${BASE_URL}/performance_overview`,
     fetcher
@@ -44,10 +45,10 @@ const PositionPerformanceScatterChart: React.FC = () => {
     if (active && payload?.length) {
       const { name, total_return, invested_amount } = payload[0].payload;
       return (
-        <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 shadow rounded-lg p-4 text-sm">
-          <p className="font-bold text-gray-700 dark:text-white">{name}</p>
-          <p className="text-gray-500">{`${total_return}% Total Return`}</p>
-          <p className="text-gray-500">{`${formatCurrency(invested_amount)} Invested`}</p>
+        <div className="bg-muted border rounded p-4 text-sm">
+          <p className="font-bold">{name}</p>
+          <p className="text-muted-foreground">{`${total_return}% Total Return`}</p>
+          <p className="text-muted-foreground">{`${formatCurrency(invested_amount)} Invested`}</p>
         </div>
       );
     }
@@ -61,7 +62,7 @@ const PositionPerformanceScatterChart: React.FC = () => {
   return (
     <ResponsiveContainer width="100%" height={400}>
       <ScatterChart className="mt-4">
-        <CartesianGrid className="stroke-gray-200 dark:stroke-gray-800" />
+        <CartesianGrid className="stroke-muted" />
         <XAxis
           type="number"
           dataKey="total_return"
@@ -84,7 +85,7 @@ const PositionPerformanceScatterChart: React.FC = () => {
           {chartData.map((entry, index) => (
             <Cell
               key={`cell-${index}`}
-              className={entry.total_return > 0 ? "fill-green-500" : "fill-red-500"}
+              className={entry.total_return > 0 ? "fill-success-foreground" : "fill-destructive-foreground"}
             />
           ))}
         </Scatter>
@@ -93,5 +94,4 @@ const PositionPerformanceScatterChart: React.FC = () => {
   );
 };
 
-export default PositionPerformanceScatterChart;
-
+export default PositionPerformanceChart;

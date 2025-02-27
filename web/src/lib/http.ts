@@ -1,10 +1,5 @@
-import { Color, DeltaType } from '@tremor/react';
-import clsx, { type ClassValue } from "clsx"
-import { twMerge } from "tailwind-merge"
-import { Cache } from 'swr';
-import { formatRelative, fromUnixTime } from 'date-fns';
-
 export const BASE_URL = '/api';
+import { Cache } from 'swr';
 
 interface MutateRequestOptions {
   method: "POST" | "PUT" | "PATCH" | "DELETE";
@@ -112,85 +107,3 @@ export const clearSWRCache = (cache: Cache<any>) => {
     cache.delete(cache_key);
   }
 };
-
-export const formatCurrency = (number: number, currency: string = 'EUR') =>
-  `${new Intl.NumberFormat(getBrowserLocale(), {
-    style: 'currency',
-    currency,
-  }).format(number)}`;
-
-export const formatRelativeAmount = (number: number) =>
-  `${Intl.NumberFormat('us').format(number).toString()}%`;
-
-export const colors: { [key: string]: Color } = {
-  increase: 'emerald',
-  moderateIncrease: 'emerald',
-  unchanged: 'orange',
-  moderateDecrease: 'rose',
-  decrease: 'rose',
-};
-
-export const getBrowserLocale = () => {
-  if (navigator.languages != undefined)
-    return navigator.languages[0];
-  return navigator.language;
-}
-
-export const getDeltaType = (change: number): DeltaType => {
-  if (change > 5) {
-    return 'increase';
-  } else if (change > 1) {
-    return 'moderateIncrease';
-  } else if (change > -1) {
-    return 'unchanged';
-  } else if (change > -5) {
-    return 'moderateDecrease';
-  } else {
-    return 'decrease';
-  }
-};
-
-export const formatUnixTimestampRelative = (input: number): string => {
-  if (input) {
-    return formatRelative(fromUnixTime(input), new Date());
-  }
-  return '';
-};
-
-export const formatDate = (date: Date): string => {
-  return new Intl.DateTimeFormat(getBrowserLocale()).format(date)
-}
-
-// Tremor cx [v0.0.0]
-export function cx(...args: ClassValue[]) {
-  return twMerge(clsx(...args))
-}
-// Tremor focusInput [v0.0.1]
-export const focusInput = [
-  // base
-  "focus:ring-2",
-  // ring color
-  "focus:ring-blue-200 focus:dark:ring-blue-700/30",
-  // border color
-  "focus:border-blue-500 focus:dark:border-blue-700",
-]
-
-// Tremor hasErrorInput [v0.0.1]
-
-export const hasErrorInput = [
-  // base
-  "ring-2",
-  // border color
-  "border-red-500 dark:border-red-700",
-  // ring color
-  "ring-red-200 dark:ring-red-700/30",
-]
-
-// Tremor focusRing [v0.0.1]
-
-export const focusRing = [
-  // base
-  "outline outline-offset-2 outline-0 focus-visible:outline-2",
-  // outline color
-  "outline-blue-500 dark:outline-blue-500",
-]
