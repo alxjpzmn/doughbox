@@ -1,7 +1,7 @@
+import { BASE_URL, fetcher, clearSWRCache, sendMutateRequest } from "@/lib/http";
 import { useEffect } from "react";
 import useSWR, { useSWRConfig } from "swr";
 import { useLocation, useRouter } from "wouter";
-import { BASE_URL, clearSWRCache, fetcher, sendMutateRequest } from "@/util";
 import { useBrowserLocation } from "wouter/use-browser-location";
 
 const useAuth = () => {

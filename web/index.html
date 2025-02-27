@@ -11,29 +11,30 @@
     <link rel="mask-icon" href="/mask-icon.svg" color="#FFFFFF" />
     <meta
       name="theme-color"
-      content="#f9fafb"
+      content="#ffffff"
       media="(prefers-color-scheme: light)"
     />
     <meta
       name="theme-color"
-      content="#131A2B"
+      content="#000000"
       media="(prefers-color-scheme: dark)"
     />
   </head>
+  <!-- to prevent FOUC -->
   <style>
     body {
-      background-color: #f9fafb;
+      background-color: #ffffff;
       margin: 0;
       padding: 0;
     }
     @media (prefers-color-scheme: dark) {
       body {
-        background-color: #131a2b;
+        background-color: #000000;
       }
     }
   </style>
   <body
-    class="w-full min-h-screen pt-4 px-2 bg-tremor-background-muted dark:bg-dark-tremor-background-muted h-screen overflow-y-auto scrollbar-gutter-stable"
+    class="w-full min-h-screen pt-4 px-2 h-screen overflow-y-auto scrollbar-gutter-stable"
   >
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>

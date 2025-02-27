@@ -114,7 +114,7 @@ For manual imports of trades, you can create a CSV with the following structure,
 As Carl Sagan put it: "If you want to bake an Apple Pie, you must first invent the universe from scratch". In that spirit, Doughbox simply cobbles together a bunch of excellent open source libraries and existing tools. Here's a non-exhaustive list:
 
 - Rust, JavaScript & React
-- Tremor, an excellent UI Library built on top of Tailwind
+- shadcn, an excellent UI Library built on top of Tailwind
 - Tokio and axum
 - Postgres
 - SWR

@@ -1,9 +1,9 @@
-import { Badge } from "@/components/Badge";
-import { Input } from "@/components/Input";
 import useAuth from "@/hooks/useAuth";
 import { useForm } from "react-hook-form";
 import { yupResolver } from '@hookform/resolvers/yup';
 import * as yup from "yup";
+import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
 
 const schema = yup.object({
   password: yup.string().required('Password is required'),
@@ -35,10 +35,9 @@ const Login = () => {
             {...register("password", { required: true })}
             placeholder="Enter password"
             autoFocus
-            hasError={!!errors.password}
             aria-invalid={errors.password ? "true" : "false"}
             type="password" />
-          {errors.password && <Badge variant="error" className="absolute t-0 l-0 mt-2">{errors.password?.message}</Badge>}
+          {errors.password && <Badge variant="destructive" className="absolute t-0 l-0 mt-2">{errors.password?.message}</Badge>}
         </div>
       </form>
     </div>
