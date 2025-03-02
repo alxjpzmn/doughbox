@@ -6,19 +6,21 @@ import { Disclaimer } from '@/components/composite/disclaimer';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { BarList } from '@/components/composite/bar-list';
 import { BASE_URL, fetcher } from '@/lib/http';
-import { formatCurrency, formatUnixTimestampRelative } from '@/lib/utils';
+import { formatCurrency, formatRelativeAmount } from '@/lib/utils';
+import { Triangle, TriangleDashed } from 'lucide-react';
 
 const Portfolio = () => {
   const { data, isLoading, error } = useSwr<PortfolioOverview>(`${BASE_URL}/portfolio`, fetcher);
 
   let overviewData = {
     title: 'Current Portfolio Value',
-    metric: `${formatCurrency(isLoading || !data ? 0 : parseFloat(data.total_value))}`,
-    metricPrev: `${formatCurrency(
+    portfolio_value: `${formatCurrency(isLoading || !data ? 0 : parseFloat(data.total_value))}`,
+    absolute_return: `${formatCurrency(
       isLoading || !data ? 0 : parseFloat(data?.total_return_abs)
     )}`,
-    delta: `${isLoading || !data ? '0,00%' : `${data.total_return_rel}%`}`,
-    updatedAt: (isLoading || !data) ? new Date() : data.generated_at,
+    relative_return: `${isLoading || !data ? formatRelativeAmount(0) : formatRelativeAmount(parseFloat(data.total_return_rel))}`,
+    unformatted_return:
+      isLoading || !data ? 0 : parseFloat(data?.total_return_abs)
   };
 
 
@@ -66,19 +68,24 @@ const Portfolio = () => {
           <Card key={overviewData.title} className="mb-6">
             <CardHeader>
               <CardTitle>{overviewData.title}</CardTitle>
-              <CardDescription>
-                Last updated {formatUnixTimestampRelative(data?.generated_at)}
-              </CardDescription>
             </CardHeader>
             <CardContent>
               <div className="flex justify-start mb-2 truncate">
-                <p className='text-4xl font-bold'>{overviewData.metric}</p>
+                <p className='text-4xl font-bold'>{overviewData.portfolio_value}</p>
               </div>
-              <div className="text-muted-foreground leading-none text-sm flex gap-2 truncate">
-                <p>{overviewData.delta}</p>|
-                <p className="truncate">
-                  {overviewData.metricPrev} total return
-                </p>
+              <div className="text-muted-foreground flex gap-2 items-center leading-none text-sm truncate">
+                {
+                  overviewData.unformatted_return > 0 && <Triangle size={16} className='stroke-success-foreground' />
+                }
+                {
+                  overviewData.unformatted_return < 0 && <Triangle size={16} className='rotate-180 stroke-destructive-foreground' />
+                }
+                {
+                  overviewData.unformatted_return === 0 && <TriangleDashed size={16} className='stroke-muted-foreground' />
+                }
+                <p>{overviewData.absolute_return} (
+                  {overviewData.relative_return}
+                  )</p>
               </div>
             </CardContent>
           </Card>

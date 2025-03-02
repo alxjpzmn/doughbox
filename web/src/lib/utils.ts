@@ -31,3 +31,12 @@ export const formatUnixTimestampRelative = (input: number): string => {
 export const formatDate = (date: Date): string => {
   return new Intl.DateTimeFormat(getBrowserLocale()).format(date)
 }
+
+export const colorMetric = (metric: string) => {
+  return parseFloat(metric) === 0
+    ? "text-muted-foreground"
+    : parseFloat(metric) < 0
+      ? "text-destructive-foreground"
+      : "text-success-foreground"
+
+}
