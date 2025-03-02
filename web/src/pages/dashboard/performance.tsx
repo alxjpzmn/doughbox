@@ -12,7 +12,7 @@ import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Label } from "@/components/ui/label";
 import { BASE_URL, fetcher } from "@/lib/http";
-import { formatCurrency, formatUnixTimestampRelative, formatRelativeAmount } from "@/lib/utils";
+import { formatCurrency, formatUnixTimestampRelative, formatRelativeAmount, colorMetric } from "@/lib/utils";
 
 interface PositionPerformanceWithKey extends PositionPerformance {
   key: string;
@@ -27,6 +27,7 @@ type sortByMethods =
   | "descUnrealized"
   | "ascAlpha"
   | "descAlpha";
+
 
 const Performance = ({ }) => {
   const { data, isLoading, error } = useSwr<PortfolioPerformance>(`${BASE_URL}/performance_overview`, fetcher);
@@ -87,6 +88,7 @@ const Performance = ({ }) => {
       );
     }
   }, [data, sortBy, isLoading, showOnlyActivePositions]);
+
 
   return (
     <>
@@ -223,7 +225,7 @@ const Performance = ({ }) => {
                 <TableHeader>
                   <TableRow>
                     <TableHead>Name</TableHead>
-                    <TableHead>Total Return</TableHead>
+                    <TableHead>Return</TableHead>
                     <TableHead>Realized</TableHead>
                     <TableHead>Unrealized</TableHead>
                     <TableHead>Alpha</TableHead>
@@ -242,12 +244,7 @@ const Performance = ({ }) => {
                       </TableCell>
                       <TableCell>
                         <p
-                          className={
-                            parseFloat(item.total_return) === 0
-                              ? "text-muted-foreground"
-                              : parseFloat(item.total_return) < 0
-                                ? "text-destructive-foreground"
-                                : "text-success-foreground"
+                          className={colorMetric(item.total_return)
                           }
                         >
                           {formatRelativeAmount(parseFloat(item.total_return))}
@@ -255,12 +252,7 @@ const Performance = ({ }) => {
                       </TableCell>
                       <TableCell>
                         <p
-                          color={
-                            parseFloat(item.realized) === 0
-                              ? "gray"
-                              : parseFloat(item.realized) < 0
-                                ? "red"
-                                : "green"
+                          className={colorMetric(item.realized)
                           }
                         >
                           {formatCurrency(parseFloat(item.realized))}
@@ -268,12 +260,7 @@ const Performance = ({ }) => {
                       </TableCell>
                       <TableCell>
                         <p
-                          color={
-                            parseFloat(item.unrealized) === 0
-                              ? "gray"
-                              : parseFloat(item.unrealized) < 0
-                                ? "red"
-                                : "green"
+                          className={colorMetric(item.unrealized)
                           }
                         >
                           {formatCurrency(parseFloat(item.unrealized))}
@@ -281,12 +268,7 @@ const Performance = ({ }) => {
                       </TableCell>
                       <TableCell>
                         <p
-                          color={
-                            parseFloat(item.alpha) === 0
-                              ? "gray"
-                              : parseFloat(item.alpha) < 0
-                                ? "red"
-                                : "green"
+                          className={colorMetric(item.alpha)
                           }
                         >
                           {formatCurrency(parseFloat(item.alpha))}

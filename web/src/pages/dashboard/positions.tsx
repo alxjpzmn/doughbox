@@ -118,9 +118,7 @@ const Positions = () => {
                         </a>
                       </TableCell>
                       <TableCell>
-                        <span className="font-bold font-mono">
-                          {item?.units}
-                        </span>
+                        {item?.units}
                       </TableCell>
                     </TableRow>
                   ))}
