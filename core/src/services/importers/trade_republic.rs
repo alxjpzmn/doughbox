@@ -190,11 +190,18 @@ pub async fn extract_trade_republic_record(text: &str) -> anyhow::Result<()> {
             add_trade_to_db(trade, None).await?;
         }
         RecordType::BondTrade => {
-            let date_match =
-                return_first_match(r"(..\...\....., um ..:..)", text)?.replace(", um", "");
+            let date_match_regex = r"(..\...\.....(?:,)? um ..:..)";
+            let does_date_match_exist = does_match_exist(date_match_regex, text);
+            //skip file if it's not a valid trade confirmation
+            if !does_date_match_exist {
+                return Ok(());
+            }
+            let date_match = return_first_match(date_match_regex, text)?
+                .replace(", um", "")
+                .replace(" um", "");
+
             let date_string_to_parse = format!("{date_match}:00");
             let date = parse_timestamp(&date_string_to_parse)?;
-
             let isin =
                 return_first_match(r"\b[a-zA-Z]{2}\s*[0-9a-zA-Z]{9}[0-9](?![0-9a-zA-Z-])", text)?;
 
@@ -291,13 +298,16 @@ pub async fn extract_trade_republic_record(text: &str) -> anyhow::Result<()> {
         }
 
         RecordType::EquityTrade => {
-            let date_match_regex = r"(..\...\....., um ..:..)";
+            let date_match_regex = r"(..\...\.....(?:,)? um ..:..)";
+
             let does_date_match_exist = does_match_exist(date_match_regex, text);
             //skip file if it's not a valid trade confirmation
             if !does_date_match_exist {
                 return Ok(());
             }
-            let date_match = return_first_match(date_match_regex, text)?.replace(", um", "");
+            let date_match = return_first_match(date_match_regex, text)?
+                .replace(", um", "")
+                .replace(" um", "");
 
             let date_string_to_parse = format!("{date_match}:00");
             let date = parse_timestamp(&date_string_to_parse)?;
@@ -320,20 +330,24 @@ pub async fn extract_trade_republic_record(text: &str) -> anyhow::Result<()> {
                 .replace(',', ".")
                 .parse::<Decimal>()?;
 
-            let avg_price_per_unit = return_first_match(r"Stk\.\s\d+,\d{1,}\sEUR", text)?
-                .replace(" EUR", "")
-                .replace("Stk.", "")
-                .replace('.', "")
-                .replace(',', ".")
-                .replace(" ", "")
-                .parse::<Decimal>()?;
+            let avg_price_per_unit =
+                return_first_match(r"Stk\.\s(\d{1,3}(?:\.\d{3})*,\d{1,3})", text)?
+                    .replace(" EUR", "")
+                    .replace("Stk.", "")
+                    .replace('.', "")
+                    .replace(',', ".")
+                    .replace(" ", "")
+                    .parse::<Decimal>()?;
 
-            let direction =
-                if does_match_exist(r"\sKauf", text) || does_match_exist(r"\Sparplan", text) {
-                    "Buy"
-                } else {
-                    "Sell"
-                };
+            let direction = if does_match_exist(r"\sKauf", text)
+                || does_match_exist(r"OrderKauf", text)
+                || does_match_exist(r"\sSparplan", text)
+                || does_match_exist(r"(?i)\bbuy\b", text)
+            {
+                "Buy"
+            } else {
+                "Sell"
+            };
 
             let mut fees = dec!(0.0);
             if does_match_exist(r"Fremdkostenzuschlag", text) {
