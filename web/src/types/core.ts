@@ -3,123 +3,122 @@
 */
 
 export interface Dividend {
-	isin: string;
-	date: Date;
-	amount: string;
-	broker: string;
-	currency: string;
-	amount_eur: string;
-	withholding_tax: string;
-	witholding_tax_currency: string;
+  isin: string;
+  date: Date;
+  amount: string;
+  broker: string;
+  currency: string;
+  amount_eur: string;
+  withholding_tax: string;
+  withholding_tax_currency: string;
 }
 
 export interface PerformanceSignal {
-	date: Date;
-	total_value: string;
-	total_invested: string;
+  date: Date;
+  total_value: string;
+  total_invested: string;
 }
 
 export interface PositionWithName {
-	isin: string;
-	name: string;
-	units: string;
+  isin: string;
+  name: string;
+  units: string;
 }
 
 export interface PositionWithValueAndAllocation {
-	isin: string;
-	name: string;
-	value: string;
-	units: string;
-	share: string;
+  isin: string;
+  name: string;
+  value: string;
+  units: string;
+  share: string;
 }
 
 export interface PortfolioEvent {
-	date: Date;
-	event_type: EventType;
-	currency: string;
-	units: string;
-	price_unit: string;
-	identifier?: string;
-	name?: string;
-	direction?: TradeDirection;
-	applied_fx_rate?: string;
-	withholding_tax_percent?: string;
-	total: string;
-	broker: string;
+  date: Date;
+  event_type: EventType;
+  currency: string;
+  units: string;
+  price_unit: string;
+  identifier?: string;
+  name?: string;
+  direction?: TradeDirection;
+  applied_fx_rate?: string;
+  withholding_tax_percent?: string;
+  total: string;
+  broker: string;
 }
 
 export interface PortfolioPerformance {
-	generated_at: number;
-	actual: string;
-	simulated: string;
-	alpha: string;
-	position: PositionPerformance[];
+  generated_at: number;
+  actual: string;
+  simulated: string;
+  alpha: string;
+  position: PositionPerformance[];
 }
 
 export interface PositionPerformance {
-	isin: string;
-	name: string;
-	unrealized: string;
-	realized: string;
-	performance: string;
-	simulated: string;
-	alpha: string;
-	invested_amount: string;
-	total_return: string;
+  isin: string;
+  name: string;
+  unrealized: string;
+  realized: string;
+  performance: string;
+  simulated: string;
+  alpha: string;
+  invested_amount: string;
+  total_return: string;
 }
 
 export interface PortfolioOverview {
-	generated_at: number;
-	total_value: string;
-	realized: string;
-	total_return_abs: string;
-	total_return_rel: string;
-	positions: PositionWithValueAndAllocation[];
+  generated_at: number;
+  total_value: string;
+  realized: string;
+  total_return_abs: string;
+  total_return_rel: string;
+  positions: PositionWithValueAndAllocation[];
 }
 
 export interface AnnualTaxableAmounts {
-	cash_interest: string;
-	share_lending_interest: string;
-	capital_gains: string;
-	capital_losses: string;
-	dividends: string;
-	dividend_equivalents: string;
-	fx_appreciation: string;
-	withheld_tax_capital_gains: string;
-	withheld_tax_dividends: string;
-	withheld_tax_interest: string;
+  cash_interest: string;
+  share_lending_interest: string;
+  capital_gains: string;
+  capital_losses: string;
+  dividends: string;
+  dividend_equivalents: string;
+  fx_appreciation: string;
+  withheld_tax_capital_gains: string;
+  withheld_tax_dividends: string;
+  withheld_tax_interest: string;
 }
 
 export interface TaxationReport {
-	created_at: Date;
-	taxable_amounts: any;
-	securities_wacs: any;
-	currency_wacs: any;
+  created_at: Date;
+  taxable_amounts: any;
+  securities_wacs: any;
+  currency_wacs: any;
 }
 
 export interface FxWac {
-	units: string;
-	avg_rate: string;
+  units: string;
+  avg_rate: string;
 }
 
 export interface SecWac {
-	units: string;
-	average_cost: string;
-	weighted_avg_fx_rate: string;
-	name: string;
+  units: string;
+  average_cost: string;
+  weighted_avg_fx_rate: string;
+  name: string;
 }
 
 export enum TradeDirection {
-	Buy = "Buy",
-	Sell = "Sell",
+  Buy = "Buy",
+  Sell = "Sell",
 }
 
 export enum EventType {
-	CashInterest = "CashInterest",
-	ShareInterest = "ShareInterest",
-	Dividend = "Dividend",
-	Trade = "Trade",
-	FxConversion = "FxConversion",
-	DividendAequivalent = "DividendAequivalent",
+  CashInterest = "CashInterest",
+  ShareInterest = "ShareInterest",
+  Dividend = "Dividend",
+  Trade = "Trade",
+  FxConversion = "FxConversion",
+  DividendAequivalent = "DividendAequivalent",
 }
-

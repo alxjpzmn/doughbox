@@ -90,7 +90,7 @@ async fn query_interest(
 ) -> anyhow::Result<Vec<Row>> {
     Ok(client
         .query(
-            "select date, amount, currency, principal, withholding_tax, witholding_tax_currency, amount_eur, broker FROM interest WHERE date >= $1 AND date < $2",
+            "select date, amount, currency, principal, withholding_tax, withholding_tax_currency, amount_eur, broker FROM interest WHERE date >= $1 AND date < $2",
             &[start_date, end_date],
         )
         .await?)
@@ -116,7 +116,7 @@ async fn query_dividends(
 ) -> anyhow::Result<Vec<Row>> {
     Ok(client
         .query(
-            "select date, amount, currency, isin, withholding_tax, witholding_tax_currency, amount_eur, broker FROM dividend WHERE date >= $1 AND date < $2",
+            "select date, amount, currency, isin, withholding_tax, withholding_tax_currency, amount_eur, broker FROM dividend WHERE date >= $1 AND date < $2",
             &[start_date, end_date],
         )
         .await?)
@@ -129,7 +129,7 @@ async fn query_trades(
 ) -> anyhow::Result<Vec<Row>> {
     Ok(client
         .query(
-            "select date, no_units, avg_price_per_unit, currency_denomination, isin, direction, withholding_tax, witholding_tax_currency, eur_avg_price_per_unit, broker FROM trade WHERE date >= $1 AND date < $2",
+            "select date, units, avg_price_per_unit, currency, isin, direction, withholding_tax, withholding_tax_currency, eur_avg_price_per_unit, broker FROM trade WHERE date >= $1 AND date < $2",
             &[start_date, end_date],
         )
         .await?)

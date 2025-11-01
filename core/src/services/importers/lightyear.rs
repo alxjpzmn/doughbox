@@ -139,7 +139,7 @@ pub async fn extract_lightyear_record(file_content: &[u8]) -> anyhow::Result<()>
                         .await?
                     },
                     withholding_tax: record.tax_amount.parse::<Decimal>().unwrap_or(dec!(0.0)),
-                    witholding_tax_currency: record.currency.to_string(),
+                    withholding_tax_currency: record.currency.to_string(),
                 };
                 add_dividend_to_db(dividend).await?;
             }
@@ -160,7 +160,7 @@ pub async fn extract_lightyear_record(file_content: &[u8]) -> anyhow::Result<()>
                         )
                         .await?
                     },
-                    no_units: if record.price_per_share.is_empty() {
+                    units: if record.price_per_share.is_empty() {
                         dec!(0.0)
                     } else {
                         record.share_count.parse::<Decimal>()?
@@ -171,11 +171,11 @@ pub async fn extract_lightyear_record(file_content: &[u8]) -> anyhow::Result<()>
                         "Sell".to_string()
                     },
                     security_type: "Equity".to_string(),
-                    currency_denomination: record.currency.to_string(),
+                    currency: record.currency.to_string(),
                     date_added: Utc::now(),
                     fees: record.fee.parse::<Decimal>()?,
                     withholding_tax: record.tax_amount.parse::<Decimal>().unwrap_or(dec!(0.0)),
-                    witholding_tax_currency: record.currency.to_string(),
+                    withholding_tax_currency: record.currency.to_string(),
                 };
                 add_trade_to_db(trade, Some(record.reference)).await?;
             }
@@ -198,7 +198,7 @@ pub async fn extract_lightyear_record(file_content: &[u8]) -> anyhow::Result<()>
                         .await?
                     },
                     withholding_tax: record.tax_amount.parse::<Decimal>().unwrap_or(dec!(0.0)),
-                    witholding_tax_currency: record.currency.to_string(),
+                    withholding_tax_currency: record.currency.to_string(),
                 };
                 add_interest_to_db(interest_payment).await?;
             }

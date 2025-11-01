@@ -52,7 +52,7 @@ pub async fn extract_erste_bank_record(text: &str) -> anyhow::Result<()> {
                 .replace(',', ".")
                 .parse::<Decimal>()?;
 
-            let no_units = return_first_match(
+            let units = return_first_match(
                 r"(?:\d{2}\.\d{2}\.\d{4})\s*,?\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?)\s*STK",
                 text,
             )?
@@ -94,10 +94,10 @@ pub async fn extract_erste_bank_record(text: &str) -> anyhow::Result<()> {
                 .replace(" ", "")
                 .replace("\n", "");
 
-            let mut currency_denomination = "EUR".to_string();
+            let mut currency = "EUR".to_string();
 
             if is_non_eur_denominated {
-                currency_denomination = return_first_match(r"... Devisenkurs", text)?
+                currency = return_first_match(r"... Devisenkurs", text)?
                     .replace("Devisenkurs", "")
                     .replace(" ", "");
             }
@@ -109,14 +109,14 @@ pub async fn extract_erste_bank_record(text: &str) -> anyhow::Result<()> {
                 avg_price_per_unit,
                 // EUR price per unit is shown in PDF itself
                 eur_avg_price_per_unit: avg_price_per_unit,
-                no_units,
+                units,
                 direction: order_type.to_string(),
                 security_type: "Equity".to_string(),
-                currency_denomination,
+                currency,
                 date_added: Utc::now(),
                 fees,
                 withholding_tax: dec!(0.0),
-                witholding_tax_currency: "EUR".to_string(),
+                withholding_tax_currency: "EUR".to_string(),
             };
             add_trade_to_db(trade, Some(id)).await?;
         }
@@ -155,7 +155,7 @@ pub async fn extract_erste_bank_record(text: &str) -> anyhow::Result<()> {
                 currency: "EUR".to_string(),
                 amount_eur: amount,
                 withholding_tax,
-                witholding_tax_currency: "EUR".to_string(),
+                withholding_tax_currency: "EUR".to_string(),
             };
             add_dividend_to_db(dividend).await?;
         }

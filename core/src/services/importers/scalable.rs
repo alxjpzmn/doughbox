@@ -177,7 +177,7 @@ pub async fn extract_scalable_record(text: &str) -> anyhow::Result<()> {
                     isin,
                     avg_price_per_unit: price.parse::<Decimal>()?,
                     eur_avg_price_per_unit: price.parse::<Decimal>()?,
-                    no_units: shares.parse::<Decimal>()?,
+                    units: shares.parse::<Decimal>()?,
                     direction: if does_match_exist(r"Verkauf", text) {
                         "Sell"
                     } else {
@@ -185,11 +185,11 @@ pub async fn extract_scalable_record(text: &str) -> anyhow::Result<()> {
                     }
                     .to_string(),
                     security_type: "Equity".to_string(),
-                    currency_denomination: "EUR".to_string(),
+                    currency: "EUR".to_string(),
                     date_added: Utc::now(),
                     fees: dec!(0.0),
                     withholding_tax: dec!(0.0),
-                    witholding_tax_currency: "EUR".to_string(),
+                    withholding_tax_currency: "EUR".to_string(),
                 };
                 add_trade_to_db(trade, Some(id)).await?;
             }
@@ -204,7 +204,7 @@ pub async fn extract_scalable_record(text: &str) -> anyhow::Result<()> {
                     currency: "EUR".to_string(),
                     amount_eur: amount.parse::<Decimal>()?,
                     withholding_tax: dec!(0.0),
-                    witholding_tax_currency: "EUR".to_string(),
+                    withholding_tax_currency: "EUR".to_string(),
                 };
                 add_dividend_to_db(dividend).await?;
             }

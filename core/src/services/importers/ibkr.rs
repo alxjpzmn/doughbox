@@ -134,20 +134,20 @@ pub async fn extract_ibkr_record(file_content: &[u8]) -> anyhow::Result<()> {
                     eur_avg_price_per_unit: record.trade_price.parse::<Decimal>()?
                         * record.fx_rate_to_base.parse::<Decimal>()?,
                     // IBKR assigns negative units on sell events
-                    no_units: record.quantity.parse::<Decimal>()?.abs(),
+                    units: record.quantity.parse::<Decimal>()?.abs(),
                     direction: if record.buy_sell.contains("BUY") {
                         "Buy".to_string()
                     } else {
                         "Sell".to_string()
                     },
                     security_type: "Equity".to_string(),
-                    currency_denomination: record.currency_primary.to_string(),
+                    currency: record.currency_primary.to_string(),
                     date_added: Utc::now(),
                     fees: record.ib_commission.parse::<Decimal>()?
                         * dec!(-1.0)
                         * record.fx_rate_to_base.parse::<Decimal>()?,
                     withholding_tax: record.taxes.parse::<Decimal>()?,
-                    witholding_tax_currency: record.currency_primary,
+                    withholding_tax_currency: record.currency_primary,
                 };
                 add_trade_to_db(trade, Some(record.trade_id)).await?;
             }

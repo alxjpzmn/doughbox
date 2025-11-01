@@ -117,7 +117,7 @@ pub async fn extract_trading212_record(file_content: &[u8]) -> anyhow::Result<()
                     withholding_tax: record
                         .get(withholding_tax_idx)
                         .map_or(dec!(0), |value| value.parse::<Decimal>().unwrap_or(dec!(0))),
-                    witholding_tax_currency: record[withholding_tax_currency_idx].to_string(),
+                    withholding_tax_currency: record[withholding_tax_currency_idx].to_string(),
                 };
                 add_dividend_to_db(dividend).await?;
             }
@@ -149,7 +149,7 @@ pub async fn extract_trading212_record(file_content: &[u8]) -> anyhow::Result<()
                     avg_price_per_unit: record[price_per_share_idx].parse::<Decimal>()?,
                     eur_avg_price_per_unit: record[price_per_share_idx].parse::<Decimal>()?
                         / record[fx_rate_idx].parse::<Decimal>()?,
-                    no_units: if record[price_per_share_idx].is_empty() {
+                    units: if record[price_per_share_idx].is_empty() {
                         dec!(0.0)
                     } else {
                         record[share_count_idx].parse::<Decimal>()?
@@ -160,14 +160,14 @@ pub async fn extract_trading212_record(file_content: &[u8]) -> anyhow::Result<()
                         "Sell".to_string()
                     },
                     security_type: "Equity".to_string(),
-                    currency_denomination: record[currency_price_idx].to_string(),
+                    currency: record[currency_price_idx].to_string(),
                     date_added: Utc::now(),
                     // Trading 212 only charges for fx conversions
                     fees: record[fees_idx].parse::<Decimal>().unwrap_or(dec!(0.0)),
                     withholding_tax: record[withholding_tax_idx]
                         .parse::<Decimal>()
                         .unwrap_or(dec!(0.0)),
-                    witholding_tax_currency: record[withholding_tax_idx].to_string(),
+                    withholding_tax_currency: record[withholding_tax_idx].to_string(),
                 };
                 add_trade_to_db(trade, Some(record[id_idx].to_string())).await?;
             }
@@ -199,7 +199,7 @@ pub async fn extract_trading212_record(file_content: &[u8]) -> anyhow::Result<()
                     withholding_tax: record[withholding_tax_idx]
                         .parse::<Decimal>()
                         .unwrap_or(dec!(0.0)),
-                    witholding_tax_currency: record[withholding_tax_currency_idx].to_string(),
+                    withholding_tax_currency: record[withholding_tax_currency_idx].to_string(),
                 };
                 add_interest_to_db(interest_payment).await?;
             }
@@ -232,7 +232,7 @@ pub async fn extract_trading212_record(file_content: &[u8]) -> anyhow::Result<()
                     withholding_tax: record[withholding_tax_idx]
                         .parse::<Decimal>()
                         .unwrap_or(dec!(0.0)),
-                    witholding_tax_currency: record[withholding_tax_currency_idx].to_string(),
+                    withholding_tax_currency: record[withholding_tax_currency_idx].to_string(),
                 };
                 add_interest_to_db(interest_payment).await?;
             }

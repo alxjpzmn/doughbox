@@ -111,16 +111,16 @@ pub async fn get_performance() -> anyhow::Result<PortfolioPerformance> {
                     isin: u.isin.clone(),
                     broker: u.broker.clone(),
                     date: u.date,
-                    no_units: u.no_units,
+                    units: u.units,
                     avg_price_per_unit: u.avg_price_per_unit,
                     eur_avg_price_per_unit: u.eur_avg_price_per_unit,
                     security_type: u.security_type.clone(),
                     direction: u.direction.clone(),
-                    currency_denomination: u.currency_denomination.clone(),
+                    currency: u.currency.clone(),
                     date_added: Utc::now(),
                     fees: dec!(0.0),
                     withholding_tax: dec!(0.0),
-                    witholding_tax_currency: "EUR".to_string(),
+                    withholding_tax_currency: "EUR".to_string(),
                 })
                 .collect(),
         })
@@ -302,7 +302,7 @@ pub fn get_title_performance(
     for (i, trade) in queue.enumerate() {
         let split_adjusted_units = get_split_adjusted_units(
             &trade.isin,
-            trade.no_units,
+            trade.units,
             trade.date,
             stock_split_information,
         );
@@ -369,13 +369,13 @@ pub fn get_title_performance(
     }
 }
 
-pub fn is_position_size_over_threshold(no_units: Decimal) -> bool {
-    no_units > dec!(0.00000000000001)
+pub fn is_position_size_over_threshold(units: Decimal) -> bool {
+    units > dec!(0.00000000000001)
 }
 
-pub fn override_positions_below_threshold(no_units: Decimal) -> Decimal {
-    if is_position_size_over_threshold(no_units) {
-        no_units
+pub fn override_positions_below_threshold(units: Decimal) -> Decimal {
+    if is_position_size_over_threshold(units) {
+        units
     } else {
         dec!(0.0)
     }
@@ -410,20 +410,18 @@ pub async fn simulate_alternate_purchase(
                 isin: queue_item_without_overrides.isin.to_string(),
                 broker: queue_item_without_overrides.broker.to_string(),
                 date: queue_item_without_overrides.date,
-                no_units: (queue_item_without_overrides.eur_avg_price_per_unit
-                    * queue_item_without_overrides.no_units)
+                units: (queue_item_without_overrides.eur_avg_price_per_unit
+                    * queue_item_without_overrides.units)
                     / index_price_during_trade,
                 avg_price_per_unit: index_price_during_trade,
                 eur_avg_price_per_unit: index_price_during_trade,
                 security_type: queue_item_without_overrides.security_type.to_string(),
                 direction: queue_item_without_overrides.direction.to_string(),
-                currency_denomination: queue_item_without_overrides
-                    .currency_denomination
-                    .to_string(),
+                currency: queue_item_without_overrides.currency.to_string(),
                 date_added: Utc::now(),
                 fees: queue_item_without_overrides.fees,
                 withholding_tax: dec!(0.9),
-                witholding_tax_currency: "EUR".to_string(),
+                withholding_tax_currency: "EUR".to_string(),
             };
             queue_with_overrides.push(trade_with_index_overrides);
         }
@@ -438,15 +436,15 @@ pub async fn simulate_alternate_purchase(
 
         for (i, trade) in queue_with_overrides.iter().enumerate() {
             if trade.direction == "Buy" {
-                inventory += trade.no_units;
-                real_held_units += queue_without_overrides.clone().collect_vec()[i].no_units;
-                purchase_value += trade.eur_avg_price_per_unit * trade.no_units;
-                invested_amount += trade.eur_avg_price_per_unit * trade.no_units;
+                inventory += trade.units;
+                real_held_units += queue_without_overrides.clone().collect_vec()[i].units;
+                purchase_value += trade.eur_avg_price_per_unit * trade.units;
+                invested_amount += trade.eur_avg_price_per_unit * trade.units;
             }
 
             if trade.direction == "Sell" {
                 let share_of_accrued_position =
-                    queue_without_overrides.clone().collect_vec()[i].no_units / real_held_units;
+                    queue_without_overrides.clone().collect_vec()[i].units / real_held_units;
 
                 let normalized_unit_count = share_of_accrued_position * inventory;
 
@@ -457,7 +455,7 @@ pub async fn simulate_alternate_purchase(
                     (actual_sell_price - avg_purchase_price) * normalized_unit_count;
                 realized += realized_for_trade;
                 inventory -= normalized_unit_count;
-                real_held_units -= queue_without_overrides.clone().collect_vec()[i].no_units;
+                real_held_units -= queue_without_overrides.clone().collect_vec()[i].units;
                 purchase_value -= avg_purchase_price * normalized_unit_count;
                 invested_amount -=
                     if !is_position_size_over_threshold(inventory) && queue_len != &(&i + 1) {

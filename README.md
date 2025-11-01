@@ -105,9 +105,9 @@ Since Doughbox doesn't have any direct way to fetch current asset prices (if you
 
 For manual imports of trades, you can create a CSV with the following structure, place it in the `input` folder and import it:
 
-| date                    | broker | ISIN           | avg_price_per_unit | eur_avg_price_per_unit | no_units | direction   | security_type                | currency_denomination | fees | withholding_tax | withholding_tax_currency |
-| ----------------------- | ------ | -------------- | ------------------ | ---------------------- | -------- | ----------- | ---------------------------- | --------------------- | ---- | --------------- | ------------------------ |
-| 2019-10-29 14:37:45.123 | VSOP   | USXXXXXXXXXXXX | 10.231             | 9.123                  | 10       | Buy \| Sell | Equity \| Bond \| Derivative | EUR \| USD \| ....    | 0.0  | 0               | EUR \| USD \| ...        |
+| date                    | broker | ISIN           | avg_price_per_unit | eur_avg_price_per_unit | units | direction   | security_type                | currency           | fees | withholding_tax | withholding_tax_currency |
+| ----------------------- | ------ | -------------- | ------------------ | ---------------------- | ----- | ----------- | ---------------------------- | ------------------ | ---- | --------------- | ------------------------ |
+| 2019-10-29 14:37:45.123 | VSOP   | USXXXXXXXXXXXX | 10.231             | 9.123                  | 10    | Buy \| Sell | Equity \| Bond \| Derivative | EUR \| USD \| .... | 0.0  | 0               | EUR \| USD \| ...        |
 
 ## Acknowledgements
 

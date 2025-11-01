@@ -20,7 +20,7 @@ pub struct ManualRecord {
     direction: String,
     units: String,
     avg_price_per_unit: String,
-    currency_denomination: String,
+    currency: String,
     security_type: String,
     fees: String,
     withholding_tax: String,
@@ -56,28 +56,28 @@ pub async fn extract_manual_record(file_content: &[u8]) -> anyhow::Result<()> {
                     date: parse_timestamp(&record.date)?,
                     isin: record.isin,
                     avg_price_per_unit: record.avg_price_per_unit.parse::<Decimal>()?,
-                    eur_avg_price_per_unit: if record.currency_denomination == "EUR" {
+                    eur_avg_price_per_unit: if record.currency == "EUR" {
                         record.avg_price_per_unit.parse::<Decimal>()?
                     } else {
                         convert_amount(
                             record.avg_price_per_unit.parse::<Decimal>()?,
                             &parse_timestamp(&record.date)?.date_naive(),
-                            &record.currency_denomination,
+                            &record.currency,
                             "EUR",
                         )
                         .await?
                     },
-                    no_units: record.units.parse::<Decimal>()?,
+                    units: record.units.parse::<Decimal>()?,
                     direction: record.direction,
                     security_type: record.security_type,
-                    currency_denomination: record.currency_denomination.to_string(),
+                    currency: record.currency.to_string(),
                     date_added: Utc::now(),
                     fees: record.fees.parse::<Decimal>().unwrap_or(dec!(0.0)),
                     withholding_tax: record
                         .withholding_tax
                         .parse::<Decimal>()
                         .unwrap_or(dec!(0.0)),
-                    witholding_tax_currency: record.withholding_tax_currency,
+                    withholding_tax_currency: record.withholding_tax_currency,
                 };
                 add_trade_to_db(trade, None).await?;
             }

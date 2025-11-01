@@ -12,5 +12,5 @@ pub struct InterestPayment {
     pub currency: String,
     pub amount_eur: Decimal,
     pub withholding_tax: Decimal,
-    pub witholding_tax_currency: String,
+    pub withholding_tax_currency: String,
 }
