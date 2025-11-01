@@ -171,7 +171,7 @@ pub async fn extract_wise_record(file_content: &[u8]) -> anyhow::Result<()> {
                         let trade = Trade {
                             broker: broker.clone(),
                             date,
-                            no_units: record.traded_units.parse::<Decimal>()?,
+                            units: record.traded_units.parse::<Decimal>()?,
                             avg_price_per_unit: record
                                 .asset_base_currency_unit_price_amount
                                 .parse::<Decimal>()?,
@@ -196,13 +196,13 @@ pub async fn extract_wise_record(file_content: &[u8]) -> anyhow::Result<()> {
                             } else {
                                 "Sell".to_string()
                             },
-                            currency_denomination: record.asset_base_currency.clone(),
+                            currency: record.asset_base_currency.clone(),
                             isin: record.traded_asset_id_value,
                             date_added: Utc::now(),
                             // Wise charges a custody fee instead
                             fees: dec!(0.0),
                             withholding_tax: dec!(0.0),
-                            witholding_tax_currency: record.asset_base_currency.clone(),
+                            withholding_tax_currency: record.asset_base_currency.clone(),
                         };
                         add_trade_to_db(trade, Some(record.wise_id)).await?;
                     }
@@ -256,7 +256,7 @@ pub async fn extract_wise_record(file_content: &[u8]) -> anyhow::Result<()> {
                             // but doesn't add it to the statement
                             // the amount in the statement is actually already the net amount
                             withholding_tax: dec!(0.0),
-                            witholding_tax_currency: record.currency,
+                            withholding_tax_currency: record.currency,
                         };
                         add_interest_to_db(interest_payment).await?;
                     }
@@ -308,7 +308,7 @@ pub async fn extract_wise_record(file_content: &[u8]) -> anyhow::Result<()> {
                             // but doesn't add it to the statement
                             // the amount in the statement is actually already the net amount
                             withholding_tax: dec!(0.0),
-                            witholding_tax_currency: record.currency,
+                            withholding_tax_currency: record.currency,
                         };
                         add_interest_to_db(interest_payment).await?;
                     }

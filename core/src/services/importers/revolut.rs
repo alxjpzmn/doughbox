@@ -129,7 +129,7 @@ pub async fn extract_revolut_record(file_content: &[u8]) -> anyhow::Result<()> {
                             // their export files (only in the app). Companies are US listed only,
                             // withheld dividend tax in the US 15%.
                             withholding_tax: parsed_amount * dec!(0.15),
-                            witholding_tax_currency: record.currency.clone(),
+                            withholding_tax_currency: record.currency.clone(),
                         };
                         add_dividend_to_db(dividend).await?;
                     }
@@ -152,7 +152,7 @@ pub async fn extract_revolut_record(file_content: &[u8]) -> anyhow::Result<()> {
                             avg_price_per_unit: parsed_price_per_share,
                             eur_avg_price_per_unit: parsed_price_per_share
                                 / record.fx_rate.parse::<Decimal>()?,
-                            no_units: if record.price_per_share.is_empty() {
+                            units: if record.price_per_share.is_empty() {
                                 dec!(0.0)
                             } else {
                                 record.share_count.parse::<Decimal>()?
@@ -163,11 +163,11 @@ pub async fn extract_revolut_record(file_content: &[u8]) -> anyhow::Result<()> {
                                 "Sell".to_string()
                             },
                             security_type: "Equity".to_string(),
-                            currency_denomination: record.currency.to_string(),
+                            currency: record.currency.to_string(),
                             date_added: Utc::now(),
                             fees: dec!(0.0),
                             withholding_tax: dec!(0.0),
-                            witholding_tax_currency: record.currency,
+                            withholding_tax_currency: record.currency,
                         };
                         add_trade_to_db(trade, None).await?;
                     }

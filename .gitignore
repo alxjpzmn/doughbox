@@ -1,5 +1,6 @@
 # custom, for Rust-based core app
 core/target
+/target
 core/input
 core/output
 node_modules

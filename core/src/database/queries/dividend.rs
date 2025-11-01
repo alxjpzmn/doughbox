@@ -15,8 +15,8 @@ pub async fn add_dividend_to_db(dividend: Dividend) -> anyhow::Result<()> {
     );
 
     client.execute(
-            "INSERT INTO dividend (id, isin, date, amount, broker, currency, amount_eur, withholding_tax, witholding_tax_currency) values ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT(id) DO NOTHING",
-            &[&hash, &dividend.isin, &dividend.date, &dividend.amount, &dividend.broker, &dividend.currency, &dividend.amount_eur, &dividend.withholding_tax, &dividend.witholding_tax_currency],
+            "INSERT INTO dividend (id, isin, date, amount, broker, currency, amount_eur, withholding_tax, withholding_tax_currency) values ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT(id) DO NOTHING",
+            &[&hash, &dividend.isin, &dividend.date, &dividend.amount, &dividend.broker, &dividend.currency, &dividend.amount_eur, &dividend.withholding_tax, &dividend.withholding_tax_currency],
         )
     .await?;
     println!("💵 Dividend added: {:?}", dividend);

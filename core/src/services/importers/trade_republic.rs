@@ -80,7 +80,7 @@ async fn add_with_import_confirmation(trade: Trade, id: String) -> anyhow::Resul
 
 pub async fn extract_trade_republic_record(text: &str) -> anyhow::Result<()> {
     // TR supports decimialization of up to 6 decimals
-    let no_units_default_regex = r"\d+(,|\.)*\d{0,6}\sStk.";
+    let units_default_regex = r"\d+(,|\.)*\d{0,6}\sStk.";
     let broker = "Trade Republic".to_string();
     match detect_record_type(text)? {
         RecordType::InvestmentPlanExecution => {
@@ -90,7 +90,7 @@ pub async fn extract_trade_republic_record(text: &str) -> anyhow::Result<()> {
 
             let isin =
                 return_first_match(r"\b[a-zA-Z]{2}\s*[0-9a-zA-Z]{9}[0-9](?![0-9a-zA-Z-])", text)?;
-            let no_units = return_first_match(no_units_default_regex, text)?
+            let units = return_first_match(units_default_regex, text)?
                 .replace(" Stk.", "")
                 .replace(',', ".")
                 .parse::<Decimal>()?;
@@ -120,18 +120,18 @@ pub async fn extract_trade_republic_record(text: &str) -> anyhow::Result<()> {
                 avg_price_per_unit,
                 // TR only supports EUR
                 eur_avg_price_per_unit: avg_price_per_unit,
-                no_units,
+                units,
                 direction: "Buy".to_string(),
                 // Sparplan is only available for Stocks and ETFs on TR
                 security_type: "Equity".to_string(),
                 // TR only supports EUR
-                currency_denomination: "EUR".to_string(),
+                currency: "EUR".to_string(),
                 date_added: Utc::now(),
                 // Sparplan executions are currently always for free
                 fees: dec!(0.0),
                 // TR doesn't withhold any tax
                 withholding_tax: dec!(0.0),
-                witholding_tax_currency: "EUR".to_string(),
+                withholding_tax_currency: "EUR".to_string(),
             };
             add_with_import_confirmation(trade, id).await?;
         }
@@ -145,14 +145,14 @@ pub async fn extract_trade_republic_record(text: &str) -> anyhow::Result<()> {
 
             let is_bond_liquidation = !does_match_exist("Stk.", text);
 
-            let no_units;
+            let units;
             if is_bond_liquidation {
-                no_units = get_positions_for_isin(&isin, None).await?;
-                if no_units == dec!(0) {
+                units = get_positions_for_isin(&isin, None).await?;
+                if units == dec!(0) {
                     return Ok(());
                 }
             } else {
-                no_units = return_first_match(no_units_default_regex, text)?
+                units = return_first_match(units_default_regex, text)?
                     .replace(" Stk.", "")
                     .replace(',', ".")
                     .parse::<Decimal>()?;
@@ -163,7 +163,7 @@ pub async fn extract_trade_republic_record(text: &str) -> anyhow::Result<()> {
                     .replace(" EUR", "")
                     .replace(',', ".")
                     .parse::<Decimal>()?
-                    / no_units;
+                    / units;
 
             let trade = Trade {
                 broker,
@@ -172,7 +172,7 @@ pub async fn extract_trade_republic_record(text: &str) -> anyhow::Result<()> {
                 avg_price_per_unit,
                 // TR only supports EUR
                 eur_avg_price_per_unit: avg_price_per_unit,
-                no_units,
+                units,
                 direction: "Sell".to_string(),
                 security_type: if is_bond_liquidation {
                     "Bond".to_string()
@@ -180,12 +180,12 @@ pub async fn extract_trade_republic_record(text: &str) -> anyhow::Result<()> {
                     "Derivative".to_string()
                 },
                 // TR only supports EUR
-                currency_denomination: "EUR".to_string(),
+                currency: "EUR".to_string(),
                 date_added: Utc::now(),
                 fees: dec!(0.0),
                 // TR doesn't withhold any tax in AT
                 withholding_tax: dec!(0.0),
-                witholding_tax_currency: "EUR".to_string(),
+                withholding_tax_currency: "EUR".to_string(),
             };
             add_trade_to_db(trade, None).await?;
         }
@@ -210,7 +210,7 @@ pub async fn extract_trade_republic_record(text: &str) -> anyhow::Result<()> {
                 .replace(',', ".")
                 .parse::<Decimal>()?;
 
-            let no_units = return_first_match(
+            let units = return_first_match(
                 r"\d+,\d+ EUR",
                 &return_first_match(r"(\d+,\d+\s*%)[\s\S]*?(\d+(?:\.\d+)? EUR)", text)?,
             )?
@@ -251,16 +251,16 @@ pub async fn extract_trade_republic_record(text: &str) -> anyhow::Result<()> {
                 avg_price_per_unit,
                 // TR only supports EUR
                 eur_avg_price_per_unit: avg_price_per_unit,
-                no_units,
+                units,
                 direction: direction.to_string(),
                 security_type: "Bond".to_string(),
                 // TR only supports EUR
-                currency_denomination: "EUR".to_string(),
+                currency: "EUR".to_string(),
                 date_added: Utc::now(),
                 fees,
                 // TR doesn't withhold any tax in AT
                 withholding_tax: dec!(0.0),
-                witholding_tax_currency: "EUR".to_string(),
+                withholding_tax_currency: "EUR".to_string(),
             };
             add_with_import_confirmation(trade, id).await?;
         }
@@ -291,7 +291,7 @@ pub async fn extract_trade_republic_record(text: &str) -> anyhow::Result<()> {
                 amount_eur: amount,
                 // TR doesn't withhold any tax in AT
                 withholding_tax: dec!(0.0),
-                witholding_tax_currency: "EUR".to_string(),
+                withholding_tax_currency: "EUR".to_string(),
             };
 
             add_dividend_to_db(dividend).await?;
@@ -321,8 +321,8 @@ pub async fn extract_trade_republic_record(text: &str) -> anyhow::Result<()> {
 
             let isin = return_first_match(isin_match_regex, text)?.replace("ISIN: ", "");
 
-            let no_units_match = return_first_match(no_units_default_regex, text)?;
-            let no_units = no_units_match
+            let units_match = return_first_match(units_default_regex, text)?;
+            let units = units_match
                 .replace(" Stk.", "")
                 .replace(" EUR", "")
                 .replace(" ", "")
@@ -373,16 +373,16 @@ pub async fn extract_trade_republic_record(text: &str) -> anyhow::Result<()> {
                 avg_price_per_unit,
                 // TR only supports EUR
                 eur_avg_price_per_unit: avg_price_per_unit,
-                no_units,
+                units,
                 direction: direction.to_string(),
                 security_type: "Equity".to_string(),
                 // TR only supports EUR
-                currency_denomination: "EUR".to_string(),
+                currency: "EUR".to_string(),
                 date_added: Utc::now(),
                 fees,
                 // TR doesn't withhold any tax in AT
                 withholding_tax: dec!(0.0),
-                witholding_tax_currency: "EUR".to_string(),
+                withholding_tax_currency: "EUR".to_string(),
             };
             add_with_import_confirmation(trade, id).await?;
         }
@@ -409,7 +409,7 @@ pub async fn extract_trade_republic_record(text: &str) -> anyhow::Result<()> {
                 amount_eur: amount,
                 // TR doesn't withhold any tax in AT
                 withholding_tax: dec!(0.0),
-                witholding_tax_currency: "EUR".to_string(),
+                withholding_tax_currency: "EUR".to_string(),
             };
 
             add_interest_to_db(interest_payment).await?;

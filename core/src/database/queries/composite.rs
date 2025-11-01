@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
+use rust_decimal_macros::dec;
 
 use crate::{
     database::{
@@ -19,7 +20,7 @@ pub async fn get_used_currencies() -> anyhow::Result<Vec<String>> {
         select distinct currency from (
             select to_currency AS currency from fx_conversion
             union
-            select currency_denomination AS currency from trade
+            select currency AS currency from trade
             union
             select currency AS currency from interest
         ) as all_currencies"
@@ -106,20 +107,39 @@ pub async fn get_all_trades(count: Option<i32>) -> anyhow::Result<Vec<Trade>> {
     let mut trades: Vec<Trade> = vec![];
 
     for row in rows {
+        let broker = row.get::<usize, String>(1);
+        let date = row.get::<usize, DateTime<Utc>>(2);
+        let units = row.get::<usize, Decimal>(3);
+        let avg_price_per_unit = row.get::<usize, Decimal>(4);
+        let eur_avg_price_per_unit = row.get::<usize, Decimal>(5);
+        let security_type = row.get::<usize, String>(6);
+        let direction = row.get::<usize, String>(7);
+        let currency = row.get::<usize, String>(8);
+        let isin = get_changed_identifier(&row.get::<usize, String>(9), listing_changes.clone());
+        let date_added = row.get::<usize, DateTime<Utc>>(10);
+        let fees = row.get::<usize, Decimal>(11);
+        let withholding_tax = row.get::<usize, Decimal>(12);
+        // TODO: change this to instead have both withholding_tax and withholding_tax_currency
+        // optional instead.
+        let withholding_tax_currency = if withholding_tax == dec!(0) {
+            "EUR".to_string()
+        } else {
+            row.get::<usize, String>(13)
+        };
         let trade = Trade {
-            broker: row.get::<usize, String>(1),
-            date: row.get::<usize, DateTime<Utc>>(2),
-            no_units: row.get::<usize, Decimal>(3),
-            avg_price_per_unit: row.get::<usize, Decimal>(4),
-            eur_avg_price_per_unit: row.get::<usize, Decimal>(5),
-            security_type: row.get::<usize, String>(6),
-            direction: row.get::<usize, String>(7),
-            currency_denomination: row.get::<usize, String>(8),
-            isin: get_changed_identifier(&row.get::<usize, String>(9), listing_changes.clone()),
-            date_added: row.get::<usize, DateTime<Utc>>(10),
-            fees: row.get::<usize, Decimal>(11),
-            withholding_tax: row.get::<usize, Decimal>(12),
-            witholding_tax_currency: row.get::<usize, String>(13),
+            broker,
+            date,
+            units,
+            avg_price_per_unit,
+            eur_avg_price_per_unit,
+            security_type,
+            direction,
+            currency,
+            isin,
+            date_added,
+            fees,
+            withholding_tax,
+            withholding_tax_currency,
         };
         trades.push(trade);
     }
@@ -140,15 +160,15 @@ pub async fn add_trade_to_db(trade: Trade, id: Option<String>) -> anyhow::Result
         hash_string(
             format!(
                 "{}{}{}{}",
-                trade.isin, trade.no_units, trade.direction, trade.avg_price_per_unit
+                trade.isin, trade.units, trade.direction, trade.avg_price_per_unit
             )
             .as_str(),
         )
     };
 
     client.execute(
-        "INSERT INTO trade (hash, date, no_units, avg_price_per_unit, eur_avg_price_per_unit, security_type, direction, currency_denomination, isin, broker, date_added, fees, withholding_tax, witholding_tax_currency) values ($1, $2, $3, $4, $5, $6,$7, $8, $9, $10, $11, $12, $13, $14) ON CONFLICT(hash) DO NOTHING",
-        &[&hash, &trade.date, &trade.no_units, &trade.avg_price_per_unit, &trade.eur_avg_price_per_unit, &trade.security_type, &trade.direction, &trade.currency_denomination, &trade.isin, &trade.broker, &Utc::now(), &trade.fees, &trade.withholding_tax, &trade.witholding_tax_currency],
+        "INSERT INTO trade (hash, date, units, avg_price_per_unit, eur_avg_price_per_unit, security_type, direction, currency, isin, broker, date_added, fees, withholding_tax, withholding_tax_currency) values ($1, $2, $3, $4, $5, $6,$7, $8, $9, $10, $11, $12, $13, $14) ON CONFLICT(hash) DO NOTHING",
+        &[&hash, &trade.date, &trade.units, &trade.avg_price_per_unit, &trade.eur_avg_price_per_unit, &trade.security_type, &trade.direction, &trade.currency, &trade.isin, &trade.broker, &Utc::now(), &trade.fees, &trade.withholding_tax, &trade.withholding_tax_currency],
         )
     .await?;
 
