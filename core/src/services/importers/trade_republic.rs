@@ -36,7 +36,7 @@ fn detect_record_type(text: &str) -> anyhow::Result<RecordType> {
     let bond_trade_pattern = Regex::new(r"Stuckzinsen")?;
     let interest_pattern = Regex::new(r"Zinsen")?;
     let liquidation_pattern = Regex::new(r"Tilgung")?;
-    let investment_plan_pattern = Regex::new(r"(Sparplanausfuhrung|Saveback)")?;
+    let investment_plan_pattern = Regex::new(r"(Sparplanausfuhrung|Saveback|Round up)")?;
     let portfolio_transfer_pattern = Regex::new(r"Depotubertrag")?;
     let trade_patterns = Regex::new(r"Market-Order|Limit-Order|Stop-Market-Order")?;
 

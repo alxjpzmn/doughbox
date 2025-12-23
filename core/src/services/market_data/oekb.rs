@@ -121,7 +121,7 @@ pub async fn fetch_and_store_oekb_fund_report(isin: &str) -> anyhow::Result<()> 
             add_oekb_fund_report_to_db(report_to_store).await?;
         }
     } else {
-        println!("error while getting oekb funds data: {:?}", response);
+        println!("Error while getting oekb funds data: {:?}", response);
     }
     Ok(())
 }

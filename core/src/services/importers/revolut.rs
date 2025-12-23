@@ -12,7 +12,7 @@ use crate::{
         queries::{
             composite::add_trade_to_db, dividend::add_dividend_to_db,
             fx_conversion::add_fx_conversion_to_db, listing_change::get_listing_changes,
-            ticker_conversion::get_isin_from_symbol,
+            ticker_conversion::query_isin_from_symbol,
         },
     },
     services::{instruments::identifiers::get_changed_identifier, parsers::parse_timestamp},
@@ -115,7 +115,7 @@ pub async fn extract_revolut_record(file_content: &[u8]) -> anyhow::Result<()> {
                             .parse::<Decimal>()?;
 
                         let dividend = Dividend {
-                            isin: get_isin_from_symbol(
+                            isin: query_isin_from_symbol(
                                 get_changed_identifier(&record.ticker, listing_changes).as_str(),
                             )
                             .await?,
@@ -138,6 +138,7 @@ pub async fn extract_revolut_record(file_content: &[u8]) -> anyhow::Result<()> {
                         let parsed_price_per_share = record
                             .price_per_share
                             .replace("$", "")
+                            .replace("EUR", "")
                             .replace(",", "")
                             .parse::<Decimal>()?;
 
@@ -145,7 +146,7 @@ pub async fn extract_revolut_record(file_content: &[u8]) -> anyhow::Result<()> {
                             broker: broker.clone(),
                             date: Utc
                                 .from_utc_datetime(&parse_timestamp(&record.time)?.naive_utc()),
-                            isin: get_isin_from_symbol(
+                            isin: query_isin_from_symbol(
                                 get_changed_identifier(&record.ticker, listing_changes).as_str(),
                             )
                             .await?,
