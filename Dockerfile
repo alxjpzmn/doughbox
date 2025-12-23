@@ -19,4 +19,3 @@ COPY --from=frontend /app/web/dist /app/dist
 EXPOSE 8084
 
 CMD ["./doughbox", "api", "--silent"]
-

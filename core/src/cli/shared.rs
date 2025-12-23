@@ -4,7 +4,7 @@ use num_format::{Locale, ToFormattedString};
 use rust_decimal::Decimal;
 
 pub fn confirm_action(action: &str) -> bool {
-    print!("Would you like to {}? (y/n): ", action);
+    print!("Would you like to {}? (y/N): ", action);
     io::stdout().flush().expect("Failed to flush stdout");
 
     let mut input = String::new();
