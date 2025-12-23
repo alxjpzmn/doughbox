@@ -31,9 +31,8 @@ pub async fn get_symbol_from_isin(isin: &str, exch_code: Option<&str>) -> anyhow
     // First, we check whether the have a symbol for that ISIN already in the DB
     let symbol_in_db = query_symbol_from_isin(isin).await?;
 
-    println!("Getting symbol for ISIN {} from OpenFIGI", &isin);
-
     if &symbol_in_db == "Unidentified" {
+        println!("Getting symbol for ISIN {} from OpenFIGI", &isin);
         let client = Client::new();
 
         let open_figi_mapping_response = client
