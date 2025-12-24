@@ -1,12 +1,22 @@
 import useSWR from "swr";
 import { useState } from "react";
 import { format } from "date-fns";
-import { DividendCard, FxCard, InterestCard, SkeletonCard, TradeCard } from "@/components/composite/event-card";
+import {
+  DividendCard,
+  FxCard,
+  InterestCard,
+  SkeletonCard,
+  TradeCard,
+} from "@/components/composite/event-card";
 import { EventType, PortfolioEvent } from "@/types/core";
 import EmptyState from "@/components/composite/empty-state";
 import { Disclaimer } from "@/components/composite/disclaimer";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { Calendar } from "@/components/ui/calendar";
@@ -14,7 +24,9 @@ import { CalendarIcon } from "lucide-react";
 import { BASE_URL, fetcher } from "@/lib/http";
 
 export const Timeline = () => {
-  const [selectedDate, setSelectedDate] = useState<Date>(new Date(new Date().setMonth(new Date().getMonth() - 3)));
+  const [selectedDate, setSelectedDate] = useState<Date>(
+    new Date(new Date().setMonth(new Date().getMonth() - 3)),
+  );
   const { data, isLoading } = useSWR<PortfolioEvent[]>(
     `${BASE_URL}/timeline?start_date=${format(selectedDate, "yyyy-LL-dd")}`,
     fetcher,
@@ -24,9 +36,7 @@ export const Timeline = () => {
     <>
       <Card className="w-full flex flex-col justify-start mb-6">
         <CardHeader>
-          <CardTitle>
-            Start Date
-          </CardTitle>
+          <CardTitle>Start Date</CardTitle>
         </CardHeader>
         <CardContent>
           <Popover>
@@ -34,21 +44,25 @@ export const Timeline = () => {
               <Button
                 variant={"outline"}
                 className={cn(
-                  "w-[240px] justify-start text-left font-normal",
-                  !selectedDate && "text-muted-foreground"
+                  "w-60 justify-start text-left font-normal",
+                  !selectedDate && "text-muted-foreground",
                 )}
               >
                 <CalendarIcon />
-                {selectedDate ? format(selectedDate, "PPP") : <span>Pick a date</span>}
+                {selectedDate ? (
+                  format(selectedDate, "PPP")
+                ) : (
+                  <span>Pick a date</span>
+                )}
               </Button>
             </PopoverTrigger>
             <PopoverContent className="w-auto p-0" align="start">
               <Calendar
                 mode="single"
+                required
                 selected={selectedDate}
                 // @ts-ignore
                 onSelect={setSelectedDate}
-                initialFocus
               />
             </PopoverContent>
           </Popover>
@@ -71,29 +85,53 @@ export const Timeline = () => {
             let eventComponent;
             switch (timelineEvent.event_type) {
               case EventType.Trade:
-                eventComponent = <TradeCard timelineEvent={timelineEvent} key={identifier} />;
+                eventComponent = (
+                  <TradeCard timelineEvent={timelineEvent} key={identifier} />
+                );
                 break;
               case EventType.CashInterest:
-                eventComponent = <InterestCard timelineEvent={timelineEvent} key={identifier} />;
+                eventComponent = (
+                  <InterestCard
+                    timelineEvent={timelineEvent}
+                    key={identifier}
+                  />
+                );
                 break;
               case EventType.ShareInterest:
-                eventComponent = <InterestCard timelineEvent={timelineEvent} key={identifier} />;
+                eventComponent = (
+                  <InterestCard
+                    timelineEvent={timelineEvent}
+                    key={identifier}
+                  />
+                );
                 break;
               case EventType.Dividend:
-                eventComponent = <DividendCard timelineEvent={timelineEvent} key={identifier} />;
+                eventComponent = (
+                  <DividendCard
+                    timelineEvent={timelineEvent}
+                    key={identifier}
+                  />
+                );
                 break;
               case EventType.DividendAequivalent:
-                eventComponent = <DividendCard timelineEvent={timelineEvent} key={identifier} />;
+                eventComponent = (
+                  <DividendCard
+                    timelineEvent={timelineEvent}
+                    key={identifier}
+                  />
+                );
                 break;
               case EventType.FxConversion:
-                eventComponent = <FxCard timelineEvent={timelineEvent} key={identifier} />;
+                eventComponent = (
+                  <FxCard timelineEvent={timelineEvent} key={identifier} />
+                );
                 break;
               default:
                 eventComponent = null;
             }
             return eventComponent;
           })}
-        </div >
+        </div>
       )}
       <Disclaimer />
     </>

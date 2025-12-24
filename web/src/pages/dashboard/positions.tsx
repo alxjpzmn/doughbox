@@ -12,7 +12,14 @@ import { cn } from "@/lib/utils";
 import { CalendarIcon } from "lucide-react";
 import { Calendar } from "@/components/ui/calendar";
 import { Button } from "@/components/ui/button";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { BASE_URL, fetcher } from "@/lib/http";
 
 const Positions = () => {
@@ -27,9 +34,7 @@ const Positions = () => {
       {/* Date Picker Card */}
       <Card className="w-full flex flex-col justify-start mb-6">
         <CardHeader>
-          <CardTitle>
-            Date
-          </CardTitle>
+          <CardTitle>Date</CardTitle>
         </CardHeader>
         <CardContent>
           <Popover>
@@ -37,21 +42,25 @@ const Positions = () => {
               <Button
                 variant={"outline"}
                 className={cn(
-                  "w-[240px] justify-start text-left font-normal",
-                  !selectedDate && "text-muted-foreground"
+                  "w-60 justify-start text-left font-normal",
+                  !selectedDate && "text-muted-foreground",
                 )}
               >
                 <CalendarIcon />
-                {selectedDate ? format(selectedDate, "PPP") : <span>Pick a date</span>}
+                {selectedDate ? (
+                  format(selectedDate, "PPP")
+                ) : (
+                  <span>Pick a date</span>
+                )}
               </Button>
             </PopoverTrigger>
             <PopoverContent className="w-auto p-0" align="start">
               <Calendar
                 mode="single"
                 selected={selectedDate}
+                required
                 // @ts-ignore
                 onSelect={setSelectedDate}
-                initialFocus
               />
             </PopoverContent>
           </Popover>
@@ -62,24 +71,33 @@ const Positions = () => {
       {isLoading ? (
         <Card>
           <CardHeader>
-            <Skeleton className="h-6 w-1/4" /> {/* Placeholder for Table Header */}
+            <Skeleton className="h-6 w-1/4" />{" "}
+            {/* Placeholder for Table Header */}
           </CardHeader>
           <CardContent>
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead><Skeleton className="h-4 w-24" /></TableHead> {/* Placeholder for "Identifier" */}
-                  <TableHead><Skeleton className="h-4 w-24" /></TableHead> {/* Placeholder for "Units" */}
+                  <TableHead>
+                    <Skeleton className="h-4 w-24" />
+                  </TableHead>{" "}
+                  {/* Placeholder for "Identifier" */}
+                  <TableHead>
+                    <Skeleton className="h-4 w-24" />
+                  </TableHead>{" "}
+                  {/* Placeholder for "Units" */}
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {Array.from({ length: 20 }).map((_, index) => (
                   <TableRow key={index}>
                     <TableCell>
-                      <Skeleton className="h-6 w-48" /> {/* Placeholder for Position Name */}
+                      <Skeleton className="h-6 w-48" />{" "}
+                      {/* Placeholder for Position Name */}
                     </TableCell>
                     <TableCell>
-                      <Skeleton className="h-6 w-24" /> {/* Placeholder for Units */}
+                      <Skeleton className="h-6 w-24" />{" "}
+                      {/* Placeholder for Units */}
                     </TableCell>
                   </TableRow>
                 ))}
@@ -93,33 +111,28 @@ const Positions = () => {
         <>
           <Card>
             <CardHeader>
-              <CardTitle>
-                Positions
-              </CardTitle>
+              <CardTitle>Positions</CardTitle>
             </CardHeader>
             <CardContent>
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>
-                      Identifier
-                    </TableHead>
-                    <TableHead>
-                      Units
-                    </TableHead>
+                    <TableHead>Identifier</TableHead>
+                    <TableHead>Units</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {data?.map((item) => (
                     <TableRow key={`${item?.isin}`}>
                       <TableCell>
-                        <a href={`https://duckduckgo.com/?q=${item?.isin}`} className="truncate overflow-hidden whitespace-nowrap max-w-fit">
+                        <a
+                          href={`https://duckduckgo.com/?q=${item?.isin}`}
+                          className="truncate overflow-hidden whitespace-nowrap max-w-fit"
+                        >
                           {item?.name}
                         </a>
                       </TableCell>
-                      <TableCell>
-                        {item?.units}
-                      </TableCell>
+                      <TableCell>{item?.units}</TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
