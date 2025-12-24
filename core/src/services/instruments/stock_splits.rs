@@ -66,6 +66,7 @@ pub fn get_split_adjusted_units(
     let relevant_splits = split_information
         .iter()
         .find(|item| isin == item.isin && date.timestamp() < item.ex_date.timestamp());
+
     if relevant_splits.is_none() {
         return no_unadjusted_units;
     }

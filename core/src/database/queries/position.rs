@@ -39,7 +39,7 @@ pub async fn get_positions(
 
     let date = date.unwrap_or_else(Utc::now);
 
-    let mut query = String::from("select isin, direction, units from trade where date <= $1");
+    let mut query = String::from("select isin, direction, units, date from trade where date <= $1");
     let mut params: Vec<&(dyn ToSql + Sync)> = vec![&date];
 
     let for_specific_isin = isin.is_some();
@@ -58,13 +58,15 @@ pub async fn get_positions(
 
     for row in rows {
         let isin = get_changed_identifier(&row.get::<usize, String>(0), listing_changes.clone());
-        let units = row.get::<usize, Decimal>(2);
         let direction: String = row.get(1);
+        let units = row.get::<usize, Decimal>(2);
+        let trade_date = row.get::<usize, DateTime<Utc>>(3);
+        // insert into units map
         let entry = units_map
             .entry(isin.clone())
             .or_insert_with(|| Decimal::from(0));
         let split_adjusted_units =
-            get_split_adjusted_units(&isin, units, date, &mut stock_split_information);
+            get_split_adjusted_units(&isin, units, trade_date, &mut stock_split_information);
         if direction == "Buy" {
             *entry += split_adjusted_units;
         } else if direction == "Sell" {
@@ -75,13 +77,7 @@ pub async fn get_positions(
     let mut active_units: Vec<Position> = vec![];
 
     for (isin, units) in units_map {
-        let split_adjusted_units =
-            get_split_adjusted_units(&isin, units, date, &mut stock_split_information);
-
-        let position = Position {
-            isin,
-            units: split_adjusted_units,
-        };
+        let position = Position { isin, units };
 
         if position.units > dec!(0) {
             active_units.push(position);
