@@ -30,6 +30,7 @@ pub async fn get_symbol_from_isin(isin: &str, exch_code: Option<&str>) -> anyhow
     println!("Looking for symbol of ISIN {} in the database...", isin);
     // First, we check whether the have a symbol for that ISIN already in the DB
     let symbol_in_db = query_symbol_from_isin(isin).await?;
+    println!("Symbol in database: {:?}", &symbol_in_db);
 
     if &symbol_in_db == "Unidentified" {
         println!("Getting symbol for ISIN {} from OpenFIGI", &isin);
