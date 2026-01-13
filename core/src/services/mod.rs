@@ -3,6 +3,7 @@ pub mod files;
 pub mod importers;
 pub mod instruments;
 pub mod market_data;
+pub mod notifications;
 pub mod parsers;
 pub mod performance;
 pub mod portfolio;

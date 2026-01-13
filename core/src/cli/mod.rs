@@ -18,6 +18,7 @@ use taxation::calculate_taxes;
 
 use crate::{
     api,
+    cli::portfolio::PortfolioArgs,
     database::queries::{
         composite::{events_exist, EventFilter},
         fx_rate::get_most_recent_rate,
@@ -39,7 +40,10 @@ enum Command {
         silent: bool,
     },
     Housekeeping {},
-    Portfolio,
+    Portfolio {
+        #[arg(short, long)]
+        notify: bool,
+    },
     Performance {},
     Taxation {},
     DebugPdf {
@@ -64,9 +68,12 @@ pub async fn cli() -> anyhow::Result<()> {
     };
 
     match args {
-        Command::Portfolio => {
+        Command::Portfolio { notify } => {
             if events_exist(EventFilter::TradesOnly).await? {
-                portfolio().await?;
+                let args = PortfolioArgs {
+                    notify: Some(notify),
+                };
+                portfolio(args).await?;
             } else {
                 println!(
                     "\x1b[31mPlease import trades first. Run with --help to learn more.\x1b[0m"
@@ -81,7 +88,8 @@ pub async fn cli() -> anyhow::Result<()> {
                     housekeeping().await?;
                 }
                 if confirm_action("run portfolio calculation (2/4)") {
-                    portfolio().await?;
+                    let args = PortfolioArgs { notify: None };
+                    portfolio(args).await?;
                 }
                 if confirm_action("run performance calculation (3/4)") {
                     performance().await?;
