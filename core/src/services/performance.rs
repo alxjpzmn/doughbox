@@ -386,7 +386,7 @@ pub async fn simulate_alternate_purchase(
     date_until: DateTime<Utc>,
     index: Option<&FREDResponse>,
 ) -> anyhow::Result<Option<TradeGroupPerformance>> {
-    if index.is_some() {
+    if let Some(index) = index {
         let trade_group_sorted_by_date = &mut <&TradeGroup>::clone(&trade_group_for_simulation)
             .trades
             .clone();
@@ -400,11 +400,9 @@ pub async fn simulate_alternate_purchase(
         let mut queue_with_overrides: Vec<Trade> = vec![];
 
         for queue_item_without_overrides in queue_without_overrides.clone() {
-            let index_price_during_trade = get_fred_value_for_date(
-                index.unwrap(),
-                queue_item_without_overrides.date.date_naive(),
-            )
-            .await?;
+            let index_price_during_trade =
+                get_fred_value_for_date(index, queue_item_without_overrides.date.date_naive())
+                    .await?;
 
             let trade_with_index_overrides = Trade {
                 isin: queue_item_without_overrides.isin.to_string(),

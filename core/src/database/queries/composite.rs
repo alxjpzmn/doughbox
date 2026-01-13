@@ -150,8 +150,8 @@ pub async fn get_all_trades(count: Option<i32>) -> anyhow::Result<Vec<Trade>> {
 pub async fn add_trade_to_db(trade: Trade, id: Option<String>) -> anyhow::Result<()> {
     let client = db_client().await?;
 
-    let hash = if id.is_some() {
-        hash_string(format!("{}{}", trade.broker, id.unwrap()).as_str())
+    let hash = if let Some(id) = id {
+        hash_string(format!("{}{}", trade.broker, id).as_str())
     } else {
         // if the broker doesn't share the id of the trade, hash generation falls back to a
         // combination of trade properties

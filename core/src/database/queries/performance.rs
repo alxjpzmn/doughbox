@@ -46,3 +46,21 @@ pub async fn get_performance_signals() -> anyhow::Result<Vec<PerformanceSignal>>
 
     Ok(performance_signals)
 }
+
+pub async fn get_latest_performance_signal() -> anyhow::Result<Option<PerformanceSignal>> {
+    let client = db_client().await?;
+
+    let statement = "SELECT date, total_value, total_invested
+                     FROM performance
+                     ORDER BY date DESC
+                     LIMIT 1;";
+
+    Ok(client
+        .query_opt(statement, &[])
+        .await?
+        .map(|row| PerformanceSignal {
+            date: row.get::<usize, DateTime<Utc>>(0),
+            total_value: row.get::<usize, Decimal>(1),
+            total_invested: row.get::<usize, Decimal>(2),
+        }))
+}
