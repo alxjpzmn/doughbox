@@ -23,6 +23,7 @@ If you need to take care of capital gains taxes in Austria, you can use Doughbox
 - (Naive, optional) password authentication for login to the web interface. Multi-user support is not planned for now.
 - Each transaction is assigned an ID either based on the ID from the broker or, if that isn't available, a combination of transaction characteristics. Thus, reimporting the same brokerage statement will not cause duplicate entries.
 - It can give you a capitals gains overview, using perpetual WAC and separating FX gains/losses from capital gains/losses with Austrian capital gains tax rates (i.e. 25% for cash interest, 27.5% for capital gains at the time of writing).
+- If you set the `TG_TOKEN` and `TG_CHAT_ID`, Doughbox can send you a portfolio summary if you call the CLI using `portfolio -n`. This is useful if you want to run the portfolio calculation e.g. via cron daily.
 
 ## (Known) Limitations
 
