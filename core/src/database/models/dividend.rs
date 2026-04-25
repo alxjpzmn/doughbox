@@ -5,7 +5,7 @@ use tabled::Tabled;
 use typeshare::typeshare;
 
 #[typeshare]
-#[derive(Debug, Tabled, Serialize)]
+#[derive(Debug, Clone, Tabled, Serialize)]
 pub struct Dividend {
     pub isin: String,
     pub date: DateTime<Utc>,

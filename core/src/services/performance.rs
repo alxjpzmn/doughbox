@@ -13,9 +13,11 @@ use crate::database::{
     queries::{
         composite::get_all_trades,
         instrument::{batch_get_instrument_names, batch_get_instrument_prices},
+        listing_change::get_listing_changes,
         stock_split::get_stock_splits,
     },
 };
+use crate::services::instruments::identifiers::get_changed_identifier;
 use serde::Serialize;
 
 use super::{
@@ -99,30 +101,36 @@ pub async fn get_performance() -> anyhow::Result<PortfolioPerformance> {
     let price_map: HashMap<_, _> = isins.iter().zip(prices.iter()).collect();
     let name_map: HashMap<_, _> = isins.iter().zip(names.iter()).collect();
 
+    // Load listing changes to handle ISIN changes (e.g., ADR discontinuations)
+    let listing_changes = get_listing_changes().await?;
+
     let grouped_trades: Vec<TradeGroup> = trades
         .iter()
+        .map(|trade| {
+            // Map ISIN to current identifier for grouping
+            let current_isin = get_changed_identifier(&trade.isin, listing_changes.clone());
+            Trade {
+                isin: current_isin,
+                broker: trade.broker.clone(),
+                date: trade.date,
+                units: trade.units,
+                avg_price_per_unit: trade.avg_price_per_unit,
+                eur_avg_price_per_unit: trade.eur_avg_price_per_unit,
+                security_type: trade.security_type.clone(),
+                direction: trade.direction.clone(),
+                currency: trade.currency.clone(),
+                date_added: trade.date_added,
+                fees: trade.fees,
+                withholding_tax: trade.withholding_tax,
+                withholding_tax_currency: trade.withholding_tax_currency.clone(),
+            }
+        })
         .chunk_by(|x| (x.broker.clone(), x.isin.clone()))
         .into_iter()
         .map(|((broker, isin), group)| TradeGroup {
             broker,
             isin,
-            trades: group
-                .map(|u| Trade {
-                    isin: u.isin.clone(),
-                    broker: u.broker.clone(),
-                    date: u.date,
-                    units: u.units,
-                    avg_price_per_unit: u.avg_price_per_unit,
-                    eur_avg_price_per_unit: u.eur_avg_price_per_unit,
-                    security_type: u.security_type.clone(),
-                    direction: u.direction.clone(),
-                    currency: u.currency.clone(),
-                    date_added: Utc::now(),
-                    fees: dec!(0.0),
-                    withholding_tax: dec!(0.0),
-                    withholding_tax_currency: "EUR".to_string(),
-                })
-                .collect(),
+            trades: group.collect(),
         })
         .collect();
 
@@ -177,7 +185,11 @@ pub async fn get_performance() -> anyhow::Result<PortfolioPerformance> {
             realized,
             performance,
             total_return: round_to_decimals(
-                (performance / title_performance.invested_amount) * dec!(100.0),
+                if title_performance.invested_amount > dec!(0) {
+                    (performance / title_performance.invested_amount) * dec!(100.0)
+                } else {
+                    dec!(0)
+                },
             ),
             invested_amount: title_performance.invested_amount,
         };
@@ -211,7 +223,11 @@ pub async fn get_performance() -> anyhow::Result<PortfolioPerformance> {
             realized,
             performance,
             total_return: round_to_decimals(
-                (performance / simulated_performance.invested_amount) * dec!(100.0),
+                if simulated_performance.invested_amount > dec!(0) {
+                    (performance / simulated_performance.invested_amount) * dec!(100.0)
+                } else {
+                    dec!(0)
+                },
             ),
             invested_amount: simulated_performance.invested_amount,
         };
@@ -324,10 +340,11 @@ pub fn get_title_performance(
         }
         if trade.direction == "Sell" {
             if inventory == dec!(0) {
-                panic!(
-                    "ISIN {} has no units in the portfolio at the point of sell event.",
-                    trade.isin
-                )
+                log::warn!(
+                    "ISIN {} has no units in the portfolio at the point of sell event on {}. Skipping sell.",
+                    trade.isin, trade.date
+                );
+                continue;
             }
             let avg_purchase_price = purchase_value / inventory;
             let actual_sell_price = get_split_adjusted_price_per_unit(
@@ -446,7 +463,11 @@ pub async fn simulate_alternate_purchase(
 
                 let normalized_unit_count = share_of_accrued_position * inventory;
 
-                let avg_purchase_price = purchase_value / inventory;
+            let avg_purchase_price = if inventory > dec!(0) {
+                purchase_value / inventory
+            } else {
+                dec!(0)
+            };
                 let actual_sell_price = trade.eur_avg_price_per_unit;
 
                 let realized_for_trade =

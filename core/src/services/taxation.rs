@@ -10,6 +10,7 @@ use tabled::Tabled;
 use typeshare::typeshare;
 
 use crate::database::queries::stock_split::get_stock_splits;
+use crate::database::queries::tax_optimization::get_tax_optimizations_by_date_range;
 use crate::{
     database::queries::{composite::get_active_years, fund_report::get_oekb_fund_report_by_id},
     services::market_data::fx_rates::convert_amount,
@@ -36,6 +37,7 @@ pub struct AnnualTaxableAmounts {
     withheld_tax_capital_gains: Decimal,
     withheld_tax_dividends: Decimal,
     withheld_tax_interest: Decimal,
+    tax_optimization_adjustment: Decimal,
 }
 
 impl AnnualTaxableAmounts {
@@ -51,6 +53,7 @@ impl AnnualTaxableAmounts {
             &mut self.capital_losses,
             &mut self.withheld_tax_dividends,
             &mut self.withheld_tax_interest,
+            &mut self.tax_optimization_adjustment,
         ];
         for field in fields {
             *field = field.round_dp(dp);
@@ -166,6 +169,7 @@ impl ProcessingContext<'_> {
                 withheld_tax_capital_gains: dec!(0.0),
                 withheld_tax_dividends: dec!(0.0),
                 withheld_tax_interest: dec!(0.0),
+                tax_optimization_adjustment: dec!(0.0),
             })
     }
 }
@@ -634,6 +638,37 @@ pub async fn get_capital_gains_tax_report() -> Result<TaxationReport> {
         let events = get_events(start_date, end_date).await?;
         for event in events {
             process_event(event, &mut ctx).await?;
+        }
+
+        // Apply tax optimizations for this year
+        let tax_optimizations = get_tax_optimizations_by_date_range(start_date, end_date).await?;
+        for opt in tax_optimizations {
+            let year_entry = ctx.get_year_entry();
+            // Tax optimization: negative amount = additional tax paid (increase withheld)
+            // positive amount = tax refund (decrease withheld)
+            match opt.tax_type.as_str() {
+                "CapitalGains" => {
+                    year_entry.withheld_tax_capital_gains -= opt.amount;
+                    year_entry.tax_optimization_adjustment -= opt.amount;
+                }
+                "Dividend" => {
+                    year_entry.withheld_tax_dividends -= opt.amount;
+                    year_entry.tax_optimization_adjustment -= opt.amount;
+                }
+                "Interest" => {
+                    year_entry.withheld_tax_interest -= opt.amount;
+                    year_entry.tax_optimization_adjustment -= opt.amount;
+                }
+                _ => {
+                    // Default to capital gains if type is unknown
+                    year_entry.withheld_tax_capital_gains -= opt.amount;
+                    year_entry.tax_optimization_adjustment -= opt.amount;
+                }
+            }
+            info!(target: "tax_report", 
+                "Applied tax optimization for {}: {} EUR (type: {})", 
+                year, opt.amount, opt.tax_type
+            );
         }
     }
 

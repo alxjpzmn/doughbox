@@ -141,7 +141,9 @@ pub async fn extract_lightyear_record(file_content: &[u8]) -> anyhow::Result<()>
                     withholding_tax: record.tax_amount.parse::<Decimal>().unwrap_or(dec!(0.0)),
                     withholding_tax_currency: record.currency.to_string(),
                 };
-                add_dividend_to_db(dividend).await?;
+                if add_dividend_to_db(dividend.clone(), None).await? {
+                    println!("💵 Dividend added: {:?}", dividend);
+                }
             }
             RecordType::EquityTrade => {
                 let trade = Trade {
@@ -200,7 +202,9 @@ pub async fn extract_lightyear_record(file_content: &[u8]) -> anyhow::Result<()>
                     withholding_tax: record.tax_amount.parse::<Decimal>().unwrap_or(dec!(0.0)),
                     withholding_tax_currency: record.currency.to_string(),
                 };
-                add_interest_to_db(interest_payment).await?;
+                if add_interest_to_db(interest_payment.clone(), None).await? {
+                    println!("💵 Interest payment added: {:?}", interest_payment);
+                }
             }
             RecordType::CashTransfer => continue,
             RecordType::Unmatched => continue,

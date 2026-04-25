@@ -258,7 +258,9 @@ pub async fn extract_wise_record(file_content: &[u8]) -> anyhow::Result<()> {
                             withholding_tax: dec!(0.0),
                             withholding_tax_currency: record.currency,
                         };
-                        add_interest_to_db(interest_payment).await?;
+                        if add_interest_to_db(interest_payment.clone(), None).await? {
+                            println!("💵 Interest payment added: {:?}", interest_payment);
+                        }
                     }
                     CashRecordType::Unmatched => continue,
                 }
@@ -310,7 +312,9 @@ pub async fn extract_wise_record(file_content: &[u8]) -> anyhow::Result<()> {
                             withholding_tax: dec!(0.0),
                             withholding_tax_currency: record.currency,
                         };
-                        add_interest_to_db(interest_payment).await?;
+                        if add_interest_to_db(interest_payment.clone(), None).await? {
+                            println!("💵 Interest payment added: {:?}", interest_payment);
+                        }
                     }
                     CashRecordType::Unmatched => continue,
                 }

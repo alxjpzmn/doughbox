@@ -119,7 +119,9 @@ pub async fn extract_trading212_record(file_content: &[u8]) -> anyhow::Result<()
                         .map_or(dec!(0), |value| value.parse::<Decimal>().unwrap_or(dec!(0))),
                     withholding_tax_currency: record[withholding_tax_currency_idx].to_string(),
                 };
-                add_dividend_to_db(dividend).await?;
+                if add_dividend_to_db(dividend.clone(), None).await? {
+                    println!("💵 Dividend added: {:?}", dividend);
+                }
             }
             RecordType::FxConversion => {
                 let fx_conversion = FxConversion {
@@ -201,7 +203,9 @@ pub async fn extract_trading212_record(file_content: &[u8]) -> anyhow::Result<()
                         .unwrap_or(dec!(0.0)),
                     withholding_tax_currency: record[withholding_tax_currency_idx].to_string(),
                 };
-                add_interest_to_db(interest_payment).await?;
+                if add_interest_to_db(interest_payment.clone(), None).await? {
+                    println!("💵 Interest payment added: {:?}", interest_payment);
+                }
             }
 
             RecordType::ShareInterest => {
@@ -234,7 +238,9 @@ pub async fn extract_trading212_record(file_content: &[u8]) -> anyhow::Result<()
                         .unwrap_or(dec!(0.0)),
                     withholding_tax_currency: record[withholding_tax_currency_idx].to_string(),
                 };
-                add_interest_to_db(interest_payment).await?;
+                if add_interest_to_db(interest_payment.clone(), None).await? {
+                    println!("💵 Interest payment added: {:?}", interest_payment);
+                }
             }
             RecordType::CashTransfer => continue,
             RecordType::Unmatched => continue,

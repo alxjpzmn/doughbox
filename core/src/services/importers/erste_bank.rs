@@ -157,7 +157,9 @@ pub async fn extract_erste_bank_record(text: &str) -> anyhow::Result<()> {
                 withholding_tax,
                 withholding_tax_currency: "EUR".to_string(),
             };
-            add_dividend_to_db(dividend).await?;
+            if add_dividend_to_db(dividend.clone(), None).await? {
+                println!("💵 Dividend added: {:?}", dividend);
+            }
         }
         RecordType::Unmatched => (),
     }
