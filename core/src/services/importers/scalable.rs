@@ -206,7 +206,9 @@ pub async fn extract_scalable_record(text: &str) -> anyhow::Result<()> {
                     withholding_tax: dec!(0.0),
                     withholding_tax_currency: "EUR".to_string(),
                 };
-                add_dividend_to_db(dividend).await?;
+                if add_dividend_to_db(dividend.clone(), None).await? {
+                    println!("💵 Dividend added: {:?}", dividend);
+                }
             }
         }
         RecordType::Unmatched => (),

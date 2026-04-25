@@ -3,7 +3,7 @@ use rust_decimal::Decimal;
 use serde::Serialize;
 use tabled::Tabled;
 
-#[derive(Debug, Tabled, Serialize)]
+#[derive(Debug, Clone, Tabled, Serialize)]
 pub struct InterestPayment {
     pub date: DateTime<Utc>,
     pub amount: Decimal,

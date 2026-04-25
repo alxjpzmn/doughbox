@@ -13,7 +13,8 @@ use super::{
         erste_bank::extract_erste_bank_record, ibkr::extract_ibkr_record,
         lightyear::extract_lightyear_record, manual::extract_manual_record,
         revolut::extract_revolut_record, scalable::extract_scalable_record,
-        trade_republic::extract_trade_republic_record, trading212::extract_trading212_record,
+        trade_republic::{extract_trade_republic_record, extract_trade_republic_csv_record},
+        trading212::extract_trading212_record,
         wise::extract_wise_record,
     },
 };
@@ -60,6 +61,10 @@ pub fn detect_broker_from_csv_header(record: &csv::StringRecord) -> anyhow::Resu
     }
     if record.get(0).unwrap() == "date" && record.get(4).unwrap() == "direction" {
         return Ok(Some(Broker::Manual));
+    }
+    // Trade Republic CSV has "datetime" as first column and "transaction_id" in column 19 (index 18)
+    if record.get(0) == Some("datetime") && record.get(18) == Some("transaction_id") {
+        return Ok(Some(Broker::TradeRepublic));
     }
     Ok(None)
 }
@@ -144,6 +149,10 @@ pub async fn parse_file_for_import(file: &[u8], file_path: &Path) -> anyhow::Res
                 }
                 Some(Broker::Manual) => {
                     extract_manual_record(file_content).await?;
+                }
+                Some(Broker::TradeRepublic) => {
+                    info!("Trade Republic CSV detected.");
+                    extract_trade_republic_csv_record(file_content).await?;
                 }
                 Some(_) => panic!("Broker wrongly matched"),
                 None => println!("No broker matched"),

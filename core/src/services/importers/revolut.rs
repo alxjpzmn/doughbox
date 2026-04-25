@@ -131,7 +131,9 @@ pub async fn extract_revolut_record(file_content: &[u8]) -> anyhow::Result<()> {
                             withholding_tax: parsed_amount * dec!(0.15),
                             withholding_tax_currency: record.currency.clone(),
                         };
-                        add_dividend_to_db(dividend).await?;
+                        if add_dividend_to_db(dividend.clone(), None).await? {
+                            println!("💵 Dividend added: {:?}", dividend);
+                        }
                     }
                     TradingRecordType::EquityTrade => {
                         let listing_changes = listing_changes.clone();

@@ -6,4 +6,5 @@ pub mod interest;
 pub mod listing_change;
 pub mod performance;
 pub mod position;
+pub mod tax_optimization;
 pub mod trade;
