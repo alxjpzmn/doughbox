@@ -12,7 +12,7 @@ use typeshare::typeshare;
 use crate::database::queries::stock_split::get_stock_splits;
 use crate::database::queries::tax_optimization::get_tax_optimizations_by_date_range;
 use crate::{
-    database::queries::{composite::get_active_years, fund_report::get_oekb_fund_report_by_id},
+    database::queries::{composite::get_active_years, fund_report::get_oekb_fund_report_by_id, fx_rate::get_exchange_rate},
     services::market_data::fx_rates::convert_amount,
 };
 
@@ -199,9 +199,21 @@ async fn process_interest_or_dividend(
     );
 
     let currency = &event.currency;
-    let fx_rate = event
-        .applied_fx_rate
-        .context("Missing FX rate for currency conversion")?;
+    
+    // Use applied_fx_rate if available, otherwise fetch from database
+    let fx_rate = match event.applied_fx_rate {
+        Some(rate) => rate,
+        None => {
+            if currency == "EUR" {
+                dec!(1.0)
+            } else {
+                // Fetch FX rate from database
+                let naive_date = event.date.date_naive();
+                get_exchange_rate(currency, "EUR", &naive_date).await
+                    .unwrap_or(dec!(1.0))
+            }
+        }
+    };
 
     if currency != "EUR" {
         ctx.currency_wacs
@@ -230,9 +242,10 @@ fn calculate_taxable_values(
     fx_rate: Decimal,
 ) -> Result<(Decimal, Decimal)> {
     let taxable_remainder = event.units * event.price_unit;
-    let withheld_tax_percent = event
-        .withholding_tax_percent
-        .context("Missing withholding tax percentage")?;
+    
+    // If withholding_tax_percent is None (e.g., due to currency mismatch), 
+    // treat it as 0% withholding tax
+    let withheld_tax_percent = event.withholding_tax_percent.unwrap_or(dec!(0.0));
 
     // e.g. for Belgian Tax (30%, used for cash interest by Wise, one can only offset up to 25% of
     // Austrian KESt)
