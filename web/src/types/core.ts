@@ -88,10 +88,13 @@ export interface AnnualTaxableAmounts {
   withheld_tax_capital_gains: string;
   withheld_tax_dividends: string;
   withheld_tax_interest: string;
+  tax_optimization_adjustment: string;
 }
 
 export interface TaxationReport {
   created_at: Date;
+  from_date: Date | null;
+  until_date: Date | null;
   taxable_amounts: any;
   securities_wacs: any;
   currency_wacs: any;

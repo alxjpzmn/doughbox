@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
+use log;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use serde::Serialize;
@@ -162,11 +163,12 @@ async fn process_interest_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEv
         let withholding_tax_percent = if withholding_tax == dec!(0.0) {
             Some(dec!(0.0))
         } else if amount == dec!(0.0) || amount_eur == dec!(0.0) {
-            // Can't calculate percentage with zero amount - this indicates bad data
-            return Err(anyhow::anyhow!(
-                "Cannot calculate withholding tax percent: zero amount for interest on {}. Amount: {}, Amount EUR: {}",
+            // Can't calculate percentage with zero amount — skip withholding tax
+            log::warn!(
+                "Skipping withholding tax percent for zero-amount interest on {}. Amount: {}, Amount EUR: {}",
                 date, amount, amount_eur
-            ));
+            );
+            None
         } else if withholding_tax_currency == event_currency {
             // Same currency - simple division
             Some(withholding_tax / amount)
@@ -291,14 +293,14 @@ async fn process_dividend_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEv
         let withholding_tax_percent = if withholding_tax == dec!(0.0) {
             Some(dec!(0.0))
         } else if amount == dec!(0.0) || amount_eur == dec!(0.0) {
-            // Can't calculate percentage with zero amount - this indicates bad data
-            return Err(anyhow::anyhow!(
-                "Cannot calculate withholding tax percent: zero amount for dividend on {} (ISIN: {}). Amount: {}, Amount EUR: {}",
-                date, 
+            log::warn!(
+                "Skipping withholding tax percent for zero-amount dividend on {} (ISIN: {}). Amount: {}, Amount EUR: {}",
+                date,
                 row.get::<usize, String>(3),
-                amount, 
+                amount,
                 amount_eur
-            ));
+            );
+            None
         } else if withholding_tax_currency == event_currency {
             // Same currency - simple division
             Some(withholding_tax / amount)
@@ -425,11 +427,11 @@ async fn process_trade_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent
         let withholding_tax_percent = if withholding_tax == dec!(0.0) {
             Some(dec!(0.0))
         } else if trade_amount == dec!(0.0) || trade_amount_eur == dec!(0.0) {
-            return Err(anyhow::anyhow!(
-                "Cannot calculate withholding tax percent: zero trade amount for trade on {} (ISIN: {}). \
-                Units: {}, Price: {}, EUR Price: {}",
+            log::warn!(
+                "Skipping withholding tax percent for zero-amount trade on {} (ISIN: {}). Units: {}, Price: {}, EUR Price: {}",
                 date, isin, units, price_per_unit, eur_price_per_unit
-            ));
+            );
+            None
         } else if withholding_tax_currency == event_currency {
             // Same currency - simple division
             Some(withholding_tax / trade_amount)

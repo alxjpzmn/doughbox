@@ -7,6 +7,7 @@ pub mod taxation;
 
 use std::fs;
 
+use chrono::NaiveDate;
 use chrono::{Duration, Utc};
 use clap::{Parser, Subcommand};
 use housekeeping::housekeeping;
@@ -14,7 +15,7 @@ use import::import;
 use performance::performance;
 use portfolio::portfolio;
 use shared::confirm_action;
-use taxation::calculate_taxes;
+use taxation::{calculate_taxes, calculate_taxes_detailed};
 
 use crate::{
     api,
@@ -45,7 +46,14 @@ enum Command {
         notify: bool,
     },
     Performance {},
-    Taxation {},
+    Taxation {
+        #[arg(long)]
+        from: Option<String>,
+        #[arg(long)]
+        until: Option<String>,
+        #[arg(long)]
+        with_events: bool,
+    },
     DebugPdf {
         path: String,
     },
@@ -95,7 +103,7 @@ pub async fn cli() -> anyhow::Result<()> {
                     performance().await?;
                 }
                 if confirm_action("run tax calculation (4/4)") {
-                    calculate_taxes().await?;
+                    calculate_taxes(None, None).await?;
                 }
             }
         }
@@ -111,9 +119,21 @@ pub async fn cli() -> anyhow::Result<()> {
         Command::Housekeeping {} => {
             housekeeping().await?;
         }
-        Command::Taxation {} => {
+        Command::Taxation { from, until, with_events } => {
             if events_exist(EventFilter::All).await? {
-                calculate_taxes().await?;
+                let from_date = from
+                    .as_deref()
+                    .map(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d"))
+                    .transpose()?;
+                let until_date = until
+                    .as_deref()
+                    .map(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d"))
+                    .transpose()?;
+                if with_events {
+                    calculate_taxes_detailed(from_date, until_date).await?;
+                } else {
+                    calculate_taxes(from_date, until_date).await?;
+                }
             } else {
                 println!("\x1b[31mPlease import events (e.g. trades, dividends) first. Run with --help to learn how.\x1b[0m");
             }
