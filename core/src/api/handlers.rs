@@ -12,6 +12,7 @@ use crate::{
             constants::{OUT_DIR, SESSION_TOKEN_KEY},
             env::{get_env_variable, is_running_in_docker},
         },
+        taxation::{get_capital_gains_tax_report, get_detailed_capital_gains_tax_report},
     },
 };
 use axum::{
@@ -21,6 +22,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use chrono::{DateTime, Datelike, NaiveDate, Utc};
+use log;
 use serde::Deserialize;
 
 use tokio::fs;
@@ -232,7 +234,61 @@ pub async fn timeline(
     json_response(&timeline)
 }
 
-pub async fn taxation() -> anyhow::Result<impl IntoResponse, ErrorResponse> {
+#[derive(Debug, Deserialize)]
+pub struct TaxationQuery {
+    pub from_date: Option<String>,
+    pub until_date: Option<String>,
+}
+
+pub async fn taxation(
+    Query(query): Query<TaxationQuery>,
+) -> anyhow::Result<impl IntoResponse, ErrorResponse> {
+    if query.from_date.is_some() || query.until_date.is_some() {
+        let from_date = query.from_date.as_deref().map(|d| {
+            DateTime::<Utc>::from_naive_utc_and_offset(
+                NaiveDate::parse_from_str(d, "%Y-%m-%d")
+                    .unwrap()
+                    .and_hms_opt(0, 0, 0)
+                    .unwrap(),
+                Utc,
+            )
+        });
+        let until_date = query.until_date.as_deref().map(|d| {
+            DateTime::<Utc>::from_naive_utc_and_offset(
+                NaiveDate::parse_from_str(d, "%Y-%m-%d")
+                    .unwrap()
+                    .and_hms_opt(23, 59, 59)
+                    .unwrap(),
+                Utc,
+            )
+        });
+
+        let report = get_capital_gains_tax_report(from_date, until_date)
+            .await
+            .map_err(|e| {
+                log::error!("Taxation computation failed: {}", e);
+                ErrorResponse::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "TaxationComputationError",
+                    &format!("Failed to compute taxation report: {}", e),
+                    None,
+                )
+            })?;
+
+        let data = serde_json::to_string(&report).map_err(|e| {
+            log::error!("Taxation report serialization failed: {}", e);
+            ErrorResponse::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "SerializationError",
+                &format!("Failed to serialize taxation report: {}", e),
+                None,
+            )
+        })?;
+        let mut headers = HeaderMap::new();
+        headers.insert("Content-Type", "application/json".parse().unwrap());
+        return Ok((StatusCode::OK, headers, data));
+    }
+
     let path = format!("{}/taxation.json", OUT_DIR);
     match fs::read_to_string(&path).await {
         Ok(data) => {
@@ -276,6 +332,54 @@ pub async fn taxation() -> anyhow::Result<impl IntoResponse, ErrorResponse> {
 #[derive(Debug, Deserialize)]
 pub struct PositionsQuery {
     pub date: Option<String>,
+}
+
+pub async fn taxation_detailed(
+    Query(query): Query<TaxationQuery>,
+) -> anyhow::Result<impl IntoResponse, ErrorResponse> {
+    let from_date = query.from_date.as_deref().map(|d| {
+        DateTime::<Utc>::from_naive_utc_and_offset(
+            NaiveDate::parse_from_str(d, "%Y-%m-%d")
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap(),
+            Utc,
+        )
+    });
+    let until_date = query.until_date.as_deref().map(|d| {
+        DateTime::<Utc>::from_naive_utc_and_offset(
+            NaiveDate::parse_from_str(d, "%Y-%m-%d")
+                .unwrap()
+                .and_hms_opt(23, 59, 59)
+                .unwrap(),
+            Utc,
+        )
+    });
+
+    let report = get_detailed_capital_gains_tax_report(from_date, until_date)
+        .await
+        .map_err(|e| {
+            log::error!("Detailed taxation computation failed: {}", e);
+            ErrorResponse::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "TaxationComputationError",
+                &format!("Failed to compute detailed taxation report: {}", e),
+                None,
+            )
+        })?;
+
+    let data = serde_json::to_string(&report).map_err(|e| {
+        log::error!("Detailed taxation report serialization failed: {}", e);
+        ErrorResponse::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "SerializationError",
+            &format!("Failed to serialize detailed taxation report: {}", e),
+            None,
+        )
+    })?;
+    let mut headers = HeaderMap::new();
+    headers.insert("Content-Type", "application/json".parse().unwrap());
+    Ok((StatusCode::OK, headers, data))
 }
 
 pub async fn positions(

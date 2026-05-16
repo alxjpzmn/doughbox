@@ -1,11 +1,12 @@
 use anyhow::{Context, Result};
+use chrono::Datelike;
 use chrono::TimeZone;
 use chrono::{DateTime, Utc};
 use log::{debug, info, trace};
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use tabled::Tabled;
 use typeshare::typeshare;
 
@@ -14,6 +15,7 @@ use crate::database::queries::tax_optimization::get_tax_optimizations_by_date_ra
 use crate::{
     database::queries::{composite::get_active_years, fund_report::get_oekb_fund_report_by_id, fx_rate::get_exchange_rate},
     services::market_data::fx_rates::convert_amount,
+    services::shared::constants::OUT_DIR,
 };
 
 use super::instruments::stock_splits::{
@@ -65,6 +67,8 @@ impl AnnualTaxableAmounts {
 #[derive(Debug, Serialize)]
 pub struct TaxationReport {
     pub created_at: DateTime<Utc>,
+    pub from_date: Option<DateTime<Utc>>,
+    pub until_date: Option<DateTime<Utc>>,
     pub taxable_amounts: BTreeMap<i32, AnnualTaxableAmounts>,
     pub securities_wacs: BTreeMap<String, SecWac>,
     pub currency_wacs: BTreeMap<String, FxWac>,
@@ -139,6 +143,7 @@ impl SecWac {
     }
 }
 
+#[derive(Debug, Serialize)]
 pub struct TaxRates {
     pub interest: Decimal,
     pub capital_gains: Decimal,
@@ -152,6 +157,8 @@ struct ProcessingContext<'a> {
     tax_rates: &'a TaxRates,
     year: i32,
     stock_split_information: &'a mut [StockSplit],
+    from_date: Option<DateTime<Utc>>,
+    until_date: Option<DateTime<Utc>>,
 }
 
 impl ProcessingContext<'_> {
@@ -171,6 +178,20 @@ impl ProcessingContext<'_> {
                 withheld_tax_interest: dec!(0.0),
                 tax_optimization_adjustment: dec!(0.0),
             })
+    }
+
+    fn should_count_taxable(&self, event_date: DateTime<Utc>) -> bool {
+        if let Some(from) = self.from_date {
+            if event_date < from {
+                return false;
+            }
+        }
+        if let Some(until) = self.until_date {
+            if event_date > until {
+                return false;
+            }
+        }
+        true
     }
 }
 
@@ -233,7 +254,11 @@ async fn process_interest_or_dividend(
         _ => unreachable!(),
     };
 
-    apply_taxation(ctx, tax_type, taxed_amount, withheld_tax)
+    if ctx.should_count_taxable(event.date) {
+        apply_taxation(ctx, tax_type, taxed_amount, withheld_tax)
+    } else {
+        Ok(())
+    }
 }
 
 fn calculate_taxable_values(
@@ -388,22 +413,24 @@ async fn process_sell(event: PortfolioEvent, ctx: &mut ProcessingContext<'_>) ->
         )
     }
 
-    if let Some(wht_percent) = event.withholding_tax_percent {
-        let wht_percent_to_consider = wht_percent.min(ctx.tax_rates.capital_gains);
-        let wht_currency_agnostic = wht_percent_to_consider * (event.price_unit * event.units);
+    if ctx.should_count_taxable(event.date) {
+        if let Some(wht_percent) = event.withholding_tax_percent {
+            let wht_percent_to_consider = wht_percent.min(ctx.tax_rates.capital_gains);
+            let wht_currency_agnostic = wht_percent_to_consider * (event.price_unit * event.units);
 
-        let withheld_tax = if event.currency == "EUR" {
-            wht_currency_agnostic
+            let withheld_tax = if event.currency == "EUR" {
+                wht_currency_agnostic
+            } else {
+                wht_currency_agnostic * event.applied_fx_rate.unwrap()
+            };
+            ctx.get_year_entry().withheld_tax_capital_gains += withheld_tax;
+        }
+
+        if event.currency == "EUR" {
+            process_eur_sell(event, ctx, &identifier)?;
         } else {
-            wht_currency_agnostic * event.applied_fx_rate.unwrap()
-        };
-        ctx.get_year_entry().withheld_tax_capital_gains += withheld_tax;
-    }
-
-    if event.currency == "EUR" {
-        process_eur_sell(event, ctx, &identifier)?;
-    } else {
-        process_fx_sell(event, ctx, &identifier).await?;
+            process_fx_sell(event, ctx, &identifier).await?;
+        }
     }
 
     Ok(())
@@ -528,14 +555,15 @@ async fn process_fx_sell_conversion(
         identifier[..3].to_string()
     };
 
+    let eur_rate =
+        convert_amount(dec!(1.0), &event.date.date_naive(), "EUR", &origin_currency).await?;
+
     let taxed_amount = {
         let fx_wac = ctx
             .currency_wacs
             .get_mut(&origin_currency)
             .context("Currency WAC not found for conversion")?;
 
-        let eur_rate =
-            convert_amount(dec!(1.0), &event.date.date_naive(), "EUR", &origin_currency).await?;
         let fx_delta = fx_wac.avg_rate - eur_rate;
         let taxed_amount = ((fx_delta / eur_rate) * event.units) / eur_rate;
 
@@ -547,7 +575,9 @@ async fn process_fx_sell_conversion(
         taxed_amount
     };
 
-    ctx.get_year_entry().fx_appreciation += taxed_amount;
+    if ctx.should_count_taxable(event.date) {
+        ctx.get_year_entry().fx_appreciation += taxed_amount;
+    }
 
     Ok(())
 }
@@ -563,39 +593,18 @@ async fn process_dividend_aequivalent(
         .parse::<i32>()?;
     let full_report = get_oekb_fund_report_by_id(report_id).await?;
 
-    let wacs = ctx
-        .securities_wacs
-        .entry(full_report.isin.clone())
-        .or_insert(SecWac {
-            units: dec!(0.0),
-            average_cost: dec!(0.0),
-            weighted_avg_fx_rate: dec!(1.0),
-            name: full_report.isin.clone(),
-        });
-
-    let taxed_amount =
-        (full_report.dividend_aequivalent + full_report.intermittent_dividends) * wacs.units;
-
-    let taxed_eur = convert_amount(
-        taxed_amount,
-        &full_report.date.date_naive(),
-        &full_report.currency,
-        "EUR",
-    )
-    .await?;
-
-    let withheld_tax = full_report.withheld_dividend * wacs.units;
-    let withheld_eur = convert_amount(
-        withheld_tax,
-        &full_report.date.date_naive(),
-        &full_report.currency,
-        "EUR",
-    )
-    .await?;
-
-    let year_entry = ctx.get_year_entry();
-    year_entry.dividend_equivalents += taxed_eur;
-    year_entry.withheld_tax_dividends += withheld_eur;
+    let units_held = {
+        let wacs = ctx
+            .securities_wacs
+            .entry(full_report.isin.clone())
+            .or_insert(SecWac {
+                units: dec!(0.0),
+                average_cost: dec!(0.0),
+                weighted_avg_fx_rate: dec!(1.0),
+                name: full_report.isin.clone(),
+            });
+        wacs.units
+    };
 
     let cost_adjustment = convert_amount(
         full_report.wac_adjustment,
@@ -609,11 +618,40 @@ async fn process_dividend_aequivalent(
         sec_wac.average_cost += cost_adjustment;
     }
 
+    if ctx.should_count_taxable(event.date) {
+        let taxed_amount =
+            (full_report.dividend_aequivalent + full_report.intermittent_dividends) * units_held;
+
+        let taxed_eur = convert_amount(
+            taxed_amount,
+            &full_report.date.date_naive(),
+            &full_report.currency,
+            "EUR",
+        )
+        .await?;
+
+        let withheld_tax = full_report.withheld_dividend * units_held;
+        let withheld_eur = convert_amount(
+            withheld_tax,
+            &full_report.date.date_naive(),
+            &full_report.currency,
+            "EUR",
+        )
+        .await?;
+
+        let year_entry = ctx.get_year_entry();
+        year_entry.dividend_equivalents += taxed_eur;
+        year_entry.withheld_tax_dividends += withheld_eur;
+    }
+
     Ok(())
 }
 
-pub async fn get_capital_gains_tax_report() -> Result<TaxationReport> {
-    info!(target: "tax_report", "Starting capital gains tax report generation");
+pub async fn get_capital_gains_tax_report(
+    from_date: Option<DateTime<Utc>>,
+    until_date: Option<DateTime<Utc>>,
+) -> Result<TaxationReport> {
+    info!(target: "tax_report", "Starting capital gains tax report generation (from={:?}, until={:?})", from_date, until_date);
 
     let mut stock_split_information = get_stock_splits().await?;
 
@@ -644,6 +682,8 @@ pub async fn get_capital_gains_tax_report() -> Result<TaxationReport> {
             tax_rates: &tax_rates,
             year,
             stock_split_information: &mut stock_split_information,
+            from_date,
+            until_date,
         };
 
         let start_date = Utc.with_ymd_and_hms(year, 1, 1, 0, 0, 0).unwrap();
@@ -656,6 +696,22 @@ pub async fn get_capital_gains_tax_report() -> Result<TaxationReport> {
         // Apply tax optimizations for this year
         let tax_optimizations = get_tax_optimizations_by_date_range(start_date, end_date).await?;
         for opt in tax_optimizations {
+            if let Some(from) = from_date {
+                if opt.date < from {
+                    continue;
+                }
+            }
+            if let Some(until) = until_date {
+                if opt.date > until {
+                    continue;
+                }
+            }
+
+            // Skip zero-amount tax optimizations — they are no-ops but create log noise
+            if opt.amount == dec!(0) {
+                continue;
+            }
+
             let year_entry = ctx.get_year_entry();
             // Tax optimization: negative amount = additional tax paid (increase withheld)
             // positive amount = tax refund (decrease withheld)
@@ -693,13 +749,17 @@ pub async fn get_capital_gains_tax_report() -> Result<TaxationReport> {
 
     let report = TaxationReport {
         created_at: Utc::now(),
+        from_date,
+        until_date,
         taxable_amounts,
         securities_wacs,
         currency_wacs,
     };
 
-    info!(target: "tax_report", "Exporting taxation report to JSON");
-    export_json(&report, "taxation")?;
+    if from_date.is_none() && until_date.is_none() {
+        info!(target: "tax_report", "Exporting taxation report to JSON");
+        export_json(&report, "taxation")?;
+    }
     info!(target: "tax_report", "Tax report generated successfully");
 
     Ok(report)
@@ -724,4 +784,109 @@ fn post_process(
         sec_wac.round_all();
     }
     info!(target: "tax_report", "Post-processing report data");
+}
+
+#[derive(Debug, Serialize)]
+pub struct DetailedTaxationReport {
+    pub report: TaxationReport,
+    pub tax_rates: TaxRates,
+    pub events_by_year: BTreeMap<i32, Vec<PortfolioEvent>>,
+    pub metadata: TaxReportMetadata,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TaxReportMetadata {
+    pub earliest_event_date: Option<DateTime<Utc>>,
+    pub latest_event_date: Option<DateTime<Utc>>,
+    pub total_events: usize,
+    pub unique_securities: Vec<String>,
+    pub unique_currencies: Vec<String>,
+}
+
+pub async fn get_detailed_capital_gains_tax_report(
+    from_date: Option<DateTime<Utc>>,
+    until_date: Option<DateTime<Utc>>,
+) -> Result<DetailedTaxationReport> {
+    info!(target: "tax_report", "Starting detailed capital gains tax report generation");
+
+    // 1. Generate the base tax report
+    let report = get_capital_gains_tax_report(from_date, until_date).await?;
+
+    // 2. Determine the full event date range (all active years)
+    let active_years = get_active_years().await?;
+    let first_year = active_years.first().copied().unwrap_or_else(|| Utc::now().year());
+    let last_year = active_years.last().copied().unwrap_or_else(|| Utc::now().year());
+
+    let event_start = Utc.with_ymd_and_hms(first_year, 1, 1, 0, 0, 0).unwrap();
+    let event_end = Utc.with_ymd_and_hms(last_year, 12, 31, 23, 59, 59).unwrap();
+
+    // 3. Fetch all events in the full range
+    let all_events = get_events(event_start, event_end).await?;
+
+    // 4. Group events by year
+    let mut events_by_year: BTreeMap<i32, Vec<PortfolioEvent>> = BTreeMap::new();
+    for event in all_events {
+        let year = event.date.year();
+        events_by_year.entry(year).or_default().push(event);
+    }
+
+    // 5. Collect metadata
+    let mut unique_securities: HashSet<String> = HashSet::new();
+    let mut unique_currencies: HashSet<String> = HashSet::new();
+    let mut earliest_event_date: Option<DateTime<Utc>> = None;
+    let mut latest_event_date: Option<DateTime<Utc>> = None;
+
+    for events in events_by_year.values() {
+        for event in events {
+            if let Some(ref id) = event.identifier {
+                if event.event_type == EventType::Trade || event.event_type == EventType::DividendAequivalent {
+                    unique_securities.insert(id.clone());
+                }
+            }
+            unique_currencies.insert(event.currency.clone());
+
+            if earliest_event_date.map_or(true, |d| event.date < d) {
+                earliest_event_date = Some(event.date);
+            }
+            if latest_event_date.map_or(true, |d| event.date > d) {
+                latest_event_date = Some(event.date);
+            }
+        }
+    }
+
+    let metadata = TaxReportMetadata {
+        earliest_event_date,
+        latest_event_date,
+        total_events: events_by_year.values().map(|v| v.len()).sum(),
+        unique_securities: unique_securities.into_iter().collect(),
+        unique_currencies: unique_currencies.into_iter().collect(),
+    };
+
+    let tax_rates = TaxRates {
+        interest: dec!(0.25),
+        capital_gains: dec!(0.275),
+        dividends: dec!(0.275),
+    };
+
+    let detailed_report = DetailedTaxationReport {
+        report,
+        tax_rates,
+        events_by_year,
+        metadata,
+    };
+
+    Ok(detailed_report)
+}
+
+pub async fn export_detailed_capital_gains_tax_report(
+    from_date: Option<DateTime<Utc>>,
+    until_date: Option<DateTime<Utc>>,
+) -> Result<()> {
+    let detailed_report = get_detailed_capital_gains_tax_report(from_date, until_date).await?;
+
+    info!(target: "tax_report", "Exporting detailed taxation report to JSON");
+    export_json(&detailed_report, "taxation_detailed")?;
+    info!(target: "tax_report", "Detailed tax report exported successfully to {}/taxation_detailed.json", OUT_DIR);
+
+    Ok(())
 }
