@@ -156,7 +156,7 @@ async fn process_interest_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEv
         let amount_eur: Decimal = row.get(6);
         let withholding_tax = row.get::<usize, Option<Decimal>>(4).unwrap_or(dec!(0.0));
         let event_currency: String = row.get(2);
-        let withholding_tax_currency: String = row.get(5);
+        let withholding_tax_currency: String = row.get::<usize, Option<String>>(5).unwrap_or_else(|| event_currency.clone());
         let date: DateTime<Utc> = row.get(0);
         
         // Calculate withholding tax percent
@@ -286,7 +286,7 @@ async fn process_dividend_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEv
         let amount_eur: Decimal = row.get(6);
         let withholding_tax = row.get::<usize, Option<Decimal>>(4).unwrap_or(dec!(0.0));
         let event_currency: String = row.get(2);
-        let withholding_tax_currency: String = row.get(5);
+        let withholding_tax_currency: String = row.get::<usize, Option<String>>(5).unwrap_or_else(|| event_currency.clone());
         let date: DateTime<Utc> = row.get(0);
         
         // Calculate withholding tax percent
@@ -402,7 +402,7 @@ async fn process_trade_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent
     for row in rows {
         let withholding_tax = row.get::<usize, Option<Decimal>>(6).unwrap_or(dec!(0.0));
         let event_currency: String = row.get(3);
-        let withholding_tax_currency: String = row.get(7);
+        let withholding_tax_currency: String = row.get::<usize, Option<String>>(7).unwrap_or_else(|| event_currency.clone());
         let date: DateTime<Utc> = row.get(0);
         let units: Decimal = row.get(1);
         let price_per_unit: Decimal = row.get(2);
