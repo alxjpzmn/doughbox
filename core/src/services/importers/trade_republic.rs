@@ -1,11 +1,11 @@
 use anyhow::anyhow;
+use csv::ReaderBuilder;
 use csv::StringRecord;
 use log::info;
 use regex::Regex;
 use rust_decimal_macros::dec;
 use std::io;
 use std::io::Cursor;
-use csv::ReaderBuilder;
 
 use crate::cli::import::choose_match_from_regex;
 use crate::database::db_client;
@@ -74,11 +74,11 @@ fn require_import_confirmation(trade: &Trade) -> anyhow::Result<bool> {
 async fn trade_with_transaction_id_exists(id: &str) -> anyhow::Result<bool> {
     let client = db_client().await?;
     let hash = hash_string(&format!("Trade Republic{}", id));
-    
+
     let row = client
         .query_opt("SELECT 1 FROM trade WHERE hash = $1", &[&hash])
         .await?;
-    
+
     Ok(row.is_some())
 }
 
@@ -91,8 +91,12 @@ async fn add_csv_trade_with_duplicate_check(trade: Trade, id: String) -> anyhow:
 
     // Also check for similar trade (same ISIN, date, units, price) as extra safety
     if let Some(ref existing) = find_similar_trade(&trade).await? {
-        log::debug!("Skipping duplicate trade (similar found - hash: {}): ISIN {} date {}", 
-                  existing.hash, trade.isin, trade.date);
+        log::debug!(
+            "Skipping duplicate trade (similar found - hash: {}): ISIN {} date {}",
+            existing.hash,
+            trade.isin,
+            trade.date
+        );
         return Ok(false);
     }
 
@@ -489,16 +493,22 @@ enum CsvRecordType {
     InterestPayment,
     Liquidation,
     TaxOptimization,
+    DividendEquivalent,
     Skip,
     Unmatched,
 }
 
-fn detect_csv_record_type(csv_type: &str, category: &str, asset_class: Option<&str>) -> CsvRecordType {
+fn detect_csv_record_type(
+    csv_type: &str,
+    category: &str,
+    asset_class: Option<&str>,
+    description: Option<&str>,
+) -> CsvRecordType {
     // Skip crypto trades - they use ticker symbols instead of proper ISINs
     if asset_class == Some("CRYPTO") {
         return CsvRecordType::Skip;
     }
-    
+
     match (csv_type, category) {
         // Trading operations
         ("BUY" | "bUY" | "BUY savings", "TRADING") => CsvRecordType::EquityTrade,
@@ -512,9 +522,26 @@ fn detect_csv_record_type(csv_type: &str, category: &str, asset_class: Option<&s
         // Tax optimizations
         ("TAX_OPTIMIZATION", "CASH") => CsvRecordType::TaxOptimization,
         // Earnings (taxable income like referral bonuses) - treat as interest
-        ("EARNINGS", "CASH") => CsvRecordType::InterestPayment,
+        // EARNINGS/CASH with "dividend equivalent" description are Austrian Dividend Equivalents
+        // (fictitious dividend equivalents from accumulating ETFs). TR withholds tax
+        // from the cash balance — these are taxes paid, and should be considered in the total taxes
+        // already withheld for the year.
+        ("EARNINGS", "CASH") => {
+            if description.is_some_and(|d| d.to_lowercase().contains("dividend equivalent")) {
+                CsvRecordType::DividendEquivalent
+            } else {
+                CsvRecordType::InterestPayment
+            }
+        }
         // Skip these types
-        ("CUSTOMER_INBOUND" | "CUSTOMER_OUTBOUND_REQUEST" | "CUSTOMER_OUTBOUND" | "CUSTOMER_INPAYMENT" | "CUSTOMER_INPAYMENT_REVERSAL", "CASH") => CsvRecordType::Skip,
+        (
+            "CUSTOMER_INBOUND"
+            | "CUSTOMER_OUTBOUND_REQUEST"
+            | "CUSTOMER_OUTBOUND"
+            | "CUSTOMER_INPAYMENT"
+            | "CUSTOMER_INPAYMENT_REVERSAL",
+            "CASH",
+        ) => CsvRecordType::Skip,
         ("BONUS" | "COMPENSATION" | "BENEFITS_SAVEBACK", "CASH") => CsvRecordType::Skip,
         ("FREE_RECEIPT" | "FREE_DELIVERY" | "MIGRATION", "DELIVERY") => CsvRecordType::Skip,
         // ADR discontinuation is handled by listing_change table, skip these trades
@@ -523,7 +550,14 @@ fn detect_csv_record_type(csv_type: &str, category: &str, asset_class: Option<&s
         ("CARD_TRANSACTION" | "CARD_TRANSACTION_INTERNATIONAL", "CASH") => CsvRecordType::Skip,
         ("STOCKPERK", "CASH") => CsvRecordType::Skip,
         ("GIFT", "CASH") => CsvRecordType::Skip,
-        ("TRANSFER_INSTANT_INBOUND" | "TRANSFER_INSTANT_OUTBOUND" | "TRANSFER_INBOUND" | "TRANSFER_OUTBOUND" | "VIBAN_TRANSFER_INBOUND", "CASH") => CsvRecordType::Skip,
+        (
+            "TRANSFER_INSTANT_INBOUND"
+            | "TRANSFER_INSTANT_OUTBOUND"
+            | "TRANSFER_INBOUND"
+            | "TRANSFER_OUTBOUND"
+            | "VIBAN_TRANSFER_INBOUND",
+            "CASH",
+        ) => CsvRecordType::Skip,
         ("FEE", "CASH") => CsvRecordType::Skip,
         ("FINAL_MATURITY", "CASH") => CsvRecordType::Skip,
         _ => CsvRecordType::Unmatched,
@@ -534,7 +568,9 @@ fn parse_csv_decimal(value: &str) -> anyhow::Result<Decimal> {
     if value.is_empty() {
         return Ok(dec!(0));
     }
-    value.parse::<Decimal>().map_err(|e| anyhow!("Failed to parse decimal '{}': {}", value, e))
+    value
+        .parse::<Decimal>()
+        .map_err(|e| anyhow!("Failed to parse decimal '{}': {}", value, e))
 }
 
 pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::Result<()> {
@@ -556,6 +592,7 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
     let tax_idx = find_column_index(&headers, "tax", true)?.unwrap();
     let transaction_id_idx = find_column_index(&headers, "transaction_id", true)?.unwrap();
     let name_idx = find_column_index(&headers, "name", false)?;
+    let description_idx = find_column_index(&headers, "description", false)?;
     let original_amount_idx = find_column_index(&headers, "original_amount", false)?;
     let original_currency_idx = find_column_index(&headers, "original_currency", false)?;
     let _fx_rate_idx = find_column_index(&headers, "fx_rate", false)?;
@@ -579,7 +616,7 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
     let mut liquidation_duplicates = 0;
     let mut skip_count = 0;
     let mut unmatched_count = 0;
-    
+
     for result in rdr.records() {
         record_count += 1;
         let record = match result {
@@ -589,91 +626,129 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
                 continue;
             }
         };
-        
+
         let csv_type = &record[type_idx];
         let category = &record[category_idx];
         let asset_class = asset_class_idx.and_then(|idx| record.get(idx));
-        
-        let record_type = detect_csv_record_type(csv_type, category, asset_class);
-        
+        let description = description_idx.and_then(|idx| record.get(idx));
+
+        let record_type = detect_csv_record_type(csv_type, category, asset_class, description);
+
         match &record_type {
             CsvRecordType::EquityTrade => trade_count += 1,
             CsvRecordType::Dividend => dividend_count += 1,
             CsvRecordType::InterestPayment => interest_count += 1,
-            CsvRecordType::TaxOptimization => tax_opt_count += 1,
+            CsvRecordType::TaxOptimization | CsvRecordType::DividendEquivalent => {
+                tax_opt_count += 1
+            }
             CsvRecordType::Liquidation => liquidation_count += 1,
             CsvRecordType::Skip => skip_count += 1,
             CsvRecordType::Unmatched => {
                 unmatched_count += 1;
                 if unmatched_count <= 10 {
-                    log::info!("Unmatched CSV record {}: type={}, category={}", record_count, csv_type, category);
+                    log::info!(
+                        "Unmatched CSV record {}: type={}, category={}",
+                        record_count,
+                        csv_type,
+                        category
+                    );
                 }
             }
         }
-        
+
         match record_type {
             CsvRecordType::EquityTrade => {
                 let datetime_str = &record[datetime_idx];
                 let date = match parse_timestamp(datetime_str) {
                     Ok(d) => d,
                     Err(e) => {
-                        log::error!("Failed to parse date '{}' at record {}: {:?}", datetime_str, record_count, e);
+                        log::error!(
+                            "Failed to parse date '{}' at record {}: {:?}",
+                            datetime_str,
+                            record_count,
+                            e
+                        );
                         continue;
                     }
                 };
-                
+
                 let isin = record[isin_idx].to_string();
                 let shares_str = shares_idx.and_then(|idx| record.get(idx)).unwrap_or("");
                 let shares = match parse_csv_decimal(shares_str) {
                     Ok(s) => s.abs(),
                     Err(e) => {
-                        log::error!("Failed to parse shares '{}' at record {}: {:?}", shares_str, record_count, e);
+                        log::error!(
+                            "Failed to parse shares '{}' at record {}: {:?}",
+                            shares_str,
+                            record_count,
+                            e
+                        );
                         continue;
                     }
                 };
-                
+
                 let price_str = price_idx.and_then(|idx| record.get(idx)).unwrap_or("");
                 let avg_price_per_unit = match parse_csv_decimal(price_str) {
                     Ok(p) => p.abs(),
                     Err(e) => {
-                        log::error!("Failed to parse price '{}' at record {}: {:?}", price_str, record_count, e);
+                        log::error!(
+                            "Failed to parse price '{}' at record {}: {:?}",
+                            price_str,
+                            record_count,
+                            e
+                        );
                         continue;
                     }
                 };
-                
+
                 let amount_str = &record[amount_idx];
                 let amount = match parse_csv_decimal(amount_str) {
                     Ok(a) => a,
                     Err(e) => {
-                        log::error!("Failed to parse amount '{}' at record {}: {:?}", amount_str, record_count, e);
+                        log::error!(
+                            "Failed to parse amount '{}' at record {}: {:?}",
+                            amount_str,
+                            record_count,
+                            e
+                        );
                         continue;
                     }
                 };
-                
+
                 let fee_str = &record[fee_idx];
                 let fee = match parse_csv_decimal(fee_str) {
                     Ok(f) => f.abs(),
                     Err(e) => {
-                        log::error!("Failed to parse fee '{}' at record {}: {:?}", fee_str, record_count, e);
+                        log::error!(
+                            "Failed to parse fee '{}' at record {}: {:?}",
+                            fee_str,
+                            record_count,
+                            e
+                        );
                         continue;
                     }
                 };
-                
+
                 let tax_str = &record[tax_idx];
                 let withholding_tax = match parse_csv_decimal(tax_str) {
                     Ok(t) => t.abs(),
                     Err(e) => {
-                        log::error!("Failed to parse tax '{}' at record {}: {:?}", tax_str, record_count, e);
+                        log::error!(
+                            "Failed to parse tax '{}' at record {}: {:?}",
+                            tax_str,
+                            record_count,
+                            e
+                        );
                         continue;
                     }
                 };
-                
+
                 let direction = if csv_type == "SELL" || csv_type == "sELL" || amount > dec!(0) {
                     "Sell".to_string()
                 } else {
                     "Buy".to_string()
                 };
-                
+
                 let security_type = match asset_class {
                     Some("STOCK") => "Equity".to_string(),
                     Some("FUND") => "Equity".to_string(),
@@ -681,9 +756,9 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
                     Some("BOND") => "Bond".to_string(),
                     _ => "Equity".to_string(),
                 };
-                
+
                 let transaction_id = record[transaction_id_idx].to_string();
-                
+
                 let trade = Trade {
                     broker: broker.clone(),
                     date,
@@ -699,7 +774,7 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
                     withholding_tax,
                     withholding_tax_currency: "EUR".to_string(),
                 };
-                
+
                 trade_insert_attempted += 1;
                 match add_csv_trade_with_duplicate_check(trade, transaction_id).await {
                     Ok(true) => {
@@ -718,41 +793,62 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
                 let date = match parse_timestamp(datetime_str) {
                     Ok(d) => d,
                     Err(e) => {
-                        log::error!("Failed to parse date '{}' at record {}: {:?}", datetime_str, record_count, e);
+                        log::error!(
+                            "Failed to parse date '{}' at record {}: {:?}",
+                            datetime_str,
+                            record_count,
+                            e
+                        );
                         continue;
                     }
                 };
-                
+
                 let isin = record[isin_idx].to_string();
-                
+
                 // For dividends, amount is in the amount column (positive for incoming)
                 let amount_str = &record[amount_idx];
                 let amount = match parse_csv_decimal(amount_str) {
                     Ok(a) => a.abs(),
                     Err(e) => {
-                        log::error!("Failed to parse amount '{}' at record {}: {:?}", amount_str, record_count, e);
+                        log::error!(
+                            "Failed to parse amount '{}' at record {}: {:?}",
+                            amount_str,
+                            record_count,
+                            e
+                        );
                         continue;
                     }
                 };
-                
+
                 let tax_str = &record[tax_idx];
                 let withholding_tax = match parse_csv_decimal(tax_str) {
                     Ok(t) => t.abs(),
                     Err(e) => {
-                        log::error!("Failed to parse tax '{}' at record {}: {:?}", tax_str, record_count, e);
+                        log::error!(
+                            "Failed to parse tax '{}' at record {}: {:?}",
+                            tax_str,
+                            record_count,
+                            e
+                        );
                         continue;
                     }
                 };
-                
+
                 // Check for foreign currency dividend
-                let (currency, amount_eur) = if let (Some(orig_amt), Some(orig_curr)) = 
-                    (original_amount_idx.and_then(|idx| record.get(idx)),
-                     original_currency_idx.and_then(|idx| record.get(idx))) {
+                let (currency, amount_eur) = if let (Some(orig_amt), Some(orig_curr)) = (
+                    original_amount_idx.and_then(|idx| record.get(idx)),
+                    original_currency_idx.and_then(|idx| record.get(idx)),
+                ) {
                     if !orig_curr.is_empty() && orig_curr != "EUR" {
                         match parse_csv_decimal(orig_amt) {
                             Ok(orig_amount) => (orig_curr.to_string(), orig_amount),
                             Err(e) => {
-                                log::error!("Failed to parse original amount '{}' at record {}: {:?}", orig_amt, record_count, e);
+                                log::error!(
+                                    "Failed to parse original amount '{}' at record {}: {:?}",
+                                    orig_amt,
+                                    record_count,
+                                    e
+                                );
                                 continue;
                             }
                         }
@@ -762,7 +858,7 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
                 } else {
                     ("EUR".to_string(), amount)
                 };
-                
+
                 let dividend = Dividend {
                     isin: isin.clone(),
                     date,
@@ -773,7 +869,7 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
                     withholding_tax,
                     withholding_tax_currency: "EUR".to_string(),
                 };
-                
+
                 let transaction_id = record[transaction_id_idx].to_string();
                 match add_dividend_to_db(dividend, Some(&transaction_id)).await {
                     Ok(true) => {
@@ -791,36 +887,62 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
                 let date = match parse_timestamp(datetime_str) {
                     Ok(d) => d,
                     Err(e) => {
-                        log::error!("Failed to parse date '{}' at record {}: {:?}", datetime_str, record_count, e);
+                        log::error!(
+                            "Failed to parse date '{}' at record {}: {:?}",
+                            datetime_str,
+                            record_count,
+                            e
+                        );
                         continue;
                     }
                 };
-                
+
                 let amount_str = &record[amount_idx];
                 let amount = match parse_csv_decimal(amount_str) {
                     Ok(a) => a.abs(),
                     Err(e) => {
-                        log::error!("Failed to parse amount '{}' at record {}: {:?}", amount_str, record_count, e);
+                        log::error!(
+                            "Failed to parse amount '{}' at record {}: {:?}",
+                            amount_str,
+                            record_count,
+                            e
+                        );
                         continue;
                     }
                 };
-                
+
                 let tax_str = &record[tax_idx];
                 let withholding_tax = match parse_csv_decimal(tax_str) {
                     Ok(t) => t.abs(),
                     Err(e) => {
-                        log::error!("Failed to parse tax '{}' at record {}: {:?}", tax_str, record_count, e);
+                        log::error!(
+                            "Failed to parse tax '{}' at record {}: {:?}",
+                            tax_str,
+                            record_count,
+                            e
+                        );
                         continue;
                     }
                 };
-                
-                // Determine principal from name field or default to "Cash"
-                let principal = name_idx
-                    .and_then(|idx| record.get(idx))
-                    .filter(|n| !n.is_empty())
-                    .map(|n| n.to_string())
-                    .unwrap_or_else(|| "Cash".to_string());
-                
+
+                // Determine principal: bond interest uses "Security", cash interest uses "Cash"
+                let principal = if asset_class == Some("BOND") {
+                    "Security".to_string()
+                } else {
+                    "Cash".to_string()
+                };
+
+                // Skip zero-amount interest records (likely tax adjustments, not actual interest)
+                if amount == dec!(0) {
+                    log::info!(
+                        "Skipping zero-amount interest at record {}: {}",
+                        record_count,
+                        principal
+                    );
+                    skip_count += 1;
+                    continue;
+                }
+
                 let interest_payment = InterestPayment {
                     date,
                     amount,
@@ -831,12 +953,15 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
                     withholding_tax,
                     withholding_tax_currency: "EUR".to_string(),
                 };
-                
+
                 let transaction_id = record[transaction_id_idx].to_string();
                 match add_interest_to_db(interest_payment, Some(&transaction_id)).await {
                     Ok(true) => {
                         interest_inserted += 1;
-                        println!("💵 Interest payment added: {} EUR on {} (principal: {})", amount, date, principal);
+                        println!(
+                            "💵 Interest payment added: {} EUR on {} (principal: {})",
+                            amount, date, principal
+                        );
                     }
                     Ok(false) => interest_duplicates += 1,
                     Err(e) => {
@@ -850,46 +975,66 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
                 let date = match parse_timestamp(datetime_str) {
                     Ok(d) => d,
                     Err(e) => {
-                        log::error!("Failed to parse date '{}' at record {}: {:?}", datetime_str, record_count, e);
+                        log::error!(
+                            "Failed to parse date '{}' at record {}: {:?}",
+                            datetime_str,
+                            record_count,
+                            e
+                        );
                         continue;
                     }
                 };
-                
+
                 let isin = record[isin_idx].to_string();
-                
+
                 let shares_str = shares_idx.and_then(|idx| record.get(idx)).unwrap_or("");
                 let shares = match parse_csv_decimal(shares_str) {
                     Ok(s) => s.abs(),
                     Err(e) => {
-                        log::error!("Failed to parse shares '{}' at record {}: {:?}", shares_str, record_count, e);
+                        log::error!(
+                            "Failed to parse shares '{}' at record {}: {:?}",
+                            shares_str,
+                            record_count,
+                            e
+                        );
                         continue;
                     }
                 };
-                
+
                 let price_str = price_idx.and_then(|idx| record.get(idx)).unwrap_or("");
                 let avg_price_per_unit = match parse_csv_decimal(price_str) {
                     Ok(p) => p.abs(),
                     Err(e) => {
-                        log::error!("Failed to parse price '{}' at record {}: {:?}", price_str, record_count, e);
+                        log::error!(
+                            "Failed to parse price '{}' at record {}: {:?}",
+                            price_str,
+                            record_count,
+                            e
+                        );
                         continue;
                     }
                 };
-                
+
                 let fee_str = &record[fee_idx];
                 let fee = match parse_csv_decimal(fee_str) {
                     Ok(f) => f.abs(),
                     Err(e) => {
-                        log::error!("Failed to parse fee '{}' at record {}: {:?}", fee_str, record_count, e);
+                        log::error!(
+                            "Failed to parse fee '{}' at record {}: {:?}",
+                            fee_str,
+                            record_count,
+                            e
+                        );
                         continue;
                     }
                 };
-                
+
                 let security_type = match asset_class {
                     Some("BOND") => "Bond".to_string(),
                     Some("DERIVATIVE") => "Derivative".to_string(),
                     _ => "Derivative".to_string(),
                 };
-                
+
                 let trade = Trade {
                     broker: broker.clone(),
                     date,
@@ -905,18 +1050,25 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
                     withholding_tax: dec!(0.0),
                     withholding_tax_currency: "EUR".to_string(),
                 };
-                
+
                 let transaction_id = record[transaction_id_idx].to_string();
                 match add_csv_trade_with_duplicate_check(trade, transaction_id).await {
                     Ok(true) => {
                         liquidation_inserted += 1;
-                        println!("✅ Liquidation trade added: {} {} on {}", shares, isin, date);
+                        println!(
+                            "✅ Liquidation trade added: {} {} on {}",
+                            shares, isin, date
+                        );
                     }
                     Ok(false) => {
                         liquidation_duplicates += 1;
                     }
                     Err(e) => {
-                        log::error!("Failed to add liquidation trade at record {}: {:?}", record_count, e);
+                        log::error!(
+                            "Failed to add liquidation trade at record {}: {:?}",
+                            record_count,
+                            e
+                        );
                     }
                 }
             }
@@ -925,33 +1077,37 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
                 let date = match parse_timestamp(datetime_str) {
                     Ok(d) => d,
                     Err(e) => {
-                        log::error!("Failed to parse date '{}' at record {}: {:?}", datetime_str, record_count, e);
+                        log::error!(
+                            "Failed to parse date '{}' at record {}: {:?}",
+                            datetime_str,
+                            record_count,
+                            e
+                        );
                         continue;
                     }
                 };
-                
-                // Tax optimization amount - negative means additional tax paid, positive means tax refund
-                let amount_str = &record[amount_idx];
-                let amount = match parse_csv_decimal(amount_str) {
-                    Ok(a) => a,
-                    Err(e) => {
-                        log::error!("Failed to parse amount '{}' at record {}: {:?}", amount_str, record_count, e);
-                        continue;
-                    }
-                };
-                
+
+                // Tax optimization amount is stored in the tax column, not the amount column
+                // Positive means tax refund, negative means additional tax paid
                 let tax_str = &record[tax_idx];
-                let _withholding_tax = match parse_csv_decimal(tax_str) {
+                let amount = match parse_csv_decimal(tax_str) {
                     Ok(t) => t,
                     Err(e) => {
-                        log::error!("Failed to parse tax '{}' at record {}: {:?}", tax_str, record_count, e);
-                        dec!(0)
+                        log::error!(
+                            "Failed to parse tax optimization amount '{}' at record {}: {:?}",
+                            tax_str,
+                            record_count,
+                            e
+                        );
+                        continue;
                     }
                 };
-                
+
                 // Determine tax type from description or name field
-                let description = name_idx.and_then(|idx| record.get(idx)).map(|s| s.to_string());
-                
+                let description = name_idx
+                    .and_then(|idx| record.get(idx))
+                    .map(|s| s.to_string());
+
                 // Determine tax type based on description
                 let tax_type = if let Some(ref desc) = description {
                     let desc_lower = desc.to_lowercase();
@@ -965,9 +1121,9 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
                 } else {
                     "CapitalGains"
                 };
-                
+
                 let transaction_id = record[transaction_id_idx].to_string();
-                
+
                 // Store as tax optimization - positive amount reduces tax, negative increases tax
                 let tax_optimization = TaxOptimization {
                     date,
@@ -979,15 +1135,87 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
                     description,
                     transaction_id: Some(transaction_id.clone()),
                 };
-                
+
                 match add_tax_optimization_to_db(tax_optimization).await {
                     Ok(true) => {
                         tax_opt_inserted += 1;
-                        println!("📝 Tax optimization added: {} EUR (type: {}) on {} - ID: {}", amount, tax_type, date, transaction_id);
+                        println!(
+                            "📝 Tax optimization added: {} EUR (type: {}) on {} - ID: {}",
+                            amount, tax_type, date, transaction_id
+                        );
                     }
                     Ok(false) => tax_opt_duplicates += 1,
                     Err(e) => {
-                        log::error!("Failed to add tax optimization at record {}: {:?}", record_count, e);
+                        log::error!(
+                            "Failed to add tax optimization at record {}: {:?}",
+                            record_count,
+                            e
+                        );
+                    }
+                }
+            }
+            CsvRecordType::DividendEquivalent => {
+                let datetime_str = &record[datetime_idx];
+                let date = match parse_timestamp(datetime_str) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        log::error!(
+                            "Failed to parse date '{}' at record {}: {:?}",
+                            datetime_str,
+                            record_count,
+                            e
+                        );
+                        continue;
+                    }
+                };
+
+                // Dividend equivalent records have amount=0 and the tax withheld in the tax column.
+                // Negative tax means tax was withheld from the cash balance.
+                let tax_str = &record[tax_idx];
+                let amount = match parse_csv_decimal(tax_str) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        log::error!(
+                            "Failed to parse tax '{}' at record {}: {:?}",
+                            tax_str,
+                            record_count,
+                            e
+                        );
+                        continue;
+                    }
+                };
+
+                let description = description_idx
+                    .and_then(|idx| record.get(idx))
+                    .map(|s| s.to_string());
+                let transaction_id = record[transaction_id_idx].to_string();
+
+                let tax_optimization = TaxOptimization {
+                    date,
+                    broker: broker.clone(),
+                    amount,
+                    currency: "EUR".to_string(),
+                    amount_eur: amount,
+                    tax_type: "Dividend".to_string(),
+                    description,
+                    transaction_id: Some(transaction_id.clone()),
+                };
+
+                match add_tax_optimization_to_db(tax_optimization).await {
+                    Ok(true) => {
+                        tax_opt_inserted += 1;
+                        println!(
+                            "📝 Dividend equivalent added: {} EUR (type: Dividend) on {} - ID: {}",
+                            amount, date, transaction_id
+                        );
+                    }
+                    Ok(false) => tax_opt_duplicates += 1,
+                    Err(e) => {
+                        log::error!(
+                            "Failed to add dividend equivalent at record {}: {:?}",
+                            record_count,
+                            e
+                        );
                     }
                 }
             }
@@ -997,7 +1225,7 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
             CsvRecordType::Unmatched => {}
         }
     }
-    
+
     info!(
         "CSV Import Summary: {} total records processed - \
         Trades: {} (attempted: {}, succeeded: {}, duplicates: {}), \
@@ -1006,14 +1234,26 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
         Interest: {} (succeeded: {}, duplicates: {}), \
         Tax Opt: {} (succeeded: {}, duplicates: {}), \
         Skipped: {}, Unmatched: {}",
-        record_count, 
-        trade_count, trade_insert_attempted, trade_insert_succeeded, trade_skipped_duplicate, 
-        liquidation_count, liquidation_inserted, liquidation_duplicates,
-        dividend_count, dividend_inserted, dividend_duplicates,
-        interest_count, interest_inserted, interest_duplicates,
-        tax_opt_count, tax_opt_inserted, tax_opt_duplicates,
-        skip_count, unmatched_count
+        record_count,
+        trade_count,
+        trade_insert_attempted,
+        trade_insert_succeeded,
+        trade_skipped_duplicate,
+        liquidation_count,
+        liquidation_inserted,
+        liquidation_duplicates,
+        dividend_count,
+        dividend_inserted,
+        dividend_duplicates,
+        interest_count,
+        interest_inserted,
+        interest_duplicates,
+        tax_opt_count,
+        tax_opt_inserted,
+        tax_opt_duplicates,
+        skip_count,
+        unmatched_count
     );
-    
+
     Ok(())
 }
