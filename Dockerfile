@@ -2,7 +2,7 @@ FROM node:lts-alpine AS frontend
 WORKDIR /app
 COPY web /app/web
 RUN npm install -g pnpm
-RUN cd /app/web && pnpm i && pnpm run build:docker
+RUN cd /app/web && pnpm i --allow-build=esbuild && pnpm run build:docker
 
 FROM rust:latest AS backend
 WORKDIR /app
