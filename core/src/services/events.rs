@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use anyhow::Context;
 use chrono::{DateTime, Utc};
 use log;
 use rust_decimal::Decimal;
@@ -149,16 +150,38 @@ async fn query_fx_conversions(
         .await?)
 }
 
+fn try_get_col<T: for<'a> tokio_postgres::types::FromSql<'a>>(
+    row: &Row,
+    idx: usize,
+    name: &str,
+    ctx: &str,
+) -> anyhow::Result<T> {
+    row.try_get(idx).with_context(|| {
+        log::error!("Failed to read column {} ({}) — {}", idx, name, ctx);
+        format!("Failed to read column {} ({}) — {}", idx, name, ctx)
+    })
+}
+
 async fn process_interest_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent>> {
     let mut events = Vec::new();
-    for row in rows {
-        let amount: Decimal = row.get(1);
-        let amount_eur: Decimal = row.get(6);
-        let withholding_tax = row.get::<usize, Option<Decimal>>(4).unwrap_or(dec!(0.0));
-        let event_currency: String = row.get(2);
-        let withholding_tax_currency: String = row.get::<usize, Option<String>>(5).unwrap_or_else(|| event_currency.clone());
-        let date: DateTime<Utc> = row.get(0);
-        
+    for (idx, row) in rows.iter().enumerate() {
+        let date: DateTime<Utc> =
+            try_get_col(row, 0, "date", &format!("interest row index {}", idx))?;
+        let ctx = format!("interest row index {} date={}", idx, date);
+
+        let amount: Decimal = try_get_col(row, 1, "amount", &ctx)?;
+        let amount_eur: Decimal = try_get_col(row, 6, "amount_eur", &ctx)?;
+        let withholding_tax: Option<Decimal> = try_get_col(row, 4, "withholding_tax", &ctx)?;
+        let event_currency: String = try_get_col(row, 2, "currency", &ctx)?;
+        let withholding_tax_currency: Option<String> =
+            try_get_col(row, 5, "withholding_tax_currency", &ctx)?;
+        let principal: String = try_get_col(row, 3, "principal", &ctx)?;
+        let broker: String = try_get_col(row, 7, "broker", &ctx)?;
+
+        let withholding_tax = withholding_tax.unwrap_or(dec!(0.0));
+        let withholding_tax_currency =
+            withholding_tax_currency.unwrap_or_else(|| event_currency.clone());
+
         // Calculate withholding tax percent
         let withholding_tax_percent = if withholding_tax == dec!(0.0) {
             Some(dec!(0.0))
@@ -189,9 +212,12 @@ async fn process_interest_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEv
                          cannot convert withholding tax from {} to EUR. \
                          Event currency: EUR, Withholding tax: {} {}, Amount EUR: {}. \
                          Please ensure FX rates are available. Error: {}",
-                        date, withholding_tax_currency, 
-                        withholding_tax, withholding_tax_currency, 
-                        amount_eur, e
+                        date,
+                        withholding_tax_currency,
+                        withholding_tax,
+                        withholding_tax_currency,
+                        amount_eur,
+                        e
                     ));
                 }
             }
@@ -209,14 +235,18 @@ async fn process_interest_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEv
                          cannot convert withholding tax from {} to EUR. \
                          Event currency: {}, Withholding tax: {} {}, Amount EUR: {}. \
                          Please ensure FX rates are available. Error: {}",
-                        date, withholding_tax_currency, event_currency, 
-                        withholding_tax, withholding_tax_currency, 
-                        amount_eur, e
+                        date,
+                        withholding_tax_currency,
+                        event_currency,
+                        withholding_tax,
+                        withholding_tax_currency,
+                        amount_eur,
+                        e
                     ));
                 }
             }
         };
-        
+
         let applied_fx_rate = if amount_eur != dec!(0.0) {
             Some(amount / amount_eur)
         } else {
@@ -225,7 +255,7 @@ async fn process_interest_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEv
 
         let event = PortfolioEvent {
             date,
-            event_type: if row.get::<usize, String>(3) == "Cash" {
+            event_type: if principal == "Cash" {
                 EventType::CashInterest
             } else {
                 EventType::ShareInterest
@@ -239,7 +269,7 @@ async fn process_interest_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEv
             applied_fx_rate,
             withholding_tax_percent,
             total: amount_eur,
-            broker: row.get::<usize, String>(7),
+            broker,
         };
         events.push(event);
     }
@@ -248,15 +278,22 @@ async fn process_interest_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEv
 
 fn process_fund_report_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent>> {
     let mut events = Vec::new();
-    for row in rows {
+    for (idx, row) in rows.iter().enumerate() {
+        let date: DateTime<Utc> =
+            try_get_col(row, 0, "date", &format!("fund_report row index {}", idx))?;
+        let ctx = format!("fund_report row index {} date={}", idx, date);
+
+        let id: i32 = try_get_col(row, 1, "id", &ctx)?;
+        let currency: String = try_get_col(row, 2, "currency", &ctx)?;
+
         let event = PortfolioEvent {
-            date: row.get(0),
+            date,
             event_type: EventType::DividendAequivalent,
-            identifier: Some(row.get::<usize, i32>(1).to_string()),
+            identifier: Some(id.to_string()),
             name: None,
             units: dec!(1.00),
             price_unit: dec!(1.00),
-            currency: row.get(2),
+            currency,
             direction: None,
             applied_fx_rate: None,
             withholding_tax_percent: None,
@@ -274,21 +311,37 @@ async fn process_dividend_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEv
     let listing_changes = get_listing_changes().await?;
     let isins: Vec<String> = rows
         .iter()
-        .map(|row| get_changed_identifier(row.get(3), listing_changes.clone()))
+        .enumerate()
+        .map(|(idx, row)| {
+            let isin: String = try_get_col(row, 3, "isin", &format!("dividend row index {}", idx))?;
+            Ok(get_changed_identifier(&isin, listing_changes.clone()))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?
+        .into_iter()
         .collect::<HashSet<_>>()
         .into_iter()
         .collect();
     let names = batch_get_instrument_names(&isins).await?;
     let name_map: HashMap<_, _> = isins.iter().zip(names.iter()).collect();
 
-    for row in rows {
-        let amount: Decimal = row.get(1);
-        let amount_eur: Decimal = row.get(6);
-        let withholding_tax = row.get::<usize, Option<Decimal>>(4).unwrap_or(dec!(0.0));
-        let event_currency: String = row.get(2);
-        let withholding_tax_currency: String = row.get::<usize, Option<String>>(5).unwrap_or_else(|| event_currency.clone());
-        let date: DateTime<Utc> = row.get(0);
-        
+    for (idx, row) in rows.iter().enumerate() {
+        let date: DateTime<Utc> =
+            try_get_col(row, 0, "date", &format!("dividend row index {}", idx))?;
+        let ctx = format!("dividend row index {} date={}", idx, date);
+
+        let amount: Decimal = try_get_col(row, 1, "amount", &ctx)?;
+        let amount_eur: Decimal = try_get_col(row, 6, "amount_eur", &ctx)?;
+        let withholding_tax: Option<Decimal> = try_get_col(row, 4, "withholding_tax", &ctx)?;
+        let event_currency: String = try_get_col(row, 2, "currency", &ctx)?;
+        let withholding_tax_currency: Option<String> =
+            try_get_col(row, 5, "withholding_tax_currency", &ctx)?;
+        let isin: String = try_get_col(row, 3, "isin", &ctx)?;
+        let broker: String = try_get_col(row, 7, "broker", &ctx)?;
+
+        let withholding_tax = withholding_tax.unwrap_or(dec!(0.0));
+        let withholding_tax_currency =
+            withholding_tax_currency.unwrap_or_else(|| event_currency.clone());
+
         // Calculate withholding tax percent
         let withholding_tax_percent = if withholding_tax == dec!(0.0) {
             Some(dec!(0.0))
@@ -296,7 +349,7 @@ async fn process_dividend_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEv
             log::warn!(
                 "Skipping withholding tax percent for zero-amount dividend on {} (ISIN: {}). Amount: {}, Amount EUR: {}",
                 date,
-                row.get::<usize, String>(3),
+                isin,
                 amount,
                 amount_eur
             );
@@ -321,11 +374,13 @@ async fn process_dividend_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEv
                          cannot convert withholding tax from {} to EUR. \
                          Event currency: EUR, Withholding tax: {} {}, Amount EUR: {}. \
                          Please ensure FX rates are available. Error: {}",
-                        date, 
-                        row.get::<usize, String>(3),
-                        withholding_tax_currency, 
-                        withholding_tax, withholding_tax_currency, 
-                        amount_eur, e
+                        date,
+                        isin,
+                        withholding_tax_currency,
+                        withholding_tax,
+                        withholding_tax_currency,
+                        amount_eur,
+                        e
                     ));
                 }
             }
@@ -343,33 +398,30 @@ async fn process_dividend_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEv
                          cannot convert withholding tax from {} to EUR. \
                          Event currency: {}, Withholding tax: {} {}, Amount EUR: {}. \
                          Please ensure FX rates are available. Error: {}",
-                        date, 
-                        row.get::<usize, String>(3),
-                        withholding_tax_currency, 
-                        event_currency, 
-                        withholding_tax, withholding_tax_currency, 
-                        amount_eur, e
+                        date,
+                        isin,
+                        withholding_tax_currency,
+                        event_currency,
+                        withholding_tax,
+                        withholding_tax_currency,
+                        amount_eur,
+                        e
                     ));
                 }
             }
         };
-        
+
         // Calculate FX rate only if amount_eur is not zero
         let applied_fx_rate = if amount_eur != dec!(0.0) {
             Some(amount / amount_eur)
         } else {
             None
         };
-        
+
         let event = PortfolioEvent {
             date,
             event_type: EventType::Dividend,
-            identifier: Some(
-                name_map
-                    .get(&row.get::<usize, String>(3))
-                    .unwrap_or(&&row.get(3))
-                    .to_string(),
-            ),
+            identifier: Some(name_map.get(&isin).unwrap_or(&&isin).to_string()),
             name: None,
             units: amount,
             price_unit: dec!(1.00),
@@ -378,7 +430,7 @@ async fn process_dividend_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEv
             applied_fx_rate,
             withholding_tax_percent,
             total: amount_eur,
-            broker: row.get::<usize, String>(7),
+            broker,
         };
         events.push(event);
     }
@@ -391,7 +443,13 @@ async fn process_trade_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent
 
     let isins: Vec<String> = rows
         .iter()
-        .map(|row| get_changed_identifier(row.get(4), listing_changes.clone()))
+        .enumerate()
+        .map(|(idx, row)| {
+            let isin: String = try_get_col(row, 4, "isin", &format!("trade row index {}", idx))?;
+            Ok(get_changed_identifier(&isin, listing_changes.clone()))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?
+        .into_iter()
         .collect::<HashSet<_>>()
         .into_iter()
         .collect();
@@ -399,16 +457,25 @@ async fn process_trade_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent
     let name_map: HashMap<_, _> = isins.iter().zip(names.iter()).collect();
 
     let mut events = Vec::new();
-    for row in rows {
-        let withholding_tax = row.get::<usize, Option<Decimal>>(6).unwrap_or(dec!(0.0));
-        let event_currency: String = row.get(3);
-        let withholding_tax_currency: String = row.get::<usize, Option<String>>(7).unwrap_or_else(|| event_currency.clone());
-        let date: DateTime<Utc> = row.get(0);
-        let units: Decimal = row.get(1);
-        let price_per_unit: Decimal = row.get(2);
-        let eur_price_per_unit: Decimal = row.get(8);
-        let isin: String = row.get(4);
-        
+    for (idx, row) in rows.iter().enumerate() {
+        let date: DateTime<Utc> = try_get_col(row, 0, "date", &format!("trade row index {}", idx))?;
+        let ctx = format!("trade row index {} date={}", idx, date);
+
+        let withholding_tax: Option<Decimal> = try_get_col(row, 6, "withholding_tax", &ctx)?;
+        let event_currency: String = try_get_col(row, 3, "currency", &ctx)?;
+        let withholding_tax_currency: Option<String> =
+            try_get_col(row, 7, "withholding_tax_currency", &ctx)?;
+        let units: Decimal = try_get_col(row, 1, "units", &ctx)?;
+        let price_per_unit: Decimal = try_get_col(row, 2, "avg_price_per_unit", &ctx)?;
+        let eur_price_per_unit: Decimal = try_get_col(row, 8, "eur_avg_price_per_unit", &ctx)?;
+        let isin_raw: String = try_get_col(row, 4, "isin", &ctx)?;
+        let direction: String = try_get_col(row, 5, "direction", &ctx)?;
+        let broker: String = try_get_col(row, 9, "broker", &ctx)?;
+
+        let withholding_tax = withholding_tax.unwrap_or(dec!(0.0));
+        let withholding_tax_currency =
+            withholding_tax_currency.unwrap_or_else(|| event_currency.clone());
+
         // Calculate trade amounts
         let trade_amount = units
             * if price_per_unit == dec!(0.0) {
@@ -422,14 +489,14 @@ async fn process_trade_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent
             } else {
                 eur_price_per_unit
             };
-        
+
         // Calculate withholding tax percent
         let withholding_tax_percent = if withholding_tax == dec!(0.0) {
             Some(dec!(0.0))
         } else if trade_amount == dec!(0.0) || trade_amount_eur == dec!(0.0) {
             log::warn!(
                 "Skipping withholding tax percent for zero-amount trade on {} (ISIN: {}). Units: {}, Price: {}, EUR Price: {}",
-                date, isin, units, price_per_unit, eur_price_per_unit
+                date, isin_raw, units, price_per_unit, eur_price_per_unit
             );
             None
         } else if withholding_tax_currency == event_currency {
@@ -452,9 +519,13 @@ async fn process_trade_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent
                          cannot convert withholding tax from {} to EUR. \
                          Event currency: EUR, Withholding tax: {} {}, Trade amount EUR: {}. \
                          Please ensure FX rates are available. Error: {}",
-                        date, isin, withholding_tax_currency, 
-                        withholding_tax, withholding_tax_currency, 
-                        trade_amount_eur, e
+                        date,
+                        isin_raw,
+                        withholding_tax_currency,
+                        withholding_tax,
+                        withholding_tax_currency,
+                        trade_amount_eur,
+                        e
                     ));
                 }
             }
@@ -472,27 +543,28 @@ async fn process_trade_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent
                          cannot convert withholding tax from {} to EUR. \
                          Event currency: {}, Withholding tax: {} {}, Trade amount EUR: {}. \
                          Please ensure FX rates are available. Error: {}",
-                        date, isin, withholding_tax_currency, event_currency, 
-                        withholding_tax, withholding_tax_currency, 
-                        trade_amount_eur, e
+                        date,
+                        isin_raw,
+                        withholding_tax_currency,
+                        event_currency,
+                        withholding_tax,
+                        withholding_tax_currency,
+                        trade_amount_eur,
+                        e
                     ));
                 }
             }
         };
 
-        let split_adjusted_units = get_split_adjusted_units(
-            row.get(4),
-            units,
-            date,
-            &mut stock_split_information,
-        );
+        let split_adjusted_units =
+            get_split_adjusted_units(&isin_raw, units, date, &mut stock_split_information);
         let split_adjusted_price_per_unit = get_split_adjusted_price_per_unit(
-            row.get(4),
+            &isin_raw,
             price_per_unit,
             date,
             &mut stock_split_information,
         );
-        let isin = get_changed_identifier(row.get(4), listing_changes.clone());
+        let isin = get_changed_identifier(&isin_raw, listing_changes.clone());
 
         let applied_fx_rate = if price_per_unit == dec!(0.0) {
             dec!(1)
@@ -512,7 +584,7 @@ async fn process_trade_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent
             units: split_adjusted_units,
             price_unit: split_adjusted_price_per_unit,
             currency: event_currency,
-            direction: Some(if row.get::<usize, String>(5) == *"Buy" {
+            direction: Some(if direction == *"Buy" {
                 TradeDirection::Buy
             } else {
                 TradeDirection::Sell
@@ -520,7 +592,7 @@ async fn process_trade_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent
             applied_fx_rate: Some(applied_fx_rate),
             withholding_tax_percent,
             total: split_adjusted_units * split_adjusted_price_per_unit,
-            broker: row.get::<usize, String>(9),
+            broker,
         };
         events.push(event);
     }
@@ -529,29 +601,34 @@ async fn process_trade_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent
 
 fn process_fx_conversion_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent>> {
     let mut events = Vec::new();
-    for row in rows {
+    for (idx, row) in rows.iter().enumerate() {
+        let date: DateTime<Utc> =
+            try_get_col(row, 0, "date", &format!("fx_conversion row index {}", idx))?;
+        let ctx = format!("fx_conversion row index {} date={}", idx, date);
+
+        let from_amount: Decimal = try_get_col(row, 1, "from_amount", &ctx)?;
+        let to_amount: Decimal = try_get_col(row, 2, "to_amount", &ctx)?;
+        let from_currency: String = try_get_col(row, 3, "from_currency", &ctx)?;
+        let to_currency: String = try_get_col(row, 4, "to_currency", &ctx)?;
+        let broker: String = try_get_col(row, 5, "broker", &ctx)?;
+
         let event = PortfolioEvent {
-            date: row.get(0),
+            date,
             event_type: EventType::FxConversion,
-            currency: row.get(3),
-            identifier: Some(format!(
-                "{}{}",
-                row.get::<usize, String>(3),
-                row.get::<usize, String>(4)
-            )),
+            currency: from_currency.clone(),
+            identifier: Some(format!("{}{}", from_currency, to_currency)),
             name: None,
-            direction: Some(if row.get::<usize, String>(3) == *"EUR" {
+            direction: Some(if from_currency == *"EUR" {
                 TradeDirection::Buy
             } else {
                 TradeDirection::Sell
             }),
-            applied_fx_rate: Some(row.get::<usize, Decimal>(2) / row.get::<usize, Decimal>(1)),
-            units: row.get(1),
-            price_unit: row.get::<usize, Decimal>(2) / row.get::<usize, Decimal>(1),
+            applied_fx_rate: Some(to_amount / from_amount),
+            units: from_amount,
+            price_unit: to_amount / from_amount,
             withholding_tax_percent: None,
-            total: row.get::<usize, Decimal>(1) * row.get::<usize, Decimal>(2)
-                / row.get::<usize, Decimal>(1),
-            broker: row.get::<usize, String>(5),
+            total: from_amount * to_amount / from_amount,
+            broker,
         };
         events.push(event);
     }

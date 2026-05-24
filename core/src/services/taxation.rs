@@ -688,9 +688,19 @@ pub async fn get_capital_gains_tax_report(
 
         let start_date = Utc.with_ymd_and_hms(year, 1, 1, 0, 0, 0).unwrap();
         let end_date = Utc.with_ymd_and_hms(year, 12, 31, 23, 59, 59).unwrap();
-        let events = get_events(start_date, end_date).await?;
+        let events = get_events(start_date, end_date)
+            .await
+            .with_context(|| format!("Failed to load events for year {}", year))?;
         for event in events {
-            process_event(event, &mut ctx).await?;
+            let event_desc = format!(
+                "Failed to process event {:?} ({:?}) on {}",
+                event.identifier.as_deref().unwrap_or("No identifier"),
+                event.event_type,
+                event.date
+            );
+            process_event(event, &mut ctx)
+                .await
+                .with_context(|| event_desc)?;
         }
 
         // Apply tax optimizations for this year
