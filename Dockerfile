@@ -1,7 +1,7 @@
 FROM node:lts-alpine AS frontend
 WORKDIR /app
 COPY web /app/web
-RUN npm install -g pnpm
+RUN npm install -g pnpm@10
 RUN cd /app/web && pnpm i && pnpm run build:docker
 
 FROM rust:latest AS backend
