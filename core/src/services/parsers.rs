@@ -40,26 +40,26 @@ pub enum Broker {
 }
 
 pub fn detect_broker_from_csv_header(record: &csv::StringRecord) -> anyhow::Result<Option<Broker>> {
-    if record.get(0).unwrap().contains("Action") {
+    if record.get(0).map(|s| s.contains("Action")).unwrap_or(false) {
         return Ok(Some(Broker::Trading212));
     }
-    if record.get(0).unwrap() == "Traded Asset ID Type"
-        || record.get(0).unwrap() == "TransferWise ID"
+    if record.get(0) == Some("Traded Asset ID Type")
+        || record.get(0) == Some("TransferWise ID")
     {
         return Ok(Some(Broker::Wise));
     }
-    if (record.get(0).unwrap() == "Date" && record.get(1).unwrap() == "Ticker")
-        || record.get(1).unwrap() == "Product"
+    if (record.get(0) == Some("Date") && record.get(1) == Some("Ticker"))
+        || record.get(1) == Some("Product")
     {
         return Ok(Some(Broker::Revolut));
     }
-    if record.get(0).unwrap() == "Date" && record.get(1).unwrap() == "Reference" {
+    if record.get(0) == Some("Date") && record.get(1) == Some("Reference") {
         return Ok(Some(Broker::Lightyear));
     }
-    if record.get(0).unwrap() == "ClientAccountID" {
+    if record.get(0) == Some("ClientAccountID") {
         return Ok(Some(Broker::InteractiveBrokers));
     }
-    if record.get(0).unwrap() == "date" && record.get(4).unwrap() == "direction" {
+    if record.get(0) == Some("date") && record.get(4) == Some("direction") {
         return Ok(Some(Broker::Manual));
     }
     // Trade Republic CSV has "datetime" as first column and "transaction_id" in column 19 (index 18)
