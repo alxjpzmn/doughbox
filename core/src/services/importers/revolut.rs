@@ -111,7 +111,9 @@ pub async fn extract_revolut_record(file_content: &[u8]) -> anyhow::Result<()> {
                         let parsed_amount = record
                             .total_amount
                             .replace("$", "")
+                            .replace(&record.currency, "")
                             .replace(",", "")
+                            .trim()
                             .parse::<Decimal>()?;
 
                         let dividend = Dividend {
@@ -140,8 +142,9 @@ pub async fn extract_revolut_record(file_content: &[u8]) -> anyhow::Result<()> {
                         let parsed_price_per_share = record
                             .price_per_share
                             .replace("$", "")
-                            .replace("EUR", "")
+                            .replace(&record.currency, "")
                             .replace(",", "")
+                            .trim()
                             .parse::<Decimal>()?;
 
                         let trade = Trade {
