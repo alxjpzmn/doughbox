@@ -40,7 +40,9 @@ pub enum Broker {
 }
 
 pub fn detect_broker_from_csv_header(record: &csv::StringRecord) -> anyhow::Result<Option<Broker>> {
-    if record.get(0).map(|s| s.contains("Action")).unwrap_or(false) {
+    if record.get(0).map(|s| s.contains("Action")).unwrap_or(false)
+        && record.iter().any(|s| s == "ISIN")
+    {
         return Ok(Some(Broker::Trading212));
     }
     if record.get(0) == Some("Traded Asset ID Type")
@@ -187,8 +189,10 @@ pub fn remove_first_and_last(value: &str) -> &str {
 pub fn parse_timestamp(timestamp_str: &str) -> anyhow::Result<DateTime<Utc>> {
     let formats = [
         "%Y-%m-%d %H:%M:%S%.3f",
+        "%Y-%m-%d %H:%M:%S%.f",
         "%Y-%m-%d %H:%M:%S",
         "%Y-%m-%dT%H:%M:%S%.3fZ",
+        "%Y-%m-%dT%H:%M:%S%.fZ",
         "%Y-%m-%dT%H:%M:%S%.f%#z",
         "%Y-%m-%d %H:%M:%S%.f%#z",
         "%d.%m.%Y %H:%M:%S",
