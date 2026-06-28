@@ -24,6 +24,9 @@ pub async fn calculate_taxes(
     println!("{}", securities_wac_table);
     println!("Currency WAC:");
     println!("{}", currency_wac_table);
+    println!();
+    println!("DTT: WHT capped at treaty rates for US, IE, BE, DE, FR, GB; fallback to Austrian rate for others.");
+    println!("     Per-transaction DTT details: use `doughbox taxation --with-events` (detailed JSON export).");
 
     Ok(())
 }

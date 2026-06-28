@@ -13,7 +13,7 @@ use tower_sessions::{Expiry, MemoryStore, SessionManagerLayer};
 
 use super::handlers::{
     auth_state, check_auth, login, logout, past_performance, performance, portfolio, positions,
-    taxation, taxation_detailed, timeline,
+    taxation, taxation_detailed, taxation_transactions, timeline,
 };
 
 pub fn create_router() -> anyhow::Result<Router> {
@@ -35,6 +35,7 @@ pub fn create_router() -> anyhow::Result<Router> {
         .route("/timeline", get(timeline))
         .route("/taxation", get(taxation))
         .route("/taxation/detailed", get(taxation_detailed))
+        .route("/taxation/transactions", get(taxation_transactions))
         .route("/positions", get(positions))
         .route("/auth_state", get(auth_state))
         .layer(axum::middleware::from_fn(check_auth));
