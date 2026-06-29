@@ -10,7 +10,6 @@ use std::collections::{BTreeMap, HashSet};
 use tabled::Tabled;
 use typeshare::typeshare;
 
-use crate::database::queries::stock_split::get_stock_splits;
 use crate::database::queries::tax_optimization::get_tax_optimizations_by_date_range;
 use crate::{
     database::queries::{composite::get_active_years, fund_report::get_oekb_fund_report_by_id, fx_rate::get_exchange_rate},
@@ -18,9 +17,6 @@ use crate::{
     services::shared::constants::OUT_DIR,
 };
 
-use super::instruments::stock_splits::{
-    get_split_adjusted_price_per_unit, get_split_adjusted_units, StockSplit,
-};
 use super::{
     events::{get_events, EventType, PortfolioEvent, TradeDirection},
     files::export_json,
@@ -32,18 +28,34 @@ use super::dtt::{
 #[typeshare]
 #[derive(Debug, Serialize, Tabled)]
 pub struct AnnualTaxableAmounts {
+    #[tabled(rename = "Cash Interest [KZ 465]")]
     cash_interest: Decimal,
+    #[tabled(rename = "Share Lending Interest [KZ 897/898]")]
     share_lending_interest: Decimal,
+    #[tabled(rename = "Capital Gains [KZ 731]")]
     capital_gains: Decimal,
+    #[tabled(rename = "Capital Losses [KZ 732]")]
     capital_losses: Decimal,
+    #[tabled(rename = "Net Capital Gains")]
     net_capital_gains: Decimal,
+    #[tabled(rename = "Dividends [KZ 897/898]")]
     dividends: Decimal,
+    #[tabled(rename = "Dividend Equivalents [KZ 936/937]")]
     dividend_equivalents: Decimal,
+    #[tabled(rename = "FX Appreciation [KZ 731]")]
     fx_appreciation: Decimal,
+    #[tabled(rename = "WHT Capital Gains [info]")]
     withheld_tax_capital_gains: Decimal,
+    #[tabled(rename = "WHT Dividends [KZ 984/998]")]
     withheld_tax_dividends: Decimal,
+    #[tabled(rename = "WHT Interest [info]")]
     withheld_tax_interest: Decimal,
+    #[tabled(rename = "Tax Optimization Adj. [info]")]
     tax_optimization_adjustment: Decimal,
+    #[tabled(rename = "Tax Owed Dividends [info]")]
+    tax_owed_dividends: Decimal,
+    #[tabled(rename = "Tax Owed Div. Equivalents [info]")]
+    tax_owed_dividend_equivalents: Decimal,
 }
 
 impl AnnualTaxableAmounts {
@@ -62,6 +74,8 @@ impl AnnualTaxableAmounts {
             &mut self.withheld_tax_dividends,
             &mut self.withheld_tax_interest,
             &mut self.tax_optimization_adjustment,
+            &mut self.tax_owed_dividends,
+            &mut self.tax_owed_dividend_equivalents,
         ];
         for field in fields {
             *field = field.round_dp(dp);
@@ -162,7 +176,6 @@ struct ProcessingContext<'a> {
     securities_wacs: &'a mut BTreeMap<String, SecWac>,
     tax_rates: &'a TaxRates,
     year: i32,
-    stock_split_information: &'a mut [StockSplit],
     from_date: Option<DateTime<Utc>>,
     until_date: Option<DateTime<Utc>>,
 }
@@ -184,6 +197,8 @@ impl ProcessingContext<'_> {
                 withheld_tax_dividends: dec!(0.0),
                 withheld_tax_interest: dec!(0.0),
                 tax_optimization_adjustment: dec!(0.0),
+                tax_owed_dividends: dec!(0.0),
+                tax_owed_dividend_equivalents: dec!(0.0),
             })
     }
 
@@ -394,29 +409,12 @@ async fn process_sell(event: PortfolioEvent, ctx: &mut ProcessingContext<'_>) ->
     let units = event.units;
 
     if let Some(sec_wac) = ctx.securities_wacs.get_mut(&identifier) {
-        sec_wac.units = get_split_adjusted_units(
-            &identifier,
-            sec_wac.units,
-            event.date,
-            ctx.stock_split_information,
-        );
         sec_wac.units -= units;
-        sec_wac.average_cost = get_split_adjusted_price_per_unit(
-            &identifier,
-            sec_wac.average_cost,
-            event.date,
-            ctx.stock_split_information,
-        )
     }
 
     if ctx.should_count_taxable(event.date) {
         if let Some(wht_percent) = event.withholding_tax_percent {
-            let source_country = determine_source_country(Some(&identifier), &event.broker);
-            let cap = match source_country {
-                Some(country) => treaty_rate(country, DttIncomeType::CapitalGains).unwrap_or(ctx.tax_rates.capital_gains),
-                None => ctx.tax_rates.capital_gains,
-            };
-            let wht_percent_to_consider = wht_percent.min(cap);
+            let wht_percent_to_consider = wht_percent.min(ctx.tax_rates.capital_gains);
             let wht_currency_agnostic = wht_percent_to_consider * (event.price_unit * event.units);
 
             let withheld_tax = if event.currency == "EUR" {
@@ -620,20 +618,22 @@ async fn process_dividend_aequivalent(
     }
 
     if ctx.should_count_taxable(event.date) {
-        let taxed_amount =
-            (full_report.dividend_aequivalent + full_report.intermittent_dividends) * units_held;
+        let income_per_share = full_report.dividend_aequivalent
+            + full_report.intermittent_dividends
+            + full_report.inlaendische_dividenden;
+        let income_amount = income_per_share * units_held;
 
-        let taxed_eur = convert_amount(
-            taxed_amount,
+        let income_eur = convert_amount(
+            income_amount,
             &full_report.date.date_naive(),
             &full_report.currency,
             "EUR",
         )
         .await?;
 
-        let withheld_tax = full_report.withheld_dividend * units_held;
-        let withheld_eur = convert_amount(
-            withheld_tax,
+        let kest_amount = full_report.kest_per_share * units_held;
+        let kest_eur = convert_amount(
+            kest_amount,
             &full_report.date.date_naive(),
             &full_report.currency,
             "EUR",
@@ -641,8 +641,8 @@ async fn process_dividend_aequivalent(
         .await?;
 
         let year_entry = ctx.get_year_entry();
-        year_entry.dividend_equivalents += taxed_eur;
-        year_entry.withheld_tax_dividends += withheld_eur;
+        year_entry.dividend_equivalents += income_eur;
+        year_entry.tax_owed_dividend_equivalents += kest_eur;
     }
 
     Ok(())
@@ -653,10 +653,6 @@ pub async fn get_capital_gains_tax_report(
     until_date: Option<DateTime<Utc>>,
 ) -> Result<TaxationReport> {
     info!(target: "tax_report", "Starting capital gains tax report generation (from={:?}, until={:?})", from_date, until_date);
-
-    let mut stock_split_information = get_stock_splits().await?;
-
-    debug!(target: "tax_report", "Loaded {} stock splits", stock_split_information.len());
 
     let tax_rates = TaxRates {
         interest: dec!(0.25),
@@ -682,7 +678,6 @@ pub async fn get_capital_gains_tax_report(
             securities_wacs: &mut securities_wacs,
             tax_rates: &tax_rates,
             year,
-            stock_split_information: &mut stock_split_information,
             from_date,
             until_date,
         };
@@ -732,7 +727,7 @@ pub async fn get_capital_gains_tax_report(
                     year_entry.tax_optimization_adjustment -= opt.amount;
                 }
                 "Dividend" => {
-                    year_entry.withheld_tax_dividends -= opt.amount;
+                    year_entry.tax_owed_dividend_equivalents += opt.amount;
                     year_entry.tax_optimization_adjustment -= opt.amount;
                 }
                 "Interest" => {
@@ -784,6 +779,9 @@ fn post_process(
     for amounts in taxable_amounts.values_mut() {
         amounts.net_capital_gains =
             (amounts.capital_gains - amounts.capital_losses).max(dec!(0.0));
+        amounts.tax_owed_dividends =
+            (amounts.dividends * dec!(0.275) - amounts.withheld_tax_dividends).max(dec!(0.0));
+        amounts.tax_owed_dividend_equivalents = amounts.tax_owed_dividend_equivalents.max(dec!(0.0));
         amounts.round_all(2);
     }
 
@@ -803,16 +801,14 @@ struct ImpactContext {
     currency_wacs: BTreeMap<String, FxWac>,
     securities_wacs: BTreeMap<String, SecWac>,
     tax_rates: TaxRates,
-    stock_split_information: Vec<StockSplit>,
 }
 
 impl ImpactContext {
-    fn new(tax_rates: TaxRates, stock_split_information: Vec<StockSplit>) -> Self {
+    fn new(tax_rates: TaxRates) -> Self {
         Self {
             currency_wacs: BTreeMap::new(),
             securities_wacs: BTreeMap::new(),
             tax_rates,
-            stock_split_information,
         }
     }
 }
@@ -822,8 +818,6 @@ pub async fn get_transaction_tax_impacts(
     until_date: Option<DateTime<Utc>>,
 ) -> Result<Vec<TransactionTaxImpact>> {
     info!(target: "tax_report", "Starting transaction tax impact generation");
-
-    let stock_split_information = get_stock_splits().await?;
 
     let tax_rates = TaxRates {
         interest: dec!(0.25),
@@ -840,7 +834,7 @@ pub async fn get_transaction_tax_impacts(
 
     let all_events = get_events(event_start, event_end).await?;
 
-    let mut ctx = ImpactContext::new(tax_rates, stock_split_information);
+    let mut ctx = ImpactContext::new(tax_rates);
     let mut impacts = Vec::new();
 
     for event in all_events {
@@ -1118,19 +1112,7 @@ async fn compute_sell_impact(
     let sec_wac = ctx.securities_wacs.get_mut(&identifier).cloned();
 
     if let Some(ref mut sec_wac) = ctx.securities_wacs.get_mut(&identifier) {
-        sec_wac.units = get_split_adjusted_units(
-            &identifier,
-            sec_wac.units,
-            event.date,
-            &mut ctx.stock_split_information,
-        );
         sec_wac.units -= units;
-        sec_wac.average_cost = get_split_adjusted_price_per_unit(
-            &identifier,
-            sec_wac.average_cost,
-            event.date,
-            &mut ctx.stock_split_information,
-        );
     }
 
     let sec_wac_ref = sec_wac.as_ref();
@@ -1213,16 +1195,12 @@ async fn compute_sell_impact(
         &event.broker,
     );
 
-    let (cap, dtt_rate_percent) = match source_country {
-        Some(country) => {
-            let rate = treaty_rate(country, DttIncomeType::CapitalGains).unwrap_or(ctx.tax_rates.capital_gains);
-            (rate, Some(rate * dec!(100)))
-        }
-        None => (ctx.tax_rates.capital_gains, None),
-    };
+    let dtt_rate_percent = source_country.and_then(|country| {
+        treaty_rate(country, DttIncomeType::CapitalGains).map(|rate| rate * dec!(100))
+    });
 
     let withheld_tax = if let Some(wht_percent) = event.withholding_tax_percent {
-        let wht_amount = wht_percent.min(cap) * (event.price_unit * units);
+        let wht_amount = wht_percent.min(ctx.tax_rates.capital_gains) * (event.price_unit * units);
         if event.currency == "EUR" {
             wht_amount
         } else {
@@ -1235,9 +1213,8 @@ async fn compute_sell_impact(
     let tax_liability = (gross_tax - withheld_tax).max(dec!(0.0));
 
     let dtt_note = match (&source_country, dtt_rate_percent) {
-        (Some(country), Some(rate)) => format!("DTT {}: {}%", country, rate),
-        (None, _) => format!("No DTT (fallback cap: {}%)", cap * dec!(100)),
-        _ => "No DTT".to_string(),
+        (Some(country), Some(rate)) => format!("DTT {}: {}%. WHT credit capped at AT rate ({}%)", country, rate, ctx.tax_rates.capital_gains * dec!(100)),
+        _ => format!("WHT credit capped at AT rate ({}%)", ctx.tax_rates.capital_gains * dec!(100)),
     };
 
     let notes = format!(
@@ -1413,25 +1390,37 @@ async fn compute_dividend_aequivalent_impact(
         sec_wac.average_cost += cost_adjustment;
     }
 
-    let taxed_amount =
-        (full_report.dividend_aequivalent + full_report.intermittent_dividends) * units_held;
+    let income_per_share = full_report.dividend_aequivalent
+        + full_report.intermittent_dividends
+        + full_report.inlaendische_dividenden;
+    let income_amount = income_per_share * units_held;
 
-    let taxed_eur = convert_amount(
-        taxed_amount,
+    let income_eur = convert_amount(
+        income_amount,
         &full_report.date.date_naive(),
         &full_report.currency,
         "EUR",
     )
     .await?;
 
-    let tax_liability = taxed_eur.max(dec!(0.0)) * ctx.tax_rates.dividends;
+    let kest_amount = full_report.kest_per_share * units_held;
+    let kest_eur = convert_amount(
+        kest_amount,
+        &full_report.date.date_naive(),
+        &full_report.currency,
+        "EUR",
+    )
+    .await?;
 
     let notes = format!(
-        "Fund report dividend equivalent for {} units of {}. Amount: {} {}",
+        "Fund report for {} units of {}. Income/share: {} {}, KESt/share: {} {}, KESt owed: {} EUR",
         units_held,
         full_report.isin,
-        format_currency_value(taxed_amount),
-        full_report.currency
+        format_currency_value(income_per_share),
+        full_report.currency,
+        format_currency_value(full_report.kest_per_share),
+        full_report.currency,
+        format_currency_value(kest_eur),
     );
 
     Ok(TransactionTaxImpact {
@@ -1442,13 +1431,13 @@ async fn compute_dividend_aequivalent_impact(
         direction: event.direction.clone(),
         currency: full_report.currency.clone(),
         units: units_held,
-        price_unit: full_report.dividend_aequivalent + full_report.intermittent_dividends,
+        price_unit: income_per_share,
         total: event.total,
         broker: event.broker.clone(),
         impact_type: "Dividend Equivalent".to_string(),
-        taxable_amount: taxed_eur.round_dp(2),
+        taxable_amount: income_eur.round_dp(2),
         withheld_tax: dec!(0.0),
-        tax_liability: tax_liability.round_dp(2),
+        tax_liability: kest_eur.round_dp(2),
         tax_rate_percent: (ctx.tax_rates.dividends * dec!(100)).round_dp(1),
         source_country: dtt::isin_to_country(&full_report.isin).map(|c| c.to_string()),
         dtt_rate_percent: dtt::treaty_rate(
@@ -1456,7 +1445,7 @@ async fn compute_dividend_aequivalent_impact(
             DttIncomeType::Dividends,
         ).map(|r| (r * dec!(100)).round_dp(1)),
         notes,
-        is_tax_relevant: taxed_eur != dec!(0.0),
+        is_tax_relevant: income_eur != dec!(0.0),
     })
 }
 

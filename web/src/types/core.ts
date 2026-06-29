@@ -90,6 +90,8 @@ export interface AnnualTaxableAmounts {
 	withheld_tax_dividends: string;
 	withheld_tax_interest: string;
 	tax_optimization_adjustment: string;
+	tax_owed_dividends: string;
+	tax_owed_dividend_equivalents: string;
 }
 
 export interface TaxationReport {

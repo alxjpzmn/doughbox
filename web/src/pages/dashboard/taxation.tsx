@@ -34,7 +34,29 @@ const labelMap: Record<keyof AnnualTaxableAmounts, string> = {
   withheld_tax_dividends: "Withheld Tax (Dividends)",
   withheld_tax_interest: "Withheld Tax (Interest)",
   tax_optimization_adjustment: "Tax Optimization",
+  tax_owed_dividends: "Tax Owed (Dividends)",
+  tax_owed_dividend_equivalents: "Tax Owed (Dividend Equivalents)",
 };
+
+const formFields: { key: keyof AnnualTaxableAmounts; kz: string }[] = [
+  { key: "cash_interest", kz: "KZ 465" },
+  { key: "share_lending_interest", kz: "KZ 897/898" },
+  { key: "capital_gains", kz: "KZ 731" },
+  { key: "capital_losses", kz: "KZ 732" },
+  { key: "dividends", kz: "KZ 897/898" },
+  { key: "dividend_equivalents", kz: "KZ 936/937" },
+  { key: "fx_appreciation", kz: "KZ 731" },
+  { key: "withheld_tax_dividends", kz: "KZ 984/998" },
+];
+
+const infoFields: { key: keyof AnnualTaxableAmounts; kz: string }[] = [
+  { key: "net_capital_gains", kz: "" },
+  { key: "withheld_tax_capital_gains", kz: "" },
+  { key: "withheld_tax_interest", kz: "" },
+  { key: "tax_optimization_adjustment", kz: "" },
+  { key: "tax_owed_dividends", kz: "" },
+  { key: "tax_owed_dividend_equivalents", kz: "" },
+];
 
 type SortColumn =
   | "date"
@@ -276,14 +298,26 @@ const Taxation = () => {
                       <TableHeader>
                         <TableRow>
                           <TableHead>Item</TableHead>
-                          <TableHead>Amount</TableHead>
+                          <TableHead>KZ</TableHead>
+                          <TableHead className="text-right">Amount</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {Object.entries(amounts as AnnualTaxableAmounts).map(([key, value]) => (
+                        {formFields.map(({ key, kz }) => (
                           <TableRow key={key}>
-                            <TableCell>{labelMap[key as keyof AnnualTaxableAmounts]}</TableCell>
-                            <TableCell>{formatCurrency(value)}</TableCell>
+                            <TableCell>{labelMap[key]}</TableCell>
+                            <TableCell className="font-mono text-xs text-muted-foreground">{kz}</TableCell>
+                            <TableCell className="text-right">{formatCurrency(parseFloat((amounts as AnnualTaxableAmounts)[key] as string))}</TableCell>
+                          </TableRow>
+                        ))}
+                        <TableRow className="border-t-2">
+                          <TableCell colSpan={3} className="text-xs uppercase tracking-wide text-muted-foreground font-medium pt-3 pb-1">Reconciliation</TableCell>
+                        </TableRow>
+                        {infoFields.map(({ key }) => (
+                          <TableRow key={key} className="text-muted-foreground">
+                            <TableCell className="text-sm">{labelMap[key]}</TableCell>
+                            <TableCell></TableCell>
+                            <TableCell className="text-right text-sm">{formatCurrency(parseFloat((amounts as AnnualTaxableAmounts)[key] as string))}</TableCell>
                           </TableRow>
                         ))}
                       </TableBody>

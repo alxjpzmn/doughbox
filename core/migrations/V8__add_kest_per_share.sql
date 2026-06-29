@@ -1,0 +1,1 @@
+ALTER TABLE fund_report_oekb ADD COLUMN IF NOT EXISTS kest_per_share NUMERIC NOT NULL DEFAULT 0.0;
