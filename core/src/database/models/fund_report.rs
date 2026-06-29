@@ -14,6 +14,9 @@ pub struct FundTaxReport {
     pub intermittent_dividends: Decimal,
     pub withheld_dividend: Decimal,
     pub wac_adjustment: Decimal,
+    pub inlaendische_dividenden: Decimal,
+    pub kest_inlaendische_dividenden: Decimal,
+    pub kest_per_share: Decimal,
 }
 
 impl FundTaxReport {
@@ -28,6 +31,9 @@ impl FundTaxReport {
             intermittent_dividends: row.try_get("intermittent_dividend")?,
             withheld_dividend: row.try_get("withheld_dividend")?,
             wac_adjustment: row.try_get("wac_adjustment")?,
+            inlaendische_dividenden: row.try_get("inlaendische_dividenden")?,
+            kest_inlaendische_dividenden: row.try_get("kest_inlaendische_dividenden")?,
+            kest_per_share: row.try_get("kest_per_share")?,
         })
     }
 }
