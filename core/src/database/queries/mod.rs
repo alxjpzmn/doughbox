@@ -12,4 +12,3 @@ pub mod stock_split;
 pub mod tax_optimization;
 pub mod ticker_conversion;
 pub mod trade;
-

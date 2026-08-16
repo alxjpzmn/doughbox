@@ -13,20 +13,21 @@ use typeshare::typeshare;
 use crate::database::queries::stock_split::get_stock_splits;
 use crate::database::queries::tax_optimization::get_tax_optimizations_by_date_range;
 use crate::{
-    database::queries::{composite::get_active_years, fund_report::get_oekb_fund_report_by_id, fx_rate::get_exchange_rate},
+    database::queries::{
+        composite::get_active_years, fund_report::get_oekb_fund_report_by_id,
+        fx_rate::get_exchange_rate,
+    },
     services::market_data::fx_rates::convert_amount,
     services::shared::constants::OUT_DIR,
 };
 
+use super::dtt::{self, determine_source_country, treaty_rate, DttIncomeType};
 use super::instruments::stock_splits::{
     get_split_adjusted_price_per_unit, get_split_adjusted_units, StockSplit,
 };
 use super::{
     events::{get_events, EventType, PortfolioEvent, TradeDirection},
     files::export_json,
-};
-use super::dtt::{
-    self, determine_source_country, treaty_rate, DttIncomeType,
 };
 
 #[typeshare]
@@ -227,7 +228,7 @@ async fn process_interest_or_dividend(
     );
 
     let currency = &event.currency;
-    
+
     // Use applied_fx_rate if available, otherwise fetch from database
     let fx_rate = match event.applied_fx_rate {
         Some(rate) => rate,
@@ -237,7 +238,8 @@ async fn process_interest_or_dividend(
             } else {
                 // Fetch FX rate from database
                 let naive_date = event.date.date_naive();
-                get_exchange_rate(currency, "EUR", &naive_date).await
+                get_exchange_rate(currency, "EUR", &naive_date)
+                    .await
                     .unwrap_or(dec!(1.0))
             }
         }
@@ -274,7 +276,7 @@ fn calculate_taxable_values(
     fx_rate: Decimal,
 ) -> Result<(Decimal, Decimal)> {
     let taxable_remainder = event.units * event.price_unit;
-    
+
     let withheld_tax_percent = event.withholding_tax_percent.unwrap_or(dec!(0.0));
 
     let (income_type, austrian_rate) = match event.event_type {
@@ -284,10 +286,7 @@ fn calculate_taxable_values(
         _ => unreachable!(),
     };
 
-    let source_country = determine_source_country(
-        event.identifier.as_deref(),
-        &event.broker,
-    );
+    let source_country = determine_source_country(event.identifier.as_deref(), &event.broker);
 
     let cap = match source_country {
         Some(country) => treaty_rate(country, income_type).unwrap_or(austrian_rate),
@@ -413,7 +412,8 @@ async fn process_sell(event: PortfolioEvent, ctx: &mut ProcessingContext<'_>) ->
         if let Some(wht_percent) = event.withholding_tax_percent {
             let source_country = determine_source_country(Some(&identifier), &event.broker);
             let cap = match source_country {
-                Some(country) => treaty_rate(country, DttIncomeType::CapitalGains).unwrap_or(ctx.tax_rates.capital_gains),
+                Some(country) => treaty_rate(country, DttIncomeType::CapitalGains)
+                    .unwrap_or(ctx.tax_rates.capital_gains),
                 None => ctx.tax_rates.capital_gains,
             };
             let wht_percent_to_consider = wht_percent.min(cap);
@@ -745,8 +745,8 @@ pub async fn get_capital_gains_tax_report(
                     year_entry.tax_optimization_adjustment -= opt.amount;
                 }
             }
-            info!(target: "tax_report", 
-                "Applied tax optimization for {}: {} EUR (type: {})", 
+            info!(target: "tax_report",
+                "Applied tax optimization for {}: {} EUR (type: {})",
                 year, opt.amount, opt.tax_type
             );
         }
@@ -782,8 +782,7 @@ fn post_process(
     securities_wacs: &mut BTreeMap<String, SecWac>,
 ) {
     for amounts in taxable_amounts.values_mut() {
-        amounts.net_capital_gains =
-            (amounts.capital_gains - amounts.capital_losses).max(dec!(0.0));
+        amounts.net_capital_gains = (amounts.capital_gains - amounts.capital_losses).max(dec!(0.0));
         amounts.round_all(2);
     }
 
@@ -832,8 +831,14 @@ pub async fn get_transaction_tax_impacts(
     };
 
     let active_years = get_active_years().await?;
-    let first_year = active_years.first().copied().unwrap_or_else(|| Utc::now().year());
-    let last_year = active_years.last().copied().unwrap_or_else(|| Utc::now().year());
+    let first_year = active_years
+        .first()
+        .copied()
+        .unwrap_or_else(|| Utc::now().year());
+    let last_year = active_years
+        .last()
+        .copied()
+        .unwrap_or_else(|| Utc::now().year());
 
     let event_start = Utc.with_ymd_and_hms(first_year, 1, 1, 0, 0, 0).unwrap();
     let event_end = Utc.with_ymd_and_hms(last_year, 12, 31, 23, 59, 59).unwrap();
@@ -925,7 +930,8 @@ async fn compute_interest_or_dividend_impact(
                 dec!(1.0)
             } else {
                 let naive_date = event.date.date_naive();
-                get_exchange_rate(currency, "EUR", &naive_date).await
+                get_exchange_rate(currency, "EUR", &naive_date)
+                    .await
                     .unwrap_or(dec!(1.0))
             }
         }
@@ -951,10 +957,7 @@ async fn compute_interest_or_dividend_impact(
         _ => unreachable!(),
     };
 
-    let source_country = determine_source_country(
-        event.identifier.as_deref(),
-        &event.broker,
-    );
+    let source_country = determine_source_country(event.identifier.as_deref(), &event.broker);
 
     let (cap, dtt_rate_percent) = match source_country {
         Some(country) => {
@@ -979,15 +982,21 @@ async fn compute_interest_or_dividend_impact(
     };
 
     let (impact_type, tax_rate, base_notes) = match event.event_type {
-        EventType::CashInterest => {
-            ("Interest".to_string(), ctx.tax_rates.interest * dec!(100), "Interest income".to_string())
-        }
-        EventType::ShareInterest => {
-            ("Share Lending Interest".to_string(), ctx.tax_rates.capital_gains * dec!(100), "Share lending income".to_string())
-        }
-        EventType::Dividend => {
-            ("Dividend".to_string(), ctx.tax_rates.dividends * dec!(100), "Dividend income".to_string())
-        }
+        EventType::CashInterest => (
+            "Interest".to_string(),
+            ctx.tax_rates.interest * dec!(100),
+            "Interest income".to_string(),
+        ),
+        EventType::ShareInterest => (
+            "Share Lending Interest".to_string(),
+            ctx.tax_rates.capital_gains * dec!(100),
+            "Share lending income".to_string(),
+        ),
+        EventType::Dividend => (
+            "Dividend".to_string(),
+            ctx.tax_rates.dividends * dec!(100),
+            "Dividend income".to_string(),
+        ),
         _ => unreachable!(),
     };
 
@@ -1048,12 +1057,17 @@ async fn compute_buy_impact(
     event: &PortfolioEvent,
     ctx: &mut ImpactContext,
 ) -> Result<TransactionTaxImpact> {
-    let identifier = event.identifier.clone().context("Missing security identifier")?;
+    let identifier = event
+        .identifier
+        .clone()
+        .context("Missing security identifier")?;
 
     ctx.securities_wacs
         .entry(identifier.clone())
         .and_modify(|sec_wac| {
-            sec_wac.update(event).expect("Failed to update security WAC")
+            sec_wac
+                .update(event)
+                .expect("Failed to update security WAC")
         })
         .or_insert({
             let mut sec_wac = SecWac {
@@ -1081,7 +1095,9 @@ async fn compute_buy_impact(
         }
     }
 
-    let wac = ctx.securities_wacs.get(&identifier)
+    let wac = ctx
+        .securities_wacs
+        .get(&identifier)
         .map(|w| w.average_cost)
         .unwrap_or(dec!(0.0));
 
@@ -1103,7 +1119,12 @@ async fn compute_buy_impact(
         tax_rate_percent: dec!(0.0),
         source_country: None,
         dtt_rate_percent: None,
-        notes: format!("Added {} units at {}. New WAC: {}", event.units, format_currency_value(event.price_unit), format_currency_value(wac)),
+        notes: format!(
+            "Added {} units at {}. New WAC: {}",
+            event.units,
+            format_currency_value(event.price_unit),
+            format_currency_value(wac)
+        ),
         is_tax_relevant: false,
     })
 }
@@ -1112,7 +1133,10 @@ async fn compute_sell_impact(
     event: &PortfolioEvent,
     ctx: &mut ImpactContext,
 ) -> Result<TransactionTaxImpact> {
-    let identifier = event.identifier.clone().context("Missing security identifier")?;
+    let identifier = event
+        .identifier
+        .clone()
+        .context("Missing security identifier")?;
     let units = event.units;
 
     let sec_wac = ctx.securities_wacs.get_mut(&identifier).cloned();
@@ -1156,7 +1180,8 @@ async fn compute_sell_impact(
         (gain, tax, impact_type.to_string(), notes)
     } else {
         let gain_foreign = (event.price_unit - wac_cost) * units;
-        let eur_rate = convert_amount(dec!(1.0), &event.date.date_naive(), "EUR", &event.currency).await?;
+        let eur_rate =
+            convert_amount(dec!(1.0), &event.date.date_naive(), "EUR", &event.currency).await?;
         let gain_eur = gain_foreign / eur_rate;
 
         let fx_wac = ctx.currency_wacs.get_mut(&event.currency).cloned();
@@ -1165,10 +1190,14 @@ async fn compute_sell_impact(
             if fx.units > event.units * event.price_unit {
                 fx.avg_rate
             } else {
-                sec_wac_ref.map(|w| w.weighted_avg_fx_rate).unwrap_or(dec!(0.0))
+                sec_wac_ref
+                    .map(|w| w.weighted_avg_fx_rate)
+                    .unwrap_or(dec!(0.0))
             }
         } else {
-            sec_wac_ref.map(|w| w.weighted_avg_fx_rate).unwrap_or(dec!(0.0))
+            sec_wac_ref
+                .map(|w| w.weighted_avg_fx_rate)
+                .unwrap_or(dec!(0.0))
         };
 
         let original_eur_cost = (wac_cost / fx_rate_for_buy) * units;
@@ -1208,14 +1237,12 @@ async fn compute_sell_impact(
         (total_taxable, tax, impact_type.to_string(), notes)
     };
 
-    let source_country = determine_source_country(
-        event.identifier.as_deref(),
-        &event.broker,
-    );
+    let source_country = determine_source_country(event.identifier.as_deref(), &event.broker);
 
     let (cap, dtt_rate_percent) = match source_country {
         Some(country) => {
-            let rate = treaty_rate(country, DttIncomeType::CapitalGains).unwrap_or(ctx.tax_rates.capital_gains);
+            let rate = treaty_rate(country, DttIncomeType::CapitalGains)
+                .unwrap_or(ctx.tax_rates.capital_gains);
             (rate, Some(rate * dec!(100)))
         }
         None => (ctx.tax_rates.capital_gains, None),
@@ -1277,7 +1304,10 @@ async fn compute_fx_conversion_impact(
     ctx: &mut ImpactContext,
 ) -> Result<TransactionTaxImpact> {
     let identifier = event.identifier.clone().context("Missing FX identifier")?;
-    let direction = event.direction.clone().context("Missing FX conversion direction")?;
+    let direction = event
+        .direction
+        .clone()
+        .context("Missing FX conversion direction")?;
 
     match direction {
         TradeDirection::Buy => {
@@ -1313,27 +1343,35 @@ async fn compute_fx_conversion_impact(
                 tax_rate_percent: dec!(0.0),
                 source_country: None,
                 dtt_rate_percent: None,
-                notes: format!("Bought {} {} at rate {}", event.units, currency, format_currency_value(fx_rate)),
+                notes: format!(
+                    "Bought {} {} at rate {}",
+                    event.units,
+                    currency,
+                    format_currency_value(fx_rate)
+                ),
                 is_tax_relevant: false,
             })
         }
         TradeDirection::Sell => {
             let origin_currency = identifier[..3].to_string();
-            let eur_rate = convert_amount(dec!(1.0), &event.date.date_naive(), "EUR", &origin_currency).await?;
+            let eur_rate =
+                convert_amount(dec!(1.0), &event.date.date_naive(), "EUR", &origin_currency)
+                    .await?;
 
             let fx_wac = ctx.currency_wacs.get_mut(&origin_currency).cloned();
 
-            let taxed_amount = if let Some(ref mut fx_wac_mut) = ctx.currency_wacs.get_mut(&origin_currency) {
-                let fx_delta = fx_wac_mut.avg_rate - eur_rate;
-                let taxed = ((fx_delta / eur_rate) * event.units) / eur_rate;
-                fx_wac_mut.units -= event.units;
-                if fx_wac_mut.units < dec!(0.0) {
-                    fx_wac_mut.units = dec!(0.0);
-                }
-                taxed
-            } else {
-                dec!(0.0)
-            };
+            let taxed_amount =
+                if let Some(ref mut fx_wac_mut) = ctx.currency_wacs.get_mut(&origin_currency) {
+                    let fx_delta = fx_wac_mut.avg_rate - eur_rate;
+                    let taxed = ((fx_delta / eur_rate) * event.units) / eur_rate;
+                    fx_wac_mut.units -= event.units;
+                    if fx_wac_mut.units < dec!(0.0) {
+                        fx_wac_mut.units = dec!(0.0);
+                    }
+                    taxed
+                } else {
+                    dec!(0.0)
+                };
 
             let tax_liability = taxed_amount.max(dec!(0.0)) * ctx.tax_rates.capital_gains;
 
@@ -1385,7 +1423,11 @@ async fn compute_dividend_aequivalent_impact(
     event: &PortfolioEvent,
     ctx: &mut ImpactContext,
 ) -> Result<TransactionTaxImpact> {
-    let report_id = event.identifier.clone().context("Missing fund report ID")?.parse::<i32>()?;
+    let report_id = event
+        .identifier
+        .clone()
+        .context("Missing fund report ID")?
+        .parse::<i32>()?;
     let full_report = get_oekb_fund_report_by_id(report_id).await?;
 
     let units_held = {
@@ -1454,7 +1496,8 @@ async fn compute_dividend_aequivalent_impact(
         dtt_rate_percent: dtt::treaty_rate(
             dtt::isin_to_country(&full_report.isin).unwrap_or(""),
             DttIncomeType::Dividends,
-        ).map(|r| (r * dec!(100)).round_dp(1)),
+        )
+        .map(|r| (r * dec!(100)).round_dp(1)),
         notes,
         is_tax_relevant: taxed_eur != dec!(0.0),
     })
@@ -1517,8 +1560,14 @@ pub async fn get_detailed_capital_gains_tax_report(
 
     // 2. Determine the full event date range (all active years)
     let active_years = get_active_years().await?;
-    let first_year = active_years.first().copied().unwrap_or_else(|| Utc::now().year());
-    let last_year = active_years.last().copied().unwrap_or_else(|| Utc::now().year());
+    let first_year = active_years
+        .first()
+        .copied()
+        .unwrap_or_else(|| Utc::now().year());
+    let last_year = active_years
+        .last()
+        .copied()
+        .unwrap_or_else(|| Utc::now().year());
 
     let event_start = Utc.with_ymd_and_hms(first_year, 1, 1, 0, 0, 0).unwrap();
     let event_end = Utc.with_ymd_and_hms(last_year, 12, 31, 23, 59, 59).unwrap();
@@ -1542,7 +1591,9 @@ pub async fn get_detailed_capital_gains_tax_report(
     for events in events_by_year.values() {
         for event in events {
             if let Some(ref id) = event.identifier {
-                if event.event_type == EventType::Trade || event.event_type == EventType::DividendAequivalent {
+                if event.event_type == EventType::Trade
+                    || event.event_type == EventType::DividendAequivalent
+                {
                     unique_securities.insert(id.clone());
                 }
             }

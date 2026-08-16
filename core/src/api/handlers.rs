@@ -12,7 +12,10 @@ use crate::{
             constants::{OUT_DIR, SESSION_TOKEN_KEY},
             env::{get_env_variable, is_running_in_docker},
         },
-        taxation::{get_capital_gains_tax_report, get_detailed_capital_gains_tax_report, get_transaction_tax_impacts},
+        taxation::{
+            get_capital_gains_tax_report, get_detailed_capital_gains_tax_report,
+            get_transaction_tax_impacts,
+        },
     },
 };
 use axum::{

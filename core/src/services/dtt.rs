@@ -26,12 +26,54 @@ impl TreatyRates {
 }
 
 static TREATY_RATES: &[(&str, TreatyRates)] = &[
-    ("US", TreatyRates { interest: dec!(0), dividends: dec!(0.15), capital_gains: dec!(0) }),
-    ("IE", TreatyRates { interest: dec!(0), dividends: dec!(0.15), capital_gains: dec!(0) }),
-    ("BE", TreatyRates { interest: dec!(0.15), dividends: dec!(0.15), capital_gains: dec!(0) }),
-    ("DE", TreatyRates { interest: dec!(0), dividends: dec!(0.15), capital_gains: dec!(0) }),
-    ("FR", TreatyRates { interest: dec!(0), dividends: dec!(0.15), capital_gains: dec!(0) }),
-    ("GB", TreatyRates { interest: dec!(0), dividends: dec!(0.15), capital_gains: dec!(0) }),
+    (
+        "US",
+        TreatyRates {
+            interest: dec!(0),
+            dividends: dec!(0.15),
+            capital_gains: dec!(0),
+        },
+    ),
+    (
+        "IE",
+        TreatyRates {
+            interest: dec!(0),
+            dividends: dec!(0.15),
+            capital_gains: dec!(0),
+        },
+    ),
+    (
+        "BE",
+        TreatyRates {
+            interest: dec!(0.15),
+            dividends: dec!(0.15),
+            capital_gains: dec!(0),
+        },
+    ),
+    (
+        "DE",
+        TreatyRates {
+            interest: dec!(0),
+            dividends: dec!(0.15),
+            capital_gains: dec!(0),
+        },
+    ),
+    (
+        "FR",
+        TreatyRates {
+            interest: dec!(0),
+            dividends: dec!(0.15),
+            capital_gains: dec!(0),
+        },
+    ),
+    (
+        "GB",
+        TreatyRates {
+            interest: dec!(0),
+            dividends: dec!(0.15),
+            capital_gains: dec!(0),
+        },
+    ),
 ];
 
 pub fn isin_to_country(isin: &str) -> Option<&'static str> {
@@ -59,10 +101,7 @@ pub fn treaty_rate(country: &str, income_type: DttIncomeType) -> Option<Decimal>
         .map(|(_, rates)| rates.get(income_type))
 }
 
-pub fn determine_source_country(
-    isin: Option<&str>,
-    broker: &str,
-) -> Option<&'static str> {
+pub fn determine_source_country(isin: Option<&str>, broker: &str) -> Option<&'static str> {
     if let Some(isin) = isin {
         if let Some(country) = isin_to_country(isin) {
             return Some(country);

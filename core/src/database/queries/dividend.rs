@@ -13,7 +13,10 @@ pub async fn dividend_exists_by_hash(hash: &str) -> anyhow::Result<bool> {
 }
 
 /// Add dividend to database, returns true if inserted, false if duplicate
-pub async fn add_dividend_to_db(dividend: Dividend, transaction_id: Option<&str>) -> anyhow::Result<bool> {
+pub async fn add_dividend_to_db(
+    dividend: Dividend,
+    transaction_id: Option<&str>,
+) -> anyhow::Result<bool> {
     let client = db_client().await?;
 
     // Generate hash - include transaction_id if available for better deduplication
@@ -45,7 +48,7 @@ pub async fn add_dividend_to_db(dividend: Dividend, transaction_id: Option<&str>
             &[&hash, &dividend.isin, &dividend.date, &dividend.amount, &dividend.broker, &dividend.currency, &dividend.amount_eur, &dividend.withholding_tax, &dividend.withholding_tax_currency],
         )
     .await?;
-    
+
     // Return true if a row was actually inserted
     Ok(result == 1)
 }

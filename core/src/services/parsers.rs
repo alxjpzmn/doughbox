@@ -10,10 +10,13 @@ use deunicode::deunicode;
 use super::{
     files::detect_file_format,
     importers::{
-        erste_bank::extract_erste_bank_record, ibkr::extract_ibkr_record,
-        lightyear::extract_lightyear_record, manual::extract_manual_record,
-        revolut::extract_revolut_record, scalable::extract_scalable_record,
-        trade_republic::{extract_trade_republic_record, extract_trade_republic_csv_record},
+        erste_bank::extract_erste_bank_record,
+        ibkr::extract_ibkr_record,
+        lightyear::extract_lightyear_record,
+        manual::extract_manual_record,
+        revolut::extract_revolut_record,
+        scalable::extract_scalable_record,
+        trade_republic::{extract_trade_republic_csv_record, extract_trade_republic_record},
         trading212::extract_trading212_record,
         wise::extract_wise_record,
     },
@@ -45,9 +48,7 @@ pub fn detect_broker_from_csv_header(record: &csv::StringRecord) -> anyhow::Resu
     {
         return Ok(Some(Broker::Trading212));
     }
-    if record.get(0) == Some("Traded Asset ID Type")
-        || record.get(0) == Some("TransferWise ID")
-    {
+    if record.get(0) == Some("Traded Asset ID Type") || record.get(0) == Some("TransferWise ID") {
         return Ok(Some(Broker::Wise));
     }
     if (record.get(0) == Some("Date") && record.get(1) == Some("Ticker"))
@@ -187,20 +188,33 @@ pub fn remove_first_and_last(value: &str) -> &str {
 }
 
 pub fn parse_timestamp(timestamp_str: &str) -> anyhow::Result<DateTime<Utc>> {
+    let tz_formats = [
+        "%Y-%m-%d %H:%M:%S%.3f%#z",
+        "%Y-%m-%d %H:%M:%S%.f%#z",
+        "%Y-%m-%d %H:%M:%S%#z",
+        "%Y-%m-%dT%H:%M:%S%.3f%#z",
+        "%Y-%m-%dT%H:%M:%S%.f%#z",
+        "%Y-%m-%dT%H:%M:%S%#z",
+        "%Y-%m-%dT%H:%M:%S%.3fZ",
+        "%Y-%m-%dT%H:%M:%S%.fZ",
+        "%Y-%m-%dT%H:%M:%SZ",
+    ];
+    for format in tz_formats.iter() {
+        if let Ok(timestamp) = DateTime::parse_from_str(timestamp_str, format) {
+            return Ok(timestamp.with_timezone(&Utc));
+        }
+    }
+
     let formats = [
         "%Y-%m-%d %H:%M:%S%.3f",
         "%Y-%m-%d %H:%M:%S%.f",
         "%Y-%m-%d %H:%M:%S",
         "%Y-%m-%dT%H:%M:%S%.3fZ",
         "%Y-%m-%dT%H:%M:%S%.fZ",
-        "%Y-%m-%dT%H:%M:%S%.f%#z",
-        "%Y-%m-%d %H:%M:%S%.f%#z",
         "%d.%m.%Y %H:%M:%S",
         "%Y%m%d;%H%M%S",
         "%d/%m/%Y %H:%M:%S",
-        "%d.%m.%Y %H:%M:%S",
         "%d-%m-%Y %H:%M:%S",
-        "%Y-%m-%d %H:%M:%S",
         "%Y-%m-%dT%H:%M:%S%.3f",
         "%d.%m.%Y %H:%M:%S:%f",
     ];
@@ -210,4 +224,41 @@ pub fn parse_timestamp(timestamp_str: &str) -> anyhow::Result<DateTime<Utc>> {
         }
     }
     Err(anyhow!("Unable to parse timestamp"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_old_trading212_timestamps() {
+        assert_eq!(
+            parse_timestamp("2023-12-14 09:43:21").unwrap(),
+            NaiveDate::from_ymd_opt(2023, 12, 14)
+                .unwrap()
+                .and_hms_opt(9, 43, 21)
+                .unwrap()
+                .and_utc()
+        );
+        assert_eq!(
+            parse_timestamp("2023-12-20 22:10:17.977").unwrap(),
+            NaiveDate::from_ymd_opt(2023, 12, 20)
+                .unwrap()
+                .and_hms_milli_opt(22, 10, 17, 977)
+                .unwrap()
+                .and_utc()
+        );
+    }
+
+    #[test]
+    fn parse_new_trading212_timestamp() {
+        assert_eq!(
+            parse_timestamp("2026-08-01 01:03:31+00:00").unwrap(),
+            NaiveDate::from_ymd_opt(2026, 8, 1)
+                .unwrap()
+                .and_hms_opt(1, 3, 31)
+                .unwrap()
+                .and_utc()
+        );
+    }
 }

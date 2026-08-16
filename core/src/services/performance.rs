@@ -184,13 +184,11 @@ pub async fn get_performance() -> anyhow::Result<PortfolioPerformance> {
             unrealized,
             realized,
             performance,
-            total_return: round_to_decimals(
-                if title_performance.invested_amount > dec!(0) {
-                    (performance / title_performance.invested_amount) * dec!(100.0)
-                } else {
-                    dec!(0)
-                },
-            ),
+            total_return: round_to_decimals(if title_performance.invested_amount > dec!(0) {
+                (performance / title_performance.invested_amount) * dec!(100.0)
+            } else {
+                dec!(0)
+            }),
             invested_amount: title_performance.invested_amount,
         };
         trade_performance.push(performance_item);
@@ -222,13 +220,11 @@ pub async fn get_performance() -> anyhow::Result<PortfolioPerformance> {
             unrealized,
             realized,
             performance,
-            total_return: round_to_decimals(
-                if simulated_performance.invested_amount > dec!(0) {
-                    (performance / simulated_performance.invested_amount) * dec!(100.0)
-                } else {
-                    dec!(0)
-                },
-            ),
+            total_return: round_to_decimals(if simulated_performance.invested_amount > dec!(0) {
+                (performance / simulated_performance.invested_amount) * dec!(100.0)
+            } else {
+                dec!(0)
+            }),
             invested_amount: simulated_performance.invested_amount,
         };
         simulated_trade_performance.push(trade_performance);
@@ -463,11 +459,11 @@ pub async fn simulate_alternate_purchase(
 
                 let normalized_unit_count = share_of_accrued_position * inventory;
 
-            let avg_purchase_price = if inventory > dec!(0) {
-                purchase_value / inventory
-            } else {
-                dec!(0)
-            };
+                let avg_purchase_price = if inventory > dec!(0) {
+                    purchase_value / inventory
+                } else {
+                    dec!(0)
+                };
                 let actual_sell_price = trade.eur_avg_price_per_unit;
 
                 let realized_for_trade =

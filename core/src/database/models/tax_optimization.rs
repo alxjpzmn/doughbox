@@ -9,7 +9,7 @@ pub struct TaxOptimization {
     pub amount: Decimal,
     pub currency: String,
     pub amount_eur: Decimal,
-    pub tax_type: String,  // "CapitalGains", "Dividend", "Interest"
+    pub tax_type: String, // "CapitalGains", "Dividend", "Interest"
     pub description: Option<String>,
     pub transaction_id: Option<String>,
 }

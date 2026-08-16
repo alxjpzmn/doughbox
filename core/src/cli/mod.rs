@@ -119,7 +119,11 @@ pub async fn cli() -> anyhow::Result<()> {
         Command::Housekeeping {} => {
             housekeeping().await?;
         }
-        Command::Taxation { from, until, with_events } => {
+        Command::Taxation {
+            from,
+            until,
+            with_events,
+        } => {
             if events_exist(EventFilter::All).await? {
                 let from_date = from
                     .as_deref()

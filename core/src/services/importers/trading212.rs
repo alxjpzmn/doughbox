@@ -58,8 +58,59 @@ fn find_column_index(
         idx.ok_or_else(|| anyhow!("Missing required column: {}", column_name))
             .map(Some)
     } else {
-        Ok(idx) // Optional columns return `None` if not found
+        Ok(idx)
     }
+}
+
+fn find_column_index_any(
+    headers: &csv::StringRecord,
+    column_names: &[&str],
+) -> anyhow::Result<usize> {
+    for name in column_names {
+        if let Some(idx) = headers.iter().position(|h| h == *name) {
+            return Ok(idx);
+        }
+    }
+    Err(anyhow!(
+        "Missing required column: {}",
+        column_names.join(" or ")
+    ))
+}
+
+fn optional_field<'a>(record: &'a csv::StringRecord, idx: Option<usize>) -> Option<&'a str> {
+    idx.and_then(|i| record.get(i))
+        .filter(|value| !value.is_empty())
+}
+
+fn field_decimal_or_zero(record: &csv::StringRecord, idx: Option<usize>) -> Decimal {
+    optional_field(record, idx)
+        .and_then(|value| value.parse::<Decimal>().ok())
+        .unwrap_or(dec!(0))
+}
+
+fn field_string_or(record: &csv::StringRecord, idx: Option<usize>, fallback: &str) -> String {
+    optional_field(record, idx)
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+fn parse_fx_from_notes(notes: &str) -> anyhow::Result<(Decimal, String, Decimal, String)> {
+    let parts: Vec<&str> = notes.split("->").collect();
+    if parts.len() != 2 {
+        return Err(anyhow!("Unable to parse FX conversion notes: {}", notes));
+    }
+
+    let parse_side = |side: &str| -> anyhow::Result<(Decimal, String)> {
+        let tokens: Vec<&str> = side.trim().split_whitespace().collect();
+        if tokens.len() != 2 {
+            return Err(anyhow!("Unable to parse FX conversion side: {}", side));
+        }
+        Ok((tokens[0].parse::<Decimal>()?, tokens[1].to_string()))
+    };
+
+    let (from_amount, from_currency) = parse_side(parts[0])?;
+    let (to_amount, to_currency) = parse_side(parts[1])?;
+    Ok((from_amount, from_currency, to_amount, to_currency))
 }
 
 pub async fn extract_trading212_record(file_content: &[u8]) -> anyhow::Result<()> {
@@ -69,7 +120,6 @@ pub async fn extract_trading212_record(file_content: &[u8]) -> anyhow::Result<()
     let mut rdr = ReaderBuilder::new().has_headers(true).from_reader(cursor);
     let headers = rdr.headers()?.clone();
 
-    // Required columns
     let action_idx = find_column_index(&headers, "Action", true)?.unwrap();
     let amount_idx = find_column_index(&headers, "Total", true)?.unwrap();
     let share_count_idx = find_column_index(&headers, "No. of shares", true)?.unwrap();
@@ -79,14 +129,14 @@ pub async fn extract_trading212_record(file_content: &[u8]) -> anyhow::Result<()
     let currency_total_idx = find_column_index(&headers, "Currency (Total)", true)?.unwrap();
     let currency_price_idx =
         find_column_index(&headers, "Currency (Price / share)", true)?.unwrap();
-    let withholding_tax_idx = find_column_index(&headers, "Withholding tax", true)?.unwrap();
-    let withholding_tax_currency_idx =
-        find_column_index(&headers, "Currency (Withholding tax)", true)?.unwrap();
-    let timestamp_idx = find_column_index(&headers, "Time", true)?.unwrap();
+    let timestamp_idx = find_column_index_any(&headers, &["Time", "Time (UTC)"])?;
     let fees_idx = find_column_index(&headers, "Currency conversion fee", true)?.unwrap();
     let fx_rate_idx = find_column_index(&headers, "Exchange rate", true)?.unwrap();
 
-    // Optional columns
+    let withholding_tax_idx = find_column_index(&headers, "Withholding tax", false)?;
+    let withholding_tax_currency_idx =
+        find_column_index(&headers, "Currency (Withholding tax)", false)?;
+    let notes_idx = find_column_index(&headers, "Notes", false)?;
     let currency_conversion_from_idx = find_column_index(
         &headers,
         "Currency (Currency conversion from amount)",
@@ -114,30 +164,44 @@ pub async fn extract_trading212_record(file_content: &[u8]) -> anyhow::Result<()
                     broker: broker.clone(),
                     currency: record[currency_price_idx].to_string(),
                     amount_eur: record[amount_idx].parse::<Decimal>()?,
-                    withholding_tax: record
-                        .get(withholding_tax_idx)
-                        .map_or(dec!(0), |value| value.parse::<Decimal>().unwrap_or(dec!(0))),
-                    withholding_tax_currency: record[withholding_tax_currency_idx].to_string(),
+                    withholding_tax: field_decimal_or_zero(&record, withholding_tax_idx),
+                    withholding_tax_currency: field_string_or(
+                        &record,
+                        withholding_tax_currency_idx,
+                        &record[currency_price_idx],
+                    ),
                 };
                 if add_dividend_to_db(dividend.clone(), None).await? {
                     println!("💵 Dividend added: {:?}", dividend);
                 }
             }
             RecordType::FxConversion => {
+                let from_notes = optional_field(&record, notes_idx)
+                    .and_then(|notes| parse_fx_from_notes(notes).ok());
+                let from_amount = optional_field(&record, currency_conversion_from_amount_idx)
+                    .and_then(|value| value.parse::<Decimal>().ok())
+                    .or_else(|| from_notes.as_ref().map(|parsed| parsed.0))
+                    .ok_or_else(|| anyhow!("Missing FX conversion from amount"))?;
+                let from_currency = optional_field(&record, currency_conversion_from_idx)
+                    .map(|value| value.to_string())
+                    .or_else(|| from_notes.as_ref().map(|parsed| parsed.1.clone()))
+                    .ok_or_else(|| anyhow!("Missing FX conversion from currency"))?;
+                let to_amount = optional_field(&record, currency_conversion_to_amount_idx)
+                    .and_then(|value| value.parse::<Decimal>().ok())
+                    .or_else(|| from_notes.as_ref().map(|parsed| parsed.2))
+                    .unwrap_or(dec!(0));
+                let to_currency = optional_field(&record, currency_conversion_to_idx)
+                    .map(|value| value.to_string())
+                    .or_else(|| from_notes.as_ref().map(|parsed| parsed.3.clone()))
+                    .unwrap_or_else(|| "Unknown".to_string());
+
                 let fx_conversion = FxConversion {
                     date: parse_timestamp(&record[timestamp_idx])?,
                     broker: broker.clone(),
-                    from_amount: record[currency_conversion_from_amount_idx.unwrap()]
-                        .parse::<Decimal>()?,
-                    to_amount: currency_conversion_to_amount_idx
-                        .and_then(|idx| record.get(idx))
-                        .map(|value| value.parse::<Decimal>().unwrap_or(dec!(0)))
-                        .unwrap_or(dec!(0)),
-                    from_currency: record[currency_conversion_from_idx.unwrap()].to_string(),
-                    to_currency: currency_conversion_to_idx
-                        .and_then(|idx| record.get(idx))
-                        .map(|value| value.to_string())
-                        .unwrap_or_else(|| "Unknown".to_string()),
+                    from_amount,
+                    to_amount,
+                    from_currency,
+                    to_currency,
                     date_added: Utc::now(),
                     fees: record[fees_idx].parse::<Decimal>().unwrap_or(dec!(-0.0)) * -dec!(1.0),
                 };
@@ -164,12 +228,13 @@ pub async fn extract_trading212_record(file_content: &[u8]) -> anyhow::Result<()
                     security_type: "Equity".to_string(),
                     currency: record[currency_price_idx].to_string(),
                     date_added: Utc::now(),
-                    // Trading 212 only charges for fx conversions
                     fees: record[fees_idx].parse::<Decimal>().unwrap_or(dec!(0.0)),
-                    withholding_tax: record[withholding_tax_idx]
-                        .parse::<Decimal>()
-                        .unwrap_or(dec!(0.0)),
-                    withholding_tax_currency: record[withholding_tax_idx].to_string(),
+                    withholding_tax: field_decimal_or_zero(&record, withholding_tax_idx),
+                    withholding_tax_currency: field_string_or(
+                        &record,
+                        withholding_tax_currency_idx,
+                        &record[currency_total_idx],
+                    ),
                 };
                 add_trade_to_db(trade, Some(record[id_idx].to_string())).await?;
             }
@@ -198,10 +263,12 @@ pub async fn extract_trading212_record(file_content: &[u8]) -> anyhow::Result<()
                     principal: "Cash".to_string(),
                     currency: record[currency_total_idx].to_string(),
                     amount_eur: amount,
-                    withholding_tax: record[withholding_tax_idx]
-                        .parse::<Decimal>()
-                        .unwrap_or(dec!(0.0)),
-                    withholding_tax_currency: record[withholding_tax_currency_idx].to_string(),
+                    withholding_tax: field_decimal_or_zero(&record, withholding_tax_idx),
+                    withholding_tax_currency: field_string_or(
+                        &record,
+                        withholding_tax_currency_idx,
+                        &record[currency_total_idx],
+                    ),
                 };
                 if add_interest_to_db(interest_payment.clone(), None).await? {
                     println!("💵 Interest payment added: {:?}", interest_payment);
@@ -233,10 +300,12 @@ pub async fn extract_trading212_record(file_content: &[u8]) -> anyhow::Result<()
                     principal: "Shares".to_string(),
                     currency: record[currency_total_idx].to_string(),
                     amount_eur: amount,
-                    withholding_tax: record[withholding_tax_idx]
-                        .parse::<Decimal>()
-                        .unwrap_or(dec!(0.0)),
-                    withholding_tax_currency: record[withholding_tax_currency_idx].to_string(),
+                    withholding_tax: field_decimal_or_zero(&record, withholding_tax_idx),
+                    withholding_tax_currency: field_string_or(
+                        &record,
+                        withholding_tax_currency_idx,
+                        &record[currency_total_idx],
+                    ),
                 };
                 if add_interest_to_db(interest_payment.clone(), None).await? {
                     println!("💵 Interest payment added: {:?}", interest_payment);
@@ -248,4 +317,19 @@ pub async fn extract_trading212_record(file_content: &[u8]) -> anyhow::Result<()
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_fx_notes() {
+        let (from_amount, from_currency, to_amount, to_currency) =
+            parse_fx_from_notes("30 USD -> 27.40 EUR").unwrap();
+        assert_eq!(from_amount, dec!(30));
+        assert_eq!(from_currency, "USD");
+        assert_eq!(to_amount, dec!(27.40));
+        assert_eq!(to_currency, "EUR");
+    }
 }

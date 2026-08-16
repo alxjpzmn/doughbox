@@ -13,7 +13,10 @@ pub async fn interest_exists_by_hash(hash: &str) -> anyhow::Result<bool> {
 }
 
 /// Add interest payment to database, returns true if inserted, false if duplicate
-pub async fn add_interest_to_db(interest_payment: InterestPayment, transaction_id: Option<&str>) -> anyhow::Result<bool> {
+pub async fn add_interest_to_db(
+    interest_payment: InterestPayment,
+    transaction_id: Option<&str>,
+) -> anyhow::Result<bool> {
     let client = db_client().await?;
 
     // Generate hash - include transaction_id if available

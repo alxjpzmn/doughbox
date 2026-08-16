@@ -1,5 +1,5 @@
-pub mod events;
 pub mod dtt;
+pub mod events;
 pub mod files;
 pub mod importers;
 pub mod instruments;
