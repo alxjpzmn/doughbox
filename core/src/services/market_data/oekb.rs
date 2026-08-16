@@ -29,6 +29,8 @@ enum ReportItemType {
     IntermittentDividends,
     WithHeldDividend,
     WacAdjustment,
+    InlaendischeDividenden,
+    KestInlaendischeDividenden,
 }
 
 impl ReportItemType {
@@ -39,6 +41,8 @@ impl ReportItemType {
             10595 => Some(ReportItemType::IntermittentDividends),
             10288 => Some(ReportItemType::WithHeldDividend),
             10289 => Some(ReportItemType::WacAdjustment),
+            10759 => Some(ReportItemType::InlaendischeDividenden),
+            10760 => Some(ReportItemType::KestInlaendischeDividenden),
             _ => None,
         }
     }
@@ -64,17 +68,40 @@ struct OekbFundReportResponseItem {
 struct OekbFundReportResponse {
     list: Vec<OekbFundReportResponseItem>,
 }
+
+const OEKB_HEADERS: [&str; 4] = [
+    "Accept",
+    "Accept-Language",
+    "OeKB-Platform-Context",
+    "User-Agent",
+];
+
+const OEKB_HEADER_VALUES: [&str; 4] = [
+    "application/json",
+    "de",
+    "eyJsYW5ndWFnZSI6ImRlIiwicGxhdGZvcm0iOiJLTVMiLCJkYXNoYm9hcmQiOiJLTVNfT1VUUFVUIn0=",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.4.1 Safari/605.1.15",
+];
+
+fn build_oekb_client() -> reqwest::Client {
+    reqwest::Client::new()
+}
+
+fn add_oekb_headers(req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    let mut req = req;
+    for i in 0..OEKB_HEADERS.len() {
+        req = req.header(OEKB_HEADERS[i], OEKB_HEADER_VALUES[i]);
+    }
+    req
+}
+
 pub async fn fetch_and_store_oekb_fund_report(isin: &str) -> anyhow::Result<()> {
-    let client = reqwest::Client::new();
-    let response = client
-        .get(format!("https://my.oekb.at/fond-info/rest/public/steuerMeldung/isin/{}", isin))
-        .header("Accept", "application/json")
-        .header("Accept-Language", "de")
-        .header("OeKB-Platform-Context",
-          "eyJsYW5ndWFnZSI6ImRlIiwicGxhdGZvcm0iOiJLTVMiLCJkYXNoYm9hcmQiOiJLTVNfT1VUUFVUIn0=")
-        .header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.4.1 Safari/605.1.15")
-        .send()
-        .await?;
+    let client = build_oekb_client();
+    let response = add_oekb_headers(
+        client.get(format!("https://my.oekb.at/fond-info/rest/public/steuerMeldung/isin/{}", isin))
+    )
+    .send()
+    .await?;
 
     println!("Getting OeKB fund reports for {:?}", &isin);
 
@@ -83,7 +110,6 @@ pub async fn fetch_and_store_oekb_fund_report(isin: &str) -> anyhow::Result<()> 
             serde_json::from_str::<OekbFundReportResponse>(&response.text().await?);
 
         for report in oekb_funds_reponse_data?.list {
-            // now for each item in the list, make call to get the actual report
             let mut report_to_store = FundTaxReport {
                 id: report.report_id,
                 date: parse_timestamp(report.report_date.as_str())?,
@@ -94,6 +120,9 @@ pub async fn fetch_and_store_oekb_fund_report(isin: &str) -> anyhow::Result<()> 
                 intermittent_dividends: dec!(0),
                 withheld_dividend: dec!(0),
                 wac_adjustment: dec!(0),
+                inlaendische_dividenden: dec!(0),
+                kest_inlaendische_dividenden: dec!(0),
+                kest_per_share: dec!(0),
             };
 
             let report_items = query_oekb_fund_report(report.report_id).await?;
@@ -114,10 +143,24 @@ pub async fn fetch_and_store_oekb_fund_report(isin: &str) -> anyhow::Result<()> 
                         ReportItemType::WacAdjustment => {
                             report_to_store.wac_adjustment = report_item.amount
                         }
+                        ReportItemType::InlaendischeDividenden => {
+                            report_to_store.inlaendische_dividenden = report_item.amount
+                        }
+                        ReportItemType::KestInlaendischeDividenden => {
+                            report_to_store.kest_inlaendische_dividenden = report_item.amount
+                        }
                     },
                     None => println!("No fund type found for id {}", report_item.id),
                 }
             }
+
+            let kest_items = query_oekb_kest(report.report_id).await?;
+            for item in kest_items {
+                if item.id == 10105 {
+                    report_to_store.kest_per_share = item.amount;
+                }
+            }
+
             add_oekb_fund_report_to_db(report_to_store).await?;
         }
     } else {
@@ -127,14 +170,10 @@ pub async fn fetch_and_store_oekb_fund_report(isin: &str) -> anyhow::Result<()> 
 }
 
 pub async fn query_oekb_fund_report(report_id: i32) -> anyhow::Result<Vec<OekbFullTaxReport>> {
-    let client = reqwest::Client::new();
-    let response = client
-    .get(format!("https://my.oekb.at/fond-info/rest/public/steuerMeldung/stmId/{}/privatAnl", &report_id))
-    .header("Accept", "application/json")
-    .header("Accept-Language", "de")
-    .header("OeKB-Platform-Context",
-    "eyJsYW5ndWFnZSI6ImRlIiwicGxhdGZvcm0iOiJLTVMiLCJkYXNoYm9hcmQiOiJLTVNfT1VUUFVUIn0=")
-    .header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.4.1 Safari/605.1.15")
+    let client = build_oekb_client();
+    let response = add_oekb_headers(
+        client.get(format!("https://my.oekb.at/fond-info/rest/public/steuerMeldung/stmId/{}/privatAnl", &report_id))
+    )
     .send()
     .await?;
 
@@ -143,6 +182,31 @@ pub async fn query_oekb_fund_report(report_id: i32) -> anyhow::Result<Vec<OekbFu
             serde_json::from_str::<OekbFullTaxReportResponse>(&response.text().await?)?;
         Ok(oekb_tax_report_data.list)
     } else {
-        panic!("Couldn't get OeKB tax report.")
+        Err(anyhow::anyhow!(
+            "Couldn't get OeKB tax report for stmId {}: HTTP {}",
+            report_id,
+            response.status()
+        ))
+    }
+}
+
+pub async fn query_oekb_kest(report_id: i32) -> anyhow::Result<Vec<OekbFullTaxReport>> {
+    let client = build_oekb_client();
+    let response = add_oekb_headers(
+        client.get(format!("https://my.oekb.at/fond-info/rest/public/steuerMeldung/stmId/{}/ertrStBeh", &report_id))
+    )
+    .send()
+    .await?;
+
+    if response.status().is_success() {
+        let data =
+            serde_json::from_str::<OekbFullTaxReportResponse>(&response.text().await?)?;
+        Ok(data.list)
+    } else {
+        Err(anyhow::anyhow!(
+            "Couldn't get OeKB KESt data for stmId {}: HTTP {}",
+            report_id,
+            response.status()
+        ))
     }
 }

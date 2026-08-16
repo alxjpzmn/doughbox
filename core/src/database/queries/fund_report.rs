@@ -14,8 +14,8 @@ pub async fn add_oekb_fund_report_to_db(report: FundTaxReport) -> anyhow::Result
     let client = db_client().await?;
 
     client.execute(
-        "INSERT INTO fund_report_oekb (id, date, isin, currency, dividend, dividend_aequivalent, intermittent_dividend, withheld_dividend, wac_adjustment) values ($1, $2, $3, $4, $5, $6,$7, $8, $9) ON CONFLICT(id) DO NOTHING",
-        &[&report.id, &report.date, &report.isin, &report.currency, &report.dividend, &report.dividend_aequivalent, &report.intermittent_dividends, &report.withheld_dividend, &report.wac_adjustment])
+        "INSERT INTO fund_report_oekb (id, date, isin, currency, dividend, dividend_aequivalent, intermittent_dividend, withheld_dividend, wac_adjustment, inlaendische_dividenden, kest_inlaendische_dividenden, kest_per_share) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) ON CONFLICT(id) DO NOTHING",
+        &[&report.id, &report.date, &report.isin, &report.currency, &report.dividend, &report.dividend_aequivalent, &report.intermittent_dividends, &report.withheld_dividend, &report.wac_adjustment, &report.inlaendische_dividenden, &report.kest_inlaendische_dividenden, &report.kest_per_share])
     .await?;
 
     Ok(())

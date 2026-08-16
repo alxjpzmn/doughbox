@@ -25,6 +25,12 @@ pub async fn calculate_taxes(
     println!("Currency WAC:");
     println!("{}", currency_wac_table);
     println!();
+    println!("E1VK Kennzahlen: [KZ 465] interest, [KZ 731/732] capital gains/losses, [KZ 897/898] dividends,");
+    println!("  [KZ 936/937] dividend equivalents, [KZ 984/998] foreign WHT credits.");
+    println!("  [info] fields are for reconciliation only — not entered on the form.");
+    println!("  The form expects income amounts (brutto), not calculated tax.");
+    println!("  KESt already withheld is reported by the broker via Steuerbescheinigung.");
+    println!();
     println!("DTT: WHT capped at treaty rates for US, IE, BE, DE, FR, GB; fallback to Austrian rate for others.");
     println!("     Per-transaction DTT details: use `doughbox taxation --with-events` (detailed JSON export).");
 
