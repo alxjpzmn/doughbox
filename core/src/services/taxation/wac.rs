@@ -5,11 +5,12 @@ use rust_decimal_macros::dec;
 use serde::Serialize;
 use tabled::Tabled;
 use typeshare::typeshare;
+use utoipa::ToSchema;
 
 use crate::services::events::PortfolioEvent;
 
 #[typeshare]
-#[derive(Debug, Clone, Tabled, Serialize)]
+#[derive(Debug, Clone, Tabled, Serialize, ToSchema)]
 pub struct FxWac {
     pub units: Decimal,
     pub avg_rate: Decimal,
@@ -33,7 +34,7 @@ impl FxWac {
 }
 
 #[typeshare]
-#[derive(Debug, Clone, Tabled, Serialize)]
+#[derive(Debug, Clone, Tabled, Serialize, ToSchema)]
 pub struct SecWac {
     pub units: Decimal,
     pub average_cost: Decimal,

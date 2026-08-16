@@ -1,6 +1,10 @@
 use crate::{
-    database::{db_client, models::dividend::Dividend},
-    services::shared::util::hash_string,
+    database::{
+        db_client,
+        models::dividend::Dividend,
+        queries::{listing_change::get_listing_changes, QueryFilter},
+    },
+    services::{instruments::identifiers::get_changed_identifier, shared::util::hash_string},
 };
 
 /// Check if a dividend with the given hash already exists in the database
@@ -51,4 +55,39 @@ pub async fn add_dividend_to_db(
 
     // Return true if a row was actually inserted
     Ok(result == 1)
+}
+
+pub async fn get_dividends(filter: QueryFilter) -> anyhow::Result<Vec<Dividend>> {
+    let client = db_client().await?;
+    let listing_changes = get_listing_changes().await?;
+
+    let mut statement = String::from(
+        "SELECT isin, date, amount, broker, currency, amount_eur, \
+         withholding_tax, withholding_tax_currency FROM dividend WHERE 1=1",
+    );
+    let mut params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = vec![];
+    super::append_common_filters(&mut statement, &mut params, &filter);
+    statement.push_str(" ORDER BY date DESC");
+
+    let rows = client.query(&statement, &params).await?;
+    let mut dividends = Vec::new();
+    for row in rows {
+        let isin = get_changed_identifier(&row.get::<_, String>("isin"), listing_changes.clone());
+        if let Some(ref wanted) = filter.isin {
+            if &isin != wanted {
+                continue;
+            }
+        }
+        dividends.push(Dividend {
+            isin,
+            date: row.get("date"),
+            amount: row.get("amount"),
+            broker: row.get("broker"),
+            currency: row.get("currency"),
+            amount_eur: row.get("amount_eur"),
+            withholding_tax: row.get("withholding_tax"),
+            withholding_tax_currency: row.get("withholding_tax_currency"),
+        });
+    }
+    Ok(dividends)
 }

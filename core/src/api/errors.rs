@@ -4,14 +4,15 @@ use axum::{
     Json,
 };
 use serde::Serialize;
+use utoipa::ToSchema;
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct ErrorDetails {
     pub in_docker: Option<bool>,
     pub events_present: Option<bool>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct ErrorResponse {
     status: u16,                   // HTTP status code
     error: String,                 // Short error identifier

@@ -5,12 +5,13 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 use tabled::Tabled;
 use typeshare::typeshare;
+use utoipa::ToSchema;
 
 use super::wac::{FxWac, SecWac};
 use crate::services::events::{EventType, PortfolioEvent, TradeDirection};
 
 #[typeshare]
-#[derive(Debug, Serialize, Tabled)]
+#[derive(Debug, Serialize, Tabled, ToSchema)]
 pub struct AnnualTaxableAmounts {
     #[tabled(rename = "Cash Interest [KZ 465]")]
     pub(crate) cash_interest: Decimal,
@@ -43,6 +44,7 @@ pub struct AnnualTaxableAmounts {
 }
 
 impl AnnualTaxableAmounts {
+    #[cfg(test)]
     pub(crate) fn zero() -> Self {
         Self {
             cash_interest: rust_decimal_macros::dec!(0),
@@ -87,7 +89,7 @@ impl AnnualTaxableAmounts {
 }
 
 #[typeshare]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct TaxationReport {
     pub created_at: DateTime<Utc>,
     pub from_date: Option<DateTime<Utc>>,
@@ -123,7 +125,7 @@ pub struct TaxReportMetadata {
 }
 
 #[typeshare]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct TransactionTaxImpact {
     pub date: DateTime<Utc>,
     pub event_type: EventType,

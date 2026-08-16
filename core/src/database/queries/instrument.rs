@@ -5,6 +5,14 @@ use rust_decimal_macros::dec;
 
 use crate::database::{db_client, models::instrument::Instrument};
 
+pub async fn get_all_instruments() -> anyhow::Result<Vec<Instrument>> {
+    let client = db_client().await?;
+    let rows = client
+        .query("SELECT * FROM instrument ORDER BY name", &[])
+        .await?;
+    Ok(rows.iter().map(Instrument::from_row).collect())
+}
+
 pub async fn get_instrument_by_id(id: &str) -> anyhow::Result<Option<Instrument>> {
     let client = db_client().await?;
 

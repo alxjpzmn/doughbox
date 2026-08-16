@@ -97,9 +97,10 @@ fn add_oekb_headers(req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
 
 pub async fn fetch_and_store_oekb_fund_report(isin: &str) -> anyhow::Result<()> {
     let client = build_oekb_client();
-    let response = add_oekb_headers(
-        client.get(format!("https://my.oekb.at/fond-info/rest/public/steuerMeldung/isin/{}", isin))
-    )
+    let response = add_oekb_headers(client.get(format!(
+        "https://my.oekb.at/fond-info/rest/public/steuerMeldung/isin/{}",
+        isin
+    )))
     .send()
     .await?;
 
@@ -171,9 +172,10 @@ pub async fn fetch_and_store_oekb_fund_report(isin: &str) -> anyhow::Result<()> 
 
 pub async fn query_oekb_fund_report(report_id: i32) -> anyhow::Result<Vec<OekbFullTaxReport>> {
     let client = build_oekb_client();
-    let response = add_oekb_headers(
-        client.get(format!("https://my.oekb.at/fond-info/rest/public/steuerMeldung/stmId/{}/privatAnl", &report_id))
-    )
+    let response = add_oekb_headers(client.get(format!(
+        "https://my.oekb.at/fond-info/rest/public/steuerMeldung/stmId/{}/privatAnl",
+        &report_id
+    )))
     .send()
     .await?;
 
@@ -192,15 +194,15 @@ pub async fn query_oekb_fund_report(report_id: i32) -> anyhow::Result<Vec<OekbFu
 
 pub async fn query_oekb_kest(report_id: i32) -> anyhow::Result<Vec<OekbFullTaxReport>> {
     let client = build_oekb_client();
-    let response = add_oekb_headers(
-        client.get(format!("https://my.oekb.at/fond-info/rest/public/steuerMeldung/stmId/{}/ertrStBeh", &report_id))
-    )
+    let response = add_oekb_headers(client.get(format!(
+        "https://my.oekb.at/fond-info/rest/public/steuerMeldung/stmId/{}/ertrStBeh",
+        &report_id
+    )))
     .send()
     .await?;
 
     if response.status().is_success() {
-        let data =
-            serde_json::from_str::<OekbFullTaxReportResponse>(&response.text().await?)?;
+        let data = serde_json::from_str::<OekbFullTaxReportResponse>(&response.text().await?)?;
         Ok(data.list)
     } else {
         Err(anyhow::anyhow!(

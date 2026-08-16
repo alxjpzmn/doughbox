@@ -39,6 +39,8 @@ typeshare = "1.0.5"
 futures = "0.3.34"
 logos = "0.16.1"
 log = "0.4.33"
+utoipa = { version = "5.4", features = ["axum_extras", "chrono", "decimal"] }
+utoipa-swagger-ui = { version = "9", features = ["axum"] }
 
 [build-dependencies]
 static-files = "0.3.1"

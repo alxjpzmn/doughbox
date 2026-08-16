@@ -140,9 +140,15 @@ mod tests {
 
     #[test]
     fn treaty_rates_match_table() {
-        assert_eq!(treaty_rate("US", DttIncomeType::Dividends), Some(dec!(0.15)));
+        assert_eq!(
+            treaty_rate("US", DttIncomeType::Dividends),
+            Some(dec!(0.15))
+        );
         assert_eq!(treaty_rate("US", DttIncomeType::Interest), Some(dec!(0)));
-        assert_eq!(treaty_rate("US", DttIncomeType::CapitalGains), Some(dec!(0)));
+        assert_eq!(
+            treaty_rate("US", DttIncomeType::CapitalGains),
+            Some(dec!(0))
+        );
         assert_eq!(treaty_rate("BE", DttIncomeType::Interest), Some(dec!(0.15)));
         assert_eq!(treaty_rate("AT", DttIncomeType::Dividends), None);
     }

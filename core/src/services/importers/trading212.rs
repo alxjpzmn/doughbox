@@ -342,12 +342,24 @@ mod tests {
 
     #[test]
     fn detect_trading212_record_types() {
-        assert!(matches!(detect_record_type("Dividend (Ordinary)"), RecordType::Dividend));
-        assert_eq!(detect_record_type("Interest on cash"), RecordType::CashInterest);
-        assert_eq!(detect_record_type("Lending interest"), RecordType::ShareInterest);
+        assert!(matches!(
+            detect_record_type("Dividend (Ordinary)"),
+            RecordType::Dividend
+        ));
+        assert_eq!(
+            detect_record_type("Interest on cash"),
+            RecordType::CashInterest
+        );
+        assert_eq!(
+            detect_record_type("Lending interest"),
+            RecordType::ShareInterest
+        );
         assert_eq!(detect_record_type("Market buy"), RecordType::EquityTrade);
         assert_eq!(detect_record_type("Limit sell"), RecordType::EquityTrade);
-        assert_eq!(detect_record_type("Currency conversion"), RecordType::FxConversion);
+        assert_eq!(
+            detect_record_type("Currency conversion"),
+            RecordType::FxConversion
+        );
         assert_eq!(detect_record_type("Deposit"), RecordType::CashTransfer);
         assert_eq!(detect_record_type("Withdrawal"), RecordType::CashTransfer);
         assert_eq!(detect_record_type("Something else"), RecordType::Unmatched);

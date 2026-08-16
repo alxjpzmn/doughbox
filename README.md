@@ -78,7 +78,7 @@ In order for Doughbox to run, you need a running Postgres instance and a polygon
   ghcr.io/alxjpzmn/doughbox:latest
 ```
 
-Once the app runs, the Web UI will be available. If you've also set an environment variable for `API_TOKEN`, you can use the API too.
+Once the app runs, the Web UI will be available. Interactive API docs are at `/api/docs` (OpenAPI spec at `/api/openapi.json`). If you've also set `API_TOKEN`, you can call the API with `Authorization: Bearer $API_TOKEN`.
 
 First, you need to import your trades. To do so, move your brokerage statements (PDF or CSV, depending on the broker) into a folder. Please beware that Doughbox doesn't work with nested folders yet, so place all files directly inside the input folder. Then run `./doughbox import foldername`.
 
@@ -101,6 +101,34 @@ You can run the following commands in the CLI:
 `debug-pdf <path>`: print extracted text from a PDF statement (useful when adding or debugging an importer).
 
 `api`: the command to run the web server that serves both the web frontend and the API. The docker container automatically runs this.
+
+### REST API
+
+The API is read-only. Browser sessions from `POST /api/login` and `Authorization: Bearer $API_TOKEN` are both accepted.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/docs` | Interactive Swagger UI (no auth) |
+| `GET` | `/api/openapi.json` | OpenAPI spec |
+| `GET` | `/api/portfolio` | Allocations and total return |
+| `GET` | `/api/positions?date=&isin=` | Holdings as of a date |
+| `GET` | `/api/trades?isin=&broker=&direction=&from_date=&until_date=` | Trades |
+| `GET` | `/api/buy-ins?isin=&broker=` | WAC cost basis per instrument and broker |
+| `GET` | `/api/performance?isin=&broker=` | Live performance (does not write files) |
+| `GET` | `/api/performance_overview` | Precomputed `output/performance.json` |
+| `GET` | `/api/past_performance` | Historical value snapshots |
+| `GET` | `/api/timeline?start_date=&isin=&broker=&event_type=` | Unified event timeline |
+| `GET` | `/api/instruments` / `/api/instruments/{isin}` | Instrument catalog |
+| `GET` | `/api/brokers` | Distinct broker names (use these as filter values) |
+| `GET` | `/api/dividends` / `/api/interest` / `/api/fx-conversions` | Cash events |
+| `GET` | `/api/taxation` | Tax report |
+
+Example:
+
+```bash
+curl -H "Authorization: Bearer $API_TOKEN" \
+  "http://localhost:8084/api/trades?isin=US0378331005&broker=Trade%20Republic"
+```
 
 ### Local development
 

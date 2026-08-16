@@ -5,6 +5,7 @@ use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use serde::Serialize;
 use typeshare::typeshare;
+use utoipa::ToSchema;
 
 use crate::database::{
     models::position::{PositionWithValue, PositionWithValueAndAllocation},
@@ -19,7 +20,7 @@ use crate::database::{
 use super::shared::util::round_to_decimals;
 
 #[typeshare]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct PortfolioOverview {
     #[typeshare(serialized_as = "number")]
     pub generated_at: i64,

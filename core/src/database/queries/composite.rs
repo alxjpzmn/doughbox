@@ -1,6 +1,4 @@
-use chrono::{DateTime, Utc};
-use rust_decimal::Decimal;
-use rust_decimal_macros::dec;
+use chrono::Utc;
 
 use crate::{
     database::{
@@ -88,63 +86,31 @@ pub async fn get_used_isins() -> anyhow::Result<Vec<String>> {
 }
 
 pub async fn get_all_trades(count: Option<i32>) -> anyhow::Result<Vec<Trade>> {
+    super::trade::get_trades(super::QueryFilter {
+        limit: count,
+        ..Default::default()
+    })
+    .await
+}
+
+pub async fn get_brokers() -> anyhow::Result<Vec<String>> {
     let client = db_client().await?;
+    let rows = client
+        .query(
+            "SELECT DISTINCT broker FROM (
+                SELECT broker FROM trade
+                UNION
+                SELECT broker FROM dividend
+                UNION
+                SELECT broker FROM interest
+                UNION
+                SELECT broker FROM fx_conversion
+            ) b ORDER BY broker",
+            &[],
+        )
+        .await?;
 
-    let mut statement: String = "select * from trade order by date desc".to_string();
-
-    statement = match count {
-        Some(_) => {
-            let stmt_w_count = format!("{} limit {}", statement, count.unwrap());
-            stmt_w_count
-        }
-        None => statement,
-    };
-
-    let listing_changes = get_listing_changes().await?;
-
-    let rows = client.query(&statement, &[]).await?;
-
-    let mut trades: Vec<Trade> = vec![];
-
-    for row in rows {
-        let broker = row.get::<usize, String>(1);
-        let date = row.get::<usize, DateTime<Utc>>(2);
-        let units = row.get::<usize, Decimal>(3);
-        let avg_price_per_unit = row.get::<usize, Decimal>(4);
-        let eur_avg_price_per_unit = row.get::<usize, Decimal>(5);
-        let security_type = row.get::<usize, String>(6);
-        let direction = row.get::<usize, String>(7);
-        let currency = row.get::<usize, String>(8);
-        let isin = get_changed_identifier(&row.get::<usize, String>(9), listing_changes.clone());
-        let date_added = row.get::<usize, DateTime<Utc>>(10);
-        let fees = row.get::<usize, Decimal>(11);
-        let withholding_tax = row.get::<usize, Decimal>(12);
-        // TODO: change this to instead have both withholding_tax and withholding_tax_currency
-        // optional instead.
-        let withholding_tax_currency = if withholding_tax == dec!(0) {
-            "EUR".to_string()
-        } else {
-            row.get::<usize, String>(13)
-        };
-        let trade = Trade {
-            broker,
-            date,
-            units,
-            avg_price_per_unit,
-            eur_avg_price_per_unit,
-            security_type,
-            direction,
-            currency,
-            isin,
-            date_added,
-            fees,
-            withholding_tax,
-            withholding_tax_currency,
-        };
-        trades.push(trade);
-    }
-
-    Ok(trades)
+    Ok(rows.iter().map(|row| row.get::<usize, String>(0)).collect())
 }
 
 pub async fn add_trade_to_db(trade: Trade, id: Option<String>) -> anyhow::Result<()> {

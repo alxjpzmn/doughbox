@@ -1,9 +1,13 @@
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
+use serde::Serialize;
 use tabled::Tabled;
 use tokio_postgres::Row;
+use typeshare::typeshare;
+use utoipa::ToSchema;
 
-#[derive(Debug, Tabled, Clone)]
+#[typeshare]
+#[derive(Debug, Tabled, Clone, Serialize, ToSchema)]
 pub struct Instrument {
     pub id: String,
     pub last_price_update: DateTime<Utc>,

@@ -2,8 +2,11 @@ use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use serde::Serialize;
 use tabled::Tabled;
+use typeshare::typeshare;
+use utoipa::ToSchema;
 
-#[derive(Debug, Clone, Tabled, Serialize)]
+#[typeshare]
+#[derive(Debug, Clone, Tabled, Serialize, ToSchema)]
 pub struct InterestPayment {
     pub date: DateTime<Utc>,
     pub amount: Decimal,
