@@ -21,8 +21,9 @@ use crate::{
 };
 
 use super::dtt::{self, determine_source_country, treaty_rate, DttIncomeType};
-use super::instruments::stock_splits::{
-    get_split_adjusted_price_per_unit, get_split_adjusted_units, StockSplit,
+use super::{
+    events::{get_events, EventType, PortfolioEvent, TradeDirection},
+    files::export_json,
 };
 
 #[typeshare]
@@ -412,7 +413,6 @@ async fn process_sell(event: PortfolioEvent, ctx: &mut ProcessingContext<'_>) ->
 
     if ctx.should_count_taxable(event.date) {
         if let Some(wht_percent) = event.withholding_tax_percent {
-<<<<<<< HEAD
             let source_country = determine_source_country(Some(&identifier), &event.broker);
             let cap = match source_country {
                 Some(country) => treaty_rate(country, DttIncomeType::CapitalGains)
@@ -420,9 +420,6 @@ async fn process_sell(event: PortfolioEvent, ctx: &mut ProcessingContext<'_>) ->
                 None => ctx.tax_rates.capital_gains,
             };
             let wht_percent_to_consider = wht_percent.min(cap);
-=======
-            let wht_percent_to_consider = wht_percent.min(ctx.tax_rates.capital_gains);
->>>>>>> 0d7ce8dd4e1d0cccb19d7e626fc10fdfa380fa8e
             let wht_currency_agnostic = wht_percent_to_consider * (event.price_unit * event.units);
 
             let withheld_tax = if event.currency == "EUR" {
@@ -785,15 +782,11 @@ fn post_process(
     securities_wacs: &mut BTreeMap<String, SecWac>,
 ) {
     for amounts in taxable_amounts.values_mut() {
-<<<<<<< HEAD
-        amounts.net_capital_gains = (amounts.capital_gains - amounts.capital_losses).max(dec!(0.0));
-=======
         amounts.net_capital_gains =
             (amounts.capital_gains - amounts.capital_losses).max(dec!(0.0));
         amounts.tax_owed_dividends =
             (amounts.dividends * dec!(0.275) - amounts.withheld_tax_dividends).max(dec!(0.0));
         amounts.tax_owed_dividend_equivalents = amounts.tax_owed_dividend_equivalents.max(dec!(0.0));
->>>>>>> 0d7ce8dd4e1d0cccb19d7e626fc10fdfa380fa8e
         amounts.round_all(2);
     }
 
@@ -1234,7 +1227,6 @@ async fn compute_sell_impact(
 
     let source_country = determine_source_country(event.identifier.as_deref(), &event.broker);
 
-<<<<<<< HEAD
     let (cap, dtt_rate_percent) = match source_country {
         Some(country) => {
             let rate = treaty_rate(country, DttIncomeType::CapitalGains)
@@ -1243,14 +1235,9 @@ async fn compute_sell_impact(
         }
         None => (ctx.tax_rates.capital_gains, None),
     };
-=======
-    let dtt_rate_percent = source_country.and_then(|country| {
-        treaty_rate(country, DttIncomeType::CapitalGains).map(|rate| rate * dec!(100))
-    });
->>>>>>> 0d7ce8dd4e1d0cccb19d7e626fc10fdfa380fa8e
 
     let withheld_tax = if let Some(wht_percent) = event.withholding_tax_percent {
-        let wht_amount = wht_percent.min(ctx.tax_rates.capital_gains) * (event.price_unit * units);
+        let wht_amount = wht_percent.min(cap) * (event.price_unit * units);
         if event.currency == "EUR" {
             wht_amount
         } else {
@@ -1263,8 +1250,9 @@ async fn compute_sell_impact(
     let tax_liability = (gross_tax - withheld_tax).max(dec!(0.0));
 
     let dtt_note = match (&source_country, dtt_rate_percent) {
-        (Some(country), Some(rate)) => format!("DTT {}: {}%. WHT credit capped at AT rate ({}%)", country, rate, ctx.tax_rates.capital_gains * dec!(100)),
-        _ => format!("WHT credit capped at AT rate ({}%)", ctx.tax_rates.capital_gains * dec!(100)),
+        (Some(country), Some(rate)) => format!("DTT {}: {}%", country, rate),
+        (None, _) => format!("No DTT (fallback cap: {}%)", cap * dec!(100)),
+        _ => "No DTT".to_string(),
     };
 
     let notes = format!(
