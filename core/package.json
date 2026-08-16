@@ -5,7 +5,8 @@
   "license": "MIT",
   "scripts": {
     "dev": "RUST_BACKTRACE=1 cargo watch -x 'run -- api --silent'",
+    "test": "cargo test",
     "update": "cargo update && cargo upgrade",
-    "lint": "cargo clippy"
+    "lint": "cargo clippy --all-targets"
   }
 }

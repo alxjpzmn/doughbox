@@ -26,7 +26,7 @@ use crate::services::shared::util::hash_string;
 use chrono::prelude::*;
 use rust_decimal::Decimal;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 enum RecordType {
     EquityTrade,
     Liquidation,
@@ -486,7 +486,7 @@ fn find_column_index(
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 enum CsvRecordType {
     EquityTrade,
     Dividend,
@@ -1256,4 +1256,97 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_csv_decimal_handles_empty_and_values() {
+        assert_eq!(parse_csv_decimal("").unwrap(), dec!(0));
+        assert_eq!(parse_csv_decimal("12.50").unwrap(), dec!(12.50));
+        assert!(parse_csv_decimal("nope").is_err());
+    }
+
+    #[test]
+    fn detect_csv_record_types() {
+        assert_eq!(
+            detect_csv_record_type("BUY", "TRADING", None, None),
+            CsvRecordType::EquityTrade
+        );
+        assert_eq!(
+            detect_csv_record_type("SELL", "TRADING", None, None),
+            CsvRecordType::EquityTrade
+        );
+        assert_eq!(
+            detect_csv_record_type("INTEREST_PAYMENT", "CASH", None, None),
+            CsvRecordType::InterestPayment
+        );
+        assert_eq!(
+            detect_csv_record_type("DIVIDEND", "CASH", None, None),
+            CsvRecordType::Dividend
+        );
+        assert_eq!(
+            detect_csv_record_type("TAX_OPTIMIZATION", "CASH", None, None),
+            CsvRecordType::TaxOptimization
+        );
+        assert_eq!(
+            detect_csv_record_type(
+                "EARNINGS",
+                "CASH",
+                None,
+                Some("Austrian dividend equivalent")
+            ),
+            CsvRecordType::DividendEquivalent
+        );
+        assert_eq!(
+            detect_csv_record_type("EARNINGS", "CASH", None, Some("Referral bonus")),
+            CsvRecordType::InterestPayment
+        );
+        assert_eq!(
+            detect_csv_record_type("BUY", "TRADING", Some("CRYPTO"), None),
+            CsvRecordType::Skip
+        );
+        assert_eq!(
+            detect_csv_record_type("CUSTOMER_INBOUND", "CASH", None, None),
+            CsvRecordType::Skip
+        );
+        assert_eq!(
+            detect_csv_record_type("UNKNOWN", "CASH", None, None),
+            CsvRecordType::Unmatched
+        );
+    }
+
+    #[test]
+    fn detect_pdf_record_types() {
+        assert_eq!(
+            detect_record_type("Dividende je Stück").unwrap(),
+            RecordType::Dividend
+        );
+        assert_eq!(
+            detect_record_type("Stuckzinsen 1,23 EUR").unwrap(),
+            RecordType::BondTrade
+        );
+        assert_eq!(
+            detect_record_type("Zinsen").unwrap(),
+            RecordType::InterestPayment
+        );
+        assert_eq!(
+            detect_record_type("Tilgung").unwrap(),
+            RecordType::Liquidation
+        );
+        assert_eq!(
+            detect_record_type("Sparplanausfuhrung").unwrap(),
+            RecordType::InvestmentPlanExecution
+        );
+        assert_eq!(
+            detect_record_type("Market-Order Kauf").unwrap(),
+            RecordType::EquityTrade
+        );
+        assert_eq!(
+            detect_record_type("unrelated document").unwrap(),
+            RecordType::Unmatched
+        );
+    }
 }

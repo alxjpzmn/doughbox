@@ -22,14 +22,14 @@ use super::{
     },
 };
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum ImportFileFormat {
     Pdf,
     Csv,
     Unsupported,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum Broker {
     TradeRepublic,
     Revolut,
@@ -260,5 +260,111 @@ mod tests {
                 .unwrap()
                 .and_utc()
         );
+    }
+
+    fn header(cols: &[&str]) -> csv::StringRecord {
+        csv::StringRecord::from(cols.to_vec())
+    }
+
+    #[test]
+    fn detect_trading212_csv_header() {
+        let record = header(&["Action", "Time", "ISIN", "Ticker"]);
+        assert_eq!(
+            detect_broker_from_csv_header(&record).unwrap(),
+            Some(Broker::Trading212)
+        );
+    }
+
+    #[test]
+    fn detect_wise_csv_header() {
+        assert_eq!(
+            detect_broker_from_csv_header(&header(&["Traded Asset ID Type"])).unwrap(),
+            Some(Broker::Wise)
+        );
+        assert_eq!(
+            detect_broker_from_csv_header(&header(&["TransferWise ID"])).unwrap(),
+            Some(Broker::Wise)
+        );
+    }
+
+    #[test]
+    fn detect_revolut_csv_header() {
+        assert_eq!(
+            detect_broker_from_csv_header(&header(&["Date", "Ticker"])).unwrap(),
+            Some(Broker::Revolut)
+        );
+        assert_eq!(
+            detect_broker_from_csv_header(&header(&["Date", "Product"])).unwrap(),
+            Some(Broker::Revolut)
+        );
+    }
+
+    #[test]
+    fn detect_lightyear_csv_header() {
+        assert_eq!(
+            detect_broker_from_csv_header(&header(&["Date", "Reference"])).unwrap(),
+            Some(Broker::Lightyear)
+        );
+    }
+
+    #[test]
+    fn detect_ibkr_csv_header() {
+        assert_eq!(
+            detect_broker_from_csv_header(&header(&["ClientAccountID"])).unwrap(),
+            Some(Broker::InteractiveBrokers)
+        );
+    }
+
+    #[test]
+    fn detect_manual_csv_header() {
+        assert_eq!(
+            detect_broker_from_csv_header(&header(&[
+                "date",
+                "broker",
+                "ISIN",
+                "avg_price_per_unit",
+                "direction"
+            ]))
+            .unwrap(),
+            Some(Broker::Manual)
+        );
+    }
+
+    #[test]
+    fn detect_trade_republic_csv_header() {
+        let mut cols = vec![""; 19];
+        cols[0] = "datetime";
+        cols[18] = "transaction_id";
+        assert_eq!(
+            detect_broker_from_csv_header(&header(&cols)).unwrap(),
+            Some(Broker::TradeRepublic)
+        );
+    }
+
+    #[test]
+    fn detect_unknown_csv_header() {
+        assert_eq!(detect_broker_from_csv_header(&header(&["foo", "bar"])).unwrap(), None);
+    }
+
+    #[test]
+    fn detect_pdf_brokers() {
+        assert_eq!(
+            detect_broker_from_pdf_text("TRADE REPUBLIC BANK GMBH Berlin"),
+            Some(Broker::TradeRepublic)
+        );
+        assert_eq!(
+            detect_broker_from_pdf_text("Erste Bank der oesterreichischen Sparkassen"),
+            Some(Broker::ErsteBank)
+        );
+        assert_eq!(
+            detect_broker_from_pdf_text("Scalable Capital GmbH"),
+            Some(Broker::Scalable)
+        );
+        assert_eq!(detect_broker_from_pdf_text("some other broker"), None);
+    }
+
+    #[test]
+    fn remove_surrounding_chars() {
+        assert_eq!(remove_first_and_last("\"ISIN\""), "ISIN");
     }
 }

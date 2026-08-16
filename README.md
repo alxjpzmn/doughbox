@@ -54,6 +54,18 @@ Doughbox is scratching my own itch: I have lots of different brokerage accounts 
 
 In order for Doughbox to run, you need a running Postgres instance and a polygon.io API key.
 
+### Environment variables
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `POSTGRES_URL` | yes | Postgres connection string |
+| `POLYGON_TOKEN` | yes | Stock-split data from polygon.io |
+| `FRED_TOKEN` | no | S&P 500 benchmark via FRED |
+| `PASSWORD` | no | Web UI login password |
+| `API_TOKEN` | no | Bearer token for the HTTP API |
+| `TG_TOKEN` / `TG_CHAT_ID` | no | Telegram notifications (`portfolio -n`) |
+| `RUST_ENV` | no | Loads `.env.dev` when `development` (default), `.env.prod` when `production` |
+
 ### Docker
 
 ```bash
@@ -80,13 +92,25 @@ You can run the following commands in the CLI:
 
 `housekeeping`: for fetching stock split data, tax data for funds and ETFs from the Austrian Control Bank (OeKB) and updated FX rates from the ECB.
 
-`portfolio`: to show your current holdings and their allocation in the terminal.
+`portfolio`: to show your current holdings and their allocation in the terminal. Pass `-n` / `--notify` to also send the summary via Telegram.
 
 `performance`: this takes a while to run and calculates your return for the portfolio as such plus each present and past position within it. It also benchmarks it against the S&P 500 if you've set a FRED API Token. Once you've run it, it will also be shown in the web interface.
 
-`taxation`: also takes a while to run and will output your realized gains and losses, dividends, interest etc. using perpetual WAC. It will also display dividend aequivalents using OeKB data and withheld tax from brokerage statements.
+`taxation`: also takes a while to run and will output your realized gains and losses, dividends, interest etc. using perpetual WAC. It will also display dividend aequivalents using OeKB data and withheld tax from brokerage statements. Optional flags: `--from YYYY-MM-DD`, `--until YYYY-MM-DD`, `--with-events` (per-transaction breakdown).
+
+`debug-pdf <path>`: print extracted text from a PDF statement (useful when adding or debugging an importer).
 
 `api`: the command to run the web server that serves both the web frontend and the API. The docker container automatically runs this.
+
+### Local development
+
+You need [Rust](https://www.rust-lang.org/tools/install) (see `rust-toolchain.toml`), [pnpm](https://pnpm.io), Node 22, and a running Postgres instance.
+
+1. Copy env vars into `core/.env.dev` (`POSTGRES_URL`, `POLYGON_TOKEN`, and any optional tokens above).
+2. From the repo root: `pnpm install`
+3. `pnpm dev` starts the API (`cargo watch` on `:8084`) and the Vite dev server (proxies `/api` to the API).
+4. After changing Rust types marked with `#[typeshare]`, run `pnpm typeshare` to regenerate `web/src/types/core.ts`.
+5. `pnpm test` runs `cargo test`. `pnpm typecheck` runs `tsc --noEmit`. `pnpm core lint` runs clippy.
 
 ## Playbooks
 

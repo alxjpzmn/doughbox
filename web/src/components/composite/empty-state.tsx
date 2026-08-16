@@ -1,6 +1,4 @@
-import React from 'react'
 import { Card, CardContent } from '@/components/ui/card'
-import { Badge } from '@/components/ui/badge'
 
 export enum EmptyStateVariants {
   Default,
@@ -8,59 +6,49 @@ export enum EmptyStateVariants {
   WithCliInstructionImportTrades,
   WithCliInstructionPerformance,
   WithCliInstructionTaxation,
-
 }
 
 interface EmptyStateProps { variant?: EmptyStateVariants, docker?: boolean }
 
-const EmptyState: React.FC<EmptyStateProps> = ({ variant = EmptyStateVariants.Default, docker = false }) => {
+const command = (docker: boolean, rest: string) =>
+  `${docker ? 'docker container exec -it container_name ' : ''}./doughbox ${rest}`
+
+const EmptyState = ({ variant = EmptyStateVariants.Default, docker = false }: EmptyStateProps) => {
+  const copy = {
+    [EmptyStateVariants.Default]: {
+      text: 'No events found. Try changing your filter or import events.',
+      cli: null,
+    },
+    [EmptyStateVariants.WithCliInstructionImport]: {
+      text: "You haven't imported any events (e.g. trades, dividends) yet. Please run:",
+      cli: command(docker, 'import folder-with-your-brokerage-statements'),
+    },
+    [EmptyStateVariants.WithCliInstructionImportTrades]: {
+      text: "You haven't imported any trades yet. Please run:",
+      cli: command(docker, 'import folder-with-your-brokerage-statements'),
+    },
+    [EmptyStateVariants.WithCliInstructionPerformance]: {
+      text: "You haven't run a performance calculation yet. Please run:",
+      cli: command(docker, 'performance'),
+    },
+    [EmptyStateVariants.WithCliInstructionTaxation]: {
+      text: "You haven't run a taxation calculation yet. Please run:",
+      cli: command(docker, 'taxation'),
+    },
+  }[variant]
 
   return (
     <Card>
-      <CardContent>
-        {variant === EmptyStateVariants.Default && <>
-          <p>
-            No events found. Try changing your filter or import events.
-          </p>
-        </>}
-        {variant === EmptyStateVariants.WithCliInstructionImport && <>
-          <p>
-            You haven't imported any events (e.g. trades, dividends) yet.
-            Please run:
-          </p>
-          <Badge variant='default' className='mt-4'>
-            <p className='font-mono'>{`${docker ? 'docker container exec -it container_name' : ''} ./doughbox import folder-with-your-brokerage-statements`}</p>
-          </Badge>
-        </>}
-        {variant === EmptyStateVariants.WithCliInstructionImportTrades && <>
-          <p>
-            You haven't imported any trades yet.
-            Please run:
-          </p>
-          <Badge variant='default' className='mt-4'>
-            <p className='font-mono'>{`${docker ? 'docker container exec -it container_name' : ''} ./doughbox import folder-with-your-brokerage-statements`}</p>
-          </Badge>
-        </>}
-        {variant === EmptyStateVariants.WithCliInstructionPerformance && <>
-          <p>
-            You haven't run a performance calculation yet. Please run:
-          </p>
-          <Badge variant='default' className='mt-4'>
-            <p className='font-mono'>{`${docker ? 'docker container exec -it container_name' : ''} ./doughbox performance`}</p>
-          </Badge>
-        </>}
-        {variant === EmptyStateVariants.WithCliInstructionTaxation && <>
-          <p>
-            You haven't run a taxation calculation yet. Please run:
-          </p>
-          <Badge variant='default' className='mt-4'>
-            <p className='font-mono'>{`${docker ? 'docker container exec -it container_name' : ''} ./doughbox taxation`}</p>
-          </Badge>
-        </>}
+      <CardContent className="flex flex-col gap-3 p-6">
+        <p>{copy.text}</p>
+        {copy.cli && (
+          <code className="w-fit max-w-full rounded-md bg-primary px-2.5 py-1 font-mono text-xs text-primary-foreground break-all">
+            {copy.cli}
+          </code>
+        )}
       </CardContent>
     </Card>
   )
-
 }
 
 export default EmptyState

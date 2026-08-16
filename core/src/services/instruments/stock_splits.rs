@@ -97,3 +97,71 @@ pub fn get_split_adjusted_price_per_unit(
     });
     adjusted_price
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    fn split(isin: &str, ex_date: DateTime<Utc>, from: Decimal, to: Decimal) -> StockSplit {
+        StockSplit {
+            id: "split-1".to_string(),
+            ex_date,
+            from_factor: from,
+            to_factor: to,
+            isin: isin.to_string(),
+        }
+    }
+
+    fn date(year: i32, month: u32, day: u32) -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(year, month, day, 0, 0, 0).unwrap()
+    }
+
+    #[test]
+    fn two_for_one_split_adjusts_units_and_price() {
+        let mut splits = [split("US0378331005", date(2020, 8, 31), dec!(1), dec!(4))];
+        let before = date(2019, 1, 1);
+
+        assert_eq!(
+            get_split_adjusted_units("US0378331005", dec!(10), before, &mut splits),
+            dec!(40)
+        );
+        assert_eq!(
+            get_split_adjusted_price_per_unit("US0378331005", dec!(400), before, &mut splits),
+            dec!(100)
+        );
+    }
+
+    #[test]
+    fn reverse_split_adjusts_units_and_price() {
+        let mut splits = [split("US0378331005", date(2020, 8, 31), dec!(10), dec!(1))];
+        let before = date(2019, 1, 1);
+
+        assert_eq!(
+            get_split_adjusted_units("US0378331005", dec!(100), before, &mut splits),
+            dec!(10)
+        );
+        assert_eq!(
+            get_split_adjusted_price_per_unit("US0378331005", dec!(10), before, &mut splits),
+            dec!(100)
+        );
+    }
+
+    #[test]
+    fn no_split_or_after_ex_date_leaves_values_unchanged() {
+        let mut splits = [split("US0378331005", date(2020, 8, 31), dec!(1), dec!(2))];
+
+        assert_eq!(
+            get_split_adjusted_units("US0378331005", dec!(10), date(2021, 1, 1), &mut splits),
+            dec!(10)
+        );
+        assert_eq!(
+            get_split_adjusted_price_per_unit("US0378331005", dec!(50), date(2021, 1, 1), &mut splits),
+            dec!(50)
+        );
+        assert_eq!(
+            get_split_adjusted_units("DE0007164600", dec!(10), date(2019, 1, 1), &mut splits),
+            dec!(10)
+        );
+    }
+}
