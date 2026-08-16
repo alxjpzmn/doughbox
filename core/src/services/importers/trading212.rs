@@ -352,4 +352,15 @@ mod tests {
         assert_eq!(detect_record_type("Withdrawal"), RecordType::CashTransfer);
         assert_eq!(detect_record_type("Something else"), RecordType::Unmatched);
     }
+
+    #[test]
+    fn optional_csv_fields() {
+        let record = csv::StringRecord::from(vec!["", "12.5", "EUR"]);
+        assert_eq!(optional_field(&record, Some(0)), None);
+        assert_eq!(optional_field(&record, Some(1)), Some("12.5"));
+        assert_eq!(field_decimal_or_zero(&record, Some(0)), dec!(0));
+        assert_eq!(field_decimal_or_zero(&record, Some(1)), dec!(12.5));
+        assert_eq!(field_string_or(&record, Some(0), "USD"), "USD");
+        assert_eq!(field_string_or(&record, Some(2), "USD"), "EUR");
+    }
 }

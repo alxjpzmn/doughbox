@@ -367,4 +367,31 @@ mod tests {
     fn remove_surrounding_chars() {
         assert_eq!(remove_first_and_last("\"ISIN\""), "ISIN");
     }
+
+    #[test]
+    fn parse_additional_timestamp_formats() {
+        assert_eq!(
+            parse_timestamp("24.12.2023 15:30:00").unwrap(),
+            NaiveDate::from_ymd_opt(2023, 12, 24)
+                .unwrap()
+                .and_hms_opt(15, 30, 0)
+                .unwrap()
+                .and_utc()
+        );
+        assert_eq!(
+            parse_timestamp("2023-12-24T15:30:00Z").unwrap(),
+            NaiveDate::from_ymd_opt(2023, 12, 24)
+                .unwrap()
+                .and_hms_opt(15, 30, 0)
+                .unwrap()
+                .and_utc()
+        );
+        assert!(parse_timestamp("not-a-date").is_err());
+    }
+
+    #[test]
+    fn match_helpers() {
+        assert!(does_match_exist(r"TRADE REPUBLIC", "TRADE REPUBLIC BANK"));
+        assert!(!does_match_exist(r"Scalable", "Trade Republic"));
+    }
 }
