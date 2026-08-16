@@ -3,9 +3,10 @@ use rust_decimal::Decimal;
 use serde::Serialize;
 use tabled::Tabled;
 use typeshare::typeshare;
+use utoipa::ToSchema;
 
 #[typeshare]
-#[derive(Debug, Clone, Tabled, Serialize)]
+#[derive(Debug, Clone, Tabled, Serialize, ToSchema)]
 pub struct Dividend {
     pub isin: String,
     pub date: DateTime<Utc>,

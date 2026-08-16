@@ -19,6 +19,7 @@ use crate::database::{
 };
 use crate::services::instruments::identifiers::get_changed_identifier;
 use serde::Serialize;
+use utoipa::ToSchema;
 
 use super::{
     files::{export_csv, export_json},
@@ -30,7 +31,7 @@ use super::{
 };
 
 #[typeshare]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct PortfolioPerformance {
     #[typeshare(serialized_as = "number")]
     pub generated_at: i64,
@@ -42,7 +43,7 @@ pub struct PortfolioPerformance {
 
 // position = trades in the same instrument across multiple brokers
 #[typeshare]
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, ToSchema)]
 pub struct PositionPerformance {
     pub isin: String,
     pub name: String,
@@ -67,6 +68,20 @@ pub struct TradePerformance {
     pub total_return: Decimal,
 }
 
+#[typeshare]
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct BuyIn {
+    pub isin: String,
+    pub name: String,
+    pub broker: String,
+    pub units: Decimal,
+    pub average_buy_in: Decimal,
+    pub invested_amount: Decimal,
+    pub current_price: Decimal,
+    pub current_value: Decimal,
+    pub unrealized: Decimal,
+}
+
 // trade group = trades in the same instrument at the same broker
 #[derive(Debug)]
 pub struct TradeGroup {
@@ -85,29 +100,18 @@ pub struct TradeGroupPerformance {
     pub invested_amount: Decimal,
 }
 
-pub async fn get_performance() -> anyhow::Result<PortfolioPerformance> {
-    let fred_token_set = get_env_variable("FRED_TOKEN").is_some();
-
+async fn load_trade_groups(
+    isin_filter: Option<&str>,
+    broker_filter: Option<&str>,
+) -> anyhow::Result<Vec<TradeGroup>> {
     let mut trades: Vec<Trade> = get_all_trades(None).await?;
     trades.sort_unstable_by_key(|item| (item.isin.clone(), item.broker.clone()));
 
-    let isins: Vec<_> = trades.iter().map(|trade| trade.isin.clone()).collect();
-
-    // Fetch all prices and names in batches
-    let prices = batch_get_instrument_prices(&isins).await?;
-    let names = batch_get_instrument_names(&isins).await?;
-
-    // Map ISIN to price and name
-    let price_map: HashMap<_, _> = isins.iter().zip(prices.iter()).collect();
-    let name_map: HashMap<_, _> = isins.iter().zip(names.iter()).collect();
-
-    // Load listing changes to handle ISIN changes (e.g., ADR discontinuations)
     let listing_changes = get_listing_changes().await?;
 
-    let grouped_trades: Vec<TradeGroup> = trades
+    Ok(trades
         .iter()
         .map(|trade| {
-            // Map ISIN to current identifier for grouping
             let current_isin = get_changed_identifier(&trade.isin, listing_changes.clone());
             Trade {
                 isin: current_isin,
@@ -132,7 +136,36 @@ pub async fn get_performance() -> anyhow::Result<PortfolioPerformance> {
             isin,
             trades: group.collect(),
         })
+        .filter(|group| isin_filter.is_none_or(|isin| group.isin == isin))
+        .filter(|group| broker_filter.is_none_or(|broker| group.broker == broker))
+        .collect())
+}
+
+pub async fn get_performance() -> anyhow::Result<PortfolioPerformance> {
+    let performance_overview = compute_performance(None, None).await?;
+    export_csv(&performance_overview.position, "performance")?;
+    export_json(&performance_overview, "performance")?;
+    Ok(performance_overview)
+}
+
+pub async fn compute_performance(
+    isin_filter: Option<&str>,
+    broker_filter: Option<&str>,
+) -> anyhow::Result<PortfolioPerformance> {
+    let fred_token_set = get_env_variable("FRED_TOKEN").is_some();
+
+    let grouped_trades = load_trade_groups(isin_filter, broker_filter).await?;
+
+    let isins: Vec<_> = grouped_trades
+        .iter()
+        .map(|group| group.isin.clone())
         .collect();
+
+    let prices = batch_get_instrument_prices(&isins).await?;
+    let names = batch_get_instrument_names(&isins).await?;
+
+    let price_map: HashMap<_, _> = isins.iter().zip(prices.iter()).collect();
+    let name_map: HashMap<_, _> = isins.iter().zip(names.iter()).collect();
 
     let mut title_performances = vec![];
     let mut simulated_sp500_title_performances: Vec<TradeGroupPerformance> = vec![];
@@ -278,18 +311,58 @@ pub async fn get_performance() -> anyhow::Result<PortfolioPerformance> {
         merged_positions.push(merged_position_pl);
     }
 
-    let performance_overview = PortfolioPerformance {
+    Ok(PortfolioPerformance {
         generated_at: Utc::now().timestamp(),
         actual: round_to_decimals(*total_performance),
         simulated: round_to_decimals(*total_simulated_performance),
         alpha: round_to_decimals(total_performance - total_simulated_performance),
-        position: merged_positions.clone(),
-    };
+        position: merged_positions,
+    })
+}
 
-    export_csv(&merged_positions, "performance")?;
-    export_json(&performance_overview, "performance")?;
+pub async fn get_buy_ins(
+    isin_filter: Option<&str>,
+    broker_filter: Option<&str>,
+) -> anyhow::Result<Vec<BuyIn>> {
+    let grouped_trades = load_trade_groups(isin_filter, broker_filter).await?;
+    let isins: Vec<_> = grouped_trades
+        .iter()
+        .map(|group| group.isin.clone())
+        .collect();
+    let prices = batch_get_instrument_prices(&isins).await?;
+    let names = batch_get_instrument_names(&isins).await?;
+    let price_map: HashMap<_, _> = isins.iter().zip(prices.iter()).collect();
+    let name_map: HashMap<_, _> = isins.iter().zip(names.iter()).collect();
+    let mut stock_split_information = get_stock_splits().await?;
 
-    Ok(performance_overview)
+    let mut buy_ins = Vec::new();
+    for group in grouped_trades {
+        let performance = get_title_performance(&group, Utc::now(), &mut stock_split_information);
+        let current_price = **price_map.get(&group.isin).unwrap_or(&&dec!(0.0));
+        let units = performance.inventory;
+        let current_value = current_price * units;
+        let unrealized = if units > dec!(0.0) {
+            current_value - performance.unit_price * units
+        } else {
+            dec!(0.0)
+        };
+        buy_ins.push(BuyIn {
+            isin: group.isin.clone(),
+            name: name_map
+                .get(&group.isin)
+                .unwrap_or(&&group.isin.to_string())
+                .to_string(),
+            broker: group.broker,
+            units: round_to_decimals(units),
+            average_buy_in: round_to_decimals(performance.unit_price),
+            invested_amount: round_to_decimals(performance.invested_amount),
+            current_price: round_to_decimals(current_price),
+            current_value: round_to_decimals(current_value),
+            unrealized: round_to_decimals(unrealized),
+        });
+    }
+    buy_ins.sort_by(|a, b| a.isin.cmp(&b.isin).then(a.broker.cmp(&b.broker)));
+    Ok(buy_ins)
 }
 
 pub fn get_title_performance(

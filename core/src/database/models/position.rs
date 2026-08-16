@@ -2,6 +2,7 @@ use rust_decimal::Decimal;
 use serde::Serialize;
 use tabled::Tabled;
 use typeshare::typeshare;
+use utoipa::ToSchema;
 
 #[derive(Debug, Tabled, Serialize)]
 pub struct Position {
@@ -10,7 +11,7 @@ pub struct Position {
 }
 
 #[typeshare]
-#[derive(Debug, Tabled, Serialize)]
+#[derive(Debug, Tabled, Serialize, ToSchema)]
 pub struct PositionWithName {
     pub isin: String,
     pub name: String,
@@ -25,7 +26,7 @@ pub struct PositionWithValue {
 }
 
 #[typeshare]
-#[derive(Debug, Tabled, Serialize, Clone)]
+#[derive(Debug, Tabled, Serialize, Clone, ToSchema)]
 pub struct PositionWithValueAndAllocation {
     pub isin: String,
     pub name: String,

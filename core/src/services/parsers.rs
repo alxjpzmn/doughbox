@@ -343,7 +343,10 @@ mod tests {
 
     #[test]
     fn detect_unknown_csv_header() {
-        assert_eq!(detect_broker_from_csv_header(&header(&["foo", "bar"])).unwrap(), None);
+        assert_eq!(
+            detect_broker_from_csv_header(&header(&["foo", "bar"])).unwrap(),
+            None
+        );
     }
 
     #[test]

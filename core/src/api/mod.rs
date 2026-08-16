@@ -4,6 +4,7 @@ use tokio::net::TcpListener;
 
 pub mod errors;
 pub mod handlers;
+pub mod openapi;
 pub mod routes;
 
 pub async fn api() -> anyhow::Result<()> {

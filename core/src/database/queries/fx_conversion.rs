@@ -1,5 +1,5 @@
 use crate::{
-    database::{db_client, models::fx_conversion::FxConversion},
+    database::{db_client, models::fx_conversion::FxConversion, queries::QueryFilter},
     services::shared::util::hash_string,
 };
 
@@ -25,4 +25,31 @@ pub async fn add_fx_conversion_to_db(fx_conversion: FxConversion) -> anyhow::Res
     .await?;
 
     Ok(())
+}
+
+pub async fn get_fx_conversions(filter: QueryFilter) -> anyhow::Result<Vec<FxConversion>> {
+    let client = db_client().await?;
+
+    let mut statement = String::from(
+        "SELECT date, broker, from_amount, to_amount, from_currency, to_currency, \
+         date_added, fees FROM fx_conversion WHERE 1=1",
+    );
+    let mut params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = vec![];
+    super::append_common_filters(&mut statement, &mut params, &filter);
+    statement.push_str(" ORDER BY date DESC");
+
+    let rows = client.query(&statement, &params).await?;
+    Ok(rows
+        .iter()
+        .map(|row| FxConversion {
+            date: row.get("date"),
+            broker: row.get("broker"),
+            from_amount: row.get("from_amount"),
+            to_amount: row.get("to_amount"),
+            from_currency: row.get("from_currency"),
+            to_currency: row.get("to_currency"),
+            date_added: row.get("date_added"),
+            fees: row.get("fees"),
+        })
+        .collect())
 }

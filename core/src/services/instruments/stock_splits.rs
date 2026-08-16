@@ -156,7 +156,12 @@ mod tests {
             dec!(10)
         );
         assert_eq!(
-            get_split_adjusted_price_per_unit("US0378331005", dec!(50), date(2021, 1, 1), &mut splits),
+            get_split_adjusted_price_per_unit(
+                "US0378331005",
+                dec!(50),
+                date(2021, 1, 1),
+                &mut splits
+            ),
             dec!(50)
         );
         assert_eq!(

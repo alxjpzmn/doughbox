@@ -1,9 +1,13 @@
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 
-use crate::database::{
-    db_client,
-    models::trade::{Trade, TradeWithHash},
+use crate::{
+    database::{
+        db_client,
+        models::trade::{Trade, TradeWithHash},
+        queries::{listing_change::get_listing_changes, QueryFilter},
+    },
+    services::instruments::identifiers::get_changed_identifier,
 };
 
 pub async fn get_realized_return() -> anyhow::Result<Decimal> {
@@ -65,6 +69,59 @@ pub async fn find_similar_trade(trade: &Trade) -> anyhow::Result<Option<TradeWit
         return Ok(Some(found_trade));
     }
     Ok(None)
+}
+
+pub async fn get_trades(filter: QueryFilter) -> anyhow::Result<Vec<Trade>> {
+    let client = db_client().await?;
+    let listing_changes = get_listing_changes().await?;
+
+    let mut statement = String::from(
+        "SELECT broker, date, units, avg_price_per_unit, eur_avg_price_per_unit, \
+         security_type, direction, currency, isin, date_added, fees, \
+         withholding_tax, withholding_tax_currency \
+         FROM trade WHERE 1=1",
+    );
+    let mut params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = vec![];
+    super::append_common_filters(&mut statement, &mut params, &filter);
+    statement.push_str(" ORDER BY date DESC");
+    if let Some(limit) = filter.limit {
+        statement.push_str(&format!(" LIMIT {}", limit));
+    }
+
+    let rows = client.query(&statement, &params).await?;
+    let mut trades: Vec<Trade> = vec![];
+
+    for row in rows {
+        let withholding_tax = row.get::<_, Decimal>("withholding_tax");
+        let withholding_tax_currency = if withholding_tax == dec!(0) {
+            "EUR".to_string()
+        } else {
+            row.get::<_, String>("withholding_tax_currency")
+        };
+        let isin = get_changed_identifier(&row.get::<_, String>("isin"), listing_changes.clone());
+        if let Some(ref wanted) = filter.isin {
+            if &isin != wanted {
+                continue;
+            }
+        }
+        trades.push(Trade {
+            broker: row.get("broker"),
+            date: row.get("date"),
+            units: row.get("units"),
+            avg_price_per_unit: row.get("avg_price_per_unit"),
+            eur_avg_price_per_unit: row.get("eur_avg_price_per_unit"),
+            security_type: row.get("security_type"),
+            direction: row.get("direction"),
+            currency: row.get("currency"),
+            isin,
+            date_added: row.get("date_added"),
+            fees: row.get("fees"),
+            withholding_tax,
+            withholding_tax_currency,
+        });
+    }
+
+    Ok(trades)
 }
 
 pub async fn get_total_invested_value() -> anyhow::Result<Decimal> {

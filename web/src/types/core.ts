@@ -13,6 +13,35 @@ export interface Dividend {
 	withholding_tax_currency: string;
 }
 
+export interface FxConversion {
+	date: Date;
+	broker: string;
+	from_amount: string;
+	to_amount: string;
+	from_currency: string;
+	to_currency: string;
+	date_added: Date;
+	fees: string;
+}
+
+export interface Instrument {
+	id: string;
+	last_price_update: Date;
+	price: string;
+	name: string;
+}
+
+export interface InterestPayment {
+	date: Date;
+	amount: string;
+	broker: string;
+	principal: string;
+	currency: string;
+	amount_eur: string;
+	withholding_tax: string;
+	withholding_tax_currency: string;
+}
+
 export interface PerformanceSignal {
 	date: Date;
 	total_value: string;
@@ -31,6 +60,22 @@ export interface PositionWithValueAndAllocation {
 	value: string;
 	units: string;
 	share: string;
+}
+
+export interface Trade {
+	broker: string;
+	date: Date;
+	units: string;
+	avg_price_per_unit: string;
+	eur_avg_price_per_unit: string;
+	security_type: string;
+	direction: string;
+	currency: string;
+	isin: string;
+	date_added: Date;
+	fees: string;
+	withholding_tax: string;
+	withholding_tax_currency: string;
 }
 
 export interface PortfolioEvent {
@@ -66,6 +111,18 @@ export interface PositionPerformance {
 	alpha: string;
 	invested_amount: string;
 	total_return: string;
+}
+
+export interface BuyIn {
+	isin: string;
+	name: string;
+	broker: string;
+	units: string;
+	average_buy_in: string;
+	invested_amount: string;
+	current_price: string;
+	current_value: string;
+	unrealized: string;
 }
 
 export interface PortfolioOverview {

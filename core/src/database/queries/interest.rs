@@ -1,5 +1,5 @@
 use crate::{
-    database::{db_client, models::interest::InterestPayment},
+    database::{db_client, models::interest::InterestPayment, queries::QueryFilter},
     services::shared::util::hash_string,
 };
 
@@ -58,4 +58,31 @@ pub async fn add_interest_to_db(
 
     // Return true if a row was actually inserted
     Ok(result == 1)
+}
+
+pub async fn get_interest(filter: QueryFilter) -> anyhow::Result<Vec<InterestPayment>> {
+    let client = db_client().await?;
+
+    let mut statement = String::from(
+        "SELECT date, amount, broker, principal, currency, amount_eur, \
+         withholding_tax, withholding_tax_currency FROM interest WHERE 1=1",
+    );
+    let mut params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = vec![];
+    super::append_common_filters(&mut statement, &mut params, &filter);
+    statement.push_str(" ORDER BY date DESC");
+
+    let rows = client.query(&statement, &params).await?;
+    Ok(rows
+        .iter()
+        .map(|row| InterestPayment {
+            date: row.get("date"),
+            amount: row.get("amount"),
+            broker: row.get("broker"),
+            principal: row.get("principal"),
+            currency: row.get("currency"),
+            amount_eur: row.get("amount_eur"),
+            withholding_tax: row.get("withholding_tax"),
+            withholding_tax_currency: row.get("withholding_tax_currency"),
+        })
+        .collect())
 }

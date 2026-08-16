@@ -5,10 +5,11 @@ use chrono::{DateTime, Utc};
 use log;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::try_join;
 use tokio_postgres::{Client, Row};
 use typeshare::typeshare;
+use utoipa::ToSchema;
 
 use crate::{
     database::{
@@ -25,14 +26,14 @@ use crate::{
 };
 
 #[typeshare]
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub enum TradeDirection {
     Buy,
     Sell,
 }
 
 #[typeshare]
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 pub enum EventType {
     CashInterest,
     ShareInterest,
@@ -43,7 +44,7 @@ pub enum EventType {
 }
 
 #[typeshare]
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct PortfolioEvent {
     pub date: DateTime<Utc>,
     pub event_type: EventType,
