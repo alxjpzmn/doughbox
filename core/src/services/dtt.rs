@@ -109,3 +109,55 @@ pub fn determine_source_country(isin: Option<&str>, broker: &str) -> Option<&'st
     }
     broker_to_country(broker)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn isin_prefix_maps_to_treaty_country() {
+        assert_eq!(isin_to_country("US0378331005"), Some("US"));
+        assert_eq!(isin_to_country("IE00B4L5Y983"), Some("IE"));
+        assert_eq!(isin_to_country("BE0974293251"), Some("BE"));
+        assert_eq!(isin_to_country("DE0007164600"), Some("DE"));
+        assert_eq!(isin_to_country("FR0000120271"), Some("FR"));
+        assert_eq!(isin_to_country("GB0002374006"), Some("GB"));
+    }
+
+    #[test]
+    fn isin_prefix_without_treaty_is_none() {
+        assert_eq!(isin_to_country("AT0000743059"), None);
+        assert_eq!(isin_to_country("NL0010273215"), None);
+        assert_eq!(isin_to_country("1"), None);
+        assert_eq!(isin_to_country(""), None);
+    }
+
+    #[test]
+    fn wise_broker_maps_to_belgium() {
+        assert_eq!(broker_to_country("Wise"), Some("BE"));
+        assert_eq!(broker_to_country("Trade Republic"), None);
+    }
+
+    #[test]
+    fn treaty_rates_match_table() {
+        assert_eq!(treaty_rate("US", DttIncomeType::Dividends), Some(dec!(0.15)));
+        assert_eq!(treaty_rate("US", DttIncomeType::Interest), Some(dec!(0)));
+        assert_eq!(treaty_rate("US", DttIncomeType::CapitalGains), Some(dec!(0)));
+        assert_eq!(treaty_rate("BE", DttIncomeType::Interest), Some(dec!(0.15)));
+        assert_eq!(treaty_rate("AT", DttIncomeType::Dividends), None);
+    }
+
+    #[test]
+    fn source_country_prefers_isin_then_broker() {
+        assert_eq!(
+            determine_source_country(Some("US0378331005"), "Wise"),
+            Some("US")
+        );
+        assert_eq!(
+            determine_source_country(Some("AT0000743059"), "Wise"),
+            Some("BE")
+        );
+        assert_eq!(determine_source_country(None, "Wise"), Some("BE"));
+        assert_eq!(determine_source_country(None, "Revolut"), None);
+    }
+}

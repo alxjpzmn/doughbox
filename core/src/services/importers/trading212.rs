@@ -20,6 +20,7 @@ use crate::{
     services::{market_data::fx_rates::convert_amount, parsers::parse_timestamp},
 };
 
+#[derive(Debug, PartialEq, Eq)]
 enum RecordType {
     Dividend,
     EquityTrade,
@@ -331,5 +332,24 @@ mod tests {
         assert_eq!(from_currency, "USD");
         assert_eq!(to_amount, dec!(27.40));
         assert_eq!(to_currency, "EUR");
+    }
+
+    #[test]
+    fn parse_fx_notes_rejects_malformed() {
+        assert!(parse_fx_from_notes("30 USD").is_err());
+        assert!(parse_fx_from_notes("USD -> EUR").is_err());
+    }
+
+    #[test]
+    fn detect_trading212_record_types() {
+        assert!(matches!(detect_record_type("Dividend (Ordinary)"), RecordType::Dividend));
+        assert_eq!(detect_record_type("Interest on cash"), RecordType::CashInterest);
+        assert_eq!(detect_record_type("Lending interest"), RecordType::ShareInterest);
+        assert_eq!(detect_record_type("Market buy"), RecordType::EquityTrade);
+        assert_eq!(detect_record_type("Limit sell"), RecordType::EquityTrade);
+        assert_eq!(detect_record_type("Currency conversion"), RecordType::FxConversion);
+        assert_eq!(detect_record_type("Deposit"), RecordType::CashTransfer);
+        assert_eq!(detect_record_type("Withdrawal"), RecordType::CashTransfer);
+        assert_eq!(detect_record_type("Something else"), RecordType::Unmatched);
     }
 }

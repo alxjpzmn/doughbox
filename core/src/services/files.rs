@@ -69,3 +69,33 @@ pub fn detect_file_format(file: &[u8], file_path: &Path) -> ImportFileFormat {
 
     ImportFileFormat::Unsupported
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn detect_pdf_csv_and_unsupported() {
+        assert_eq!(
+            detect_file_format(b"%PDF-1.4 rest", Path::new("statement.pdf")),
+            ImportFileFormat::Pdf
+        );
+        assert_eq!(
+            detect_file_format(b"Action,ISIN", Path::new("export.csv")),
+            ImportFileFormat::Csv
+        );
+        assert_eq!(
+            detect_file_format(b"", Path::new("empty.csv")),
+            ImportFileFormat::Unsupported
+        );
+        assert_eq!(
+            detect_file_format(b"not a pdf", Path::new("statement.pdf")),
+            ImportFileFormat::Unsupported
+        );
+        assert_eq!(
+            detect_file_format(b"hello", Path::new("notes.txt")),
+            ImportFileFormat::Unsupported
+        );
+    }
+}

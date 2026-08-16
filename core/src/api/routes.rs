@@ -1,8 +1,8 @@
 use axum::{
+    http::StatusCode,
     routing::{get, get_service, post},
     Router,
 };
-use reqwest::StatusCode;
 use tower_cookies::cookie::time::Duration;
 use tower_http::{
     cors::{Any, CorsLayer},

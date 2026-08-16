@@ -500,3 +500,26 @@ pub async fn simulate_alternate_purchase(
         Ok(None)
     }
 }
+
+#[cfg(test)]
+mod threshold_tests {
+    use super::*;
+
+    #[test]
+    fn position_threshold_treats_dust_as_closed() {
+        assert!(is_position_size_over_threshold(dec!(1)));
+        assert!(!is_position_size_over_threshold(dec!(0)));
+        assert!(!is_position_size_over_threshold(dec!(0.00000000000001)));
+        assert!(is_position_size_over_threshold(dec!(0.00000000000002)));
+    }
+
+    #[test]
+    fn override_zeros_positions_at_or_below_threshold() {
+        assert_eq!(override_positions_below_threshold(dec!(2.5)), dec!(2.5));
+        assert_eq!(override_positions_below_threshold(dec!(0)), dec!(0));
+        assert_eq!(
+            override_positions_below_threshold(dec!(0.00000000000001)),
+            dec!(0)
+        );
+    }
+}
