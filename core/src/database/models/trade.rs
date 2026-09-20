@@ -40,3 +40,10 @@ pub struct TradeWithHash {
     pub withholding_tax_currency: String,
     pub hash: String,
 }
+
+#[typeshare]
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MonthlyNetInflow {
+    pub month: String,
+    pub net_eur: Decimal,
+}

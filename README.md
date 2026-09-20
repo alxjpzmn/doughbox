@@ -30,8 +30,9 @@ If you need to take care of capital gains taxes in Austria, you can use Doughbox
 - EUR as base currency — it supports trades in other currencies, but the base currency needs to be EUR.
 - Current quotes for securities are not fetched automatically. They're kept in a separate table and need to be refreshed either manually or via API (more on this below).
 - Doughbox uses ISINs as primary identifier, so it's agnostic to the trading venue an instrument was bought. If it encounters a ticker symbol during the import, it attempts to convert it to an ISIN via the OpenFIGI API
-- Crypto, Real Estate, Cash Holdings aren't supported. Basically, if it has an ISIN, it _might_ work with Doughbox, if it hasn't, then it sure won't.
-- The web interface is currently used for visualizations only, commands need to be invoked using the CLI.
+- Crypto isn't supported.
+- Custom physical gold, real estate, private loans, and interest-bearing cash accounts can be tracked manually in the web UI; they stay off the automated Austrian tax pipeline.
+- Broker imports, housekeeping, performance, and taxation run from the CLI, Custom assets can only be created and edited in the web UI.
 
 ## Supported brokers
 
@@ -56,15 +57,15 @@ In order for Doughbox to run, you need a running Postgres instance and a polygon
 
 ### Environment variables
 
-| Variable | Required | Purpose |
-| --- | --- | --- |
-| `POSTGRES_URL` | yes | Postgres connection string |
-| `POLYGON_TOKEN` | yes | Stock-split data from polygon.io |
-| `FRED_TOKEN` | no | S&P 500 benchmark via FRED |
-| `PASSWORD` | no | Web UI login password |
-| `API_TOKEN` | no | Bearer token for the HTTP API |
-| `TG_TOKEN` / `TG_CHAT_ID` | no | Telegram notifications (`portfolio -n`) |
-| `RUST_ENV` | no | Loads `.env.dev` when `development` (default), `.env.prod` when `production` |
+| Variable                  | Required | Purpose                                                                      |
+| ------------------------- | -------- | ---------------------------------------------------------------------------- |
+| `POSTGRES_URL`            | yes      | Postgres connection string                                                   |
+| `POLYGON_TOKEN`           | yes      | Stock-split data from polygon.io                                             |
+| `FRED_TOKEN`              | no       | S&P 500 benchmark via FRED                                                   |
+| `PASSWORD`                | no       | Web UI login password                                                        |
+| `API_TOKEN`               | no       | Bearer token for the HTTP API                                                |
+| `TG_TOKEN` / `TG_CHAT_ID` | no       | Telegram notifications (`portfolio -n`)                                      |
+| `RUST_ENV`                | no       | Loads `.env.dev` when `development` (default), `.env.prod` when `production` |
 
 ### Docker
 
@@ -104,24 +105,40 @@ You can run the following commands in the CLI:
 
 ### REST API
 
-The API is read-only. Browser sessions from `POST /api/login` and `Authorization: Bearer $API_TOKEN` are both accepted.
+Browser sessions from `POST /api/login` and `Authorization: Bearer $API_TOKEN` are both accepted. Custom-asset routes accept writes; imported security data remains read-only.
 
-| Method | Path | Purpose |
-| --- | --- | --- |
-| `GET` | `/api/docs` | Interactive Swagger UI (no auth) |
-| `GET` | `/api/openapi.json` | OpenAPI spec |
-| `GET` | `/api/portfolio` | Allocations and total return |
-| `GET` | `/api/positions?date=&isin=` | Holdings as of a date |
-| `GET` | `/api/trades?isin=&broker=&direction=&from_date=&until_date=` | Trades |
-| `GET` | `/api/buy-ins?isin=&broker=` | WAC cost basis per instrument and broker |
-| `GET` | `/api/performance?isin=&broker=` | Live performance (does not write files) |
-| `GET` | `/api/performance_overview` | Precomputed `output/performance.json` |
-| `GET` | `/api/past_performance` | Historical value snapshots |
-| `GET` | `/api/timeline?start_date=&isin=&broker=&event_type=` | Unified event timeline |
-| `GET` | `/api/instruments` / `/api/instruments/{isin}` | Instrument catalog |
-| `GET` | `/api/brokers` | Distinct broker names (use these as filter values) |
-| `GET` | `/api/dividends` / `/api/interest` / `/api/fx-conversions` | Cash events |
-| `GET` | `/api/taxation` | Tax report |
+| Method               | Path                                                          | Purpose                                                                     |
+| -------------------- | ------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| `GET`                | `/api/docs`                                                   | Interactive Swagger UI (no auth)                                            |
+| `GET`                | `/api/openapi.json`                                           | OpenAPI spec                                                                |
+| `GET`                | `/api/portfolio`                                              | Allocations and total return                                                |
+| `GET`                | `/api/positions?date=&isin=&broker=`                          | Holdings as of a date                                                       |
+| `GET`                | `/api/trades?isin=&broker=&direction=&from_date=&until_date=` | Trades                                                                      |
+| `GET`                | `/api/buy-ins?isin=&broker=`                                  | WAC cost basis per instrument and broker                                    |
+| `GET`                | `/api/performance?isin=&broker=`                              | Live performance (does not write files)                                     |
+| `GET`                | `/api/performance_overview`                                   | Precomputed `output/performance.json`                                       |
+| `GET`                | `/api/past_performance`                                       | Historical value snapshots                                                  |
+| `GET`                | `/api/timeline?start_date=&isin=&broker=&event_type=`         | Unified event timeline                                                      |
+| `GET`                | `/api/timeline/net-inflow`                                    | Monthly net trade inflow (EUR)                                              |
+| `GET`                | `/api/instruments` / `/api/instruments/{isin}`                | Instrument catalog                                                          |
+| `GET`                | `/api/brokers`                                                | Distinct broker names (use these as filter values)                          |
+| `GET`                | `/api/dividends` / `/api/interest` / `/api/fx-conversions`    | Cash events                                                                 |
+| `GET`                | `/api/taxation`                                               | Tax report                                                                  |
+| `GET`/`POST`         | `/api/assets`                                                 | List or create custom assets (`?include_archived=true` to include archived) |
+| `GET`/`PUT`/`DELETE` | `/api/assets/{asset_id}`                                      | Custom asset detail, update, and archive                                    |
+| `POST`               | `/api/assets/{asset_id}/restore`                              | Restore an archived custom asset                                            |
+| `GET`                | `/api/assets/holdings`                                        | Custom holdings and EUR values                                              |
+| `GET`                | `/api/cash-accounts/summary`                                  | Volume-weighted cash interest                                               |
+
+### Custom assets
+
+Use **Assets** in the web UI for holdings that have no ISIN:
+
+- Physical gold and real estate: buys, sells, and manual valuations.
+- Private debt: principal advances, repayments, and actual interest.
+- Cash accounts: deposits, withdrawals, opening/reconciliation balances, and a current gross annual rate.
+
+Cash rates never accrue automatically; record interest when it is credited. An opening balance is the performance baseline. Reconciliation is capital-neutral and keeps FX return. Custom activity is excluded from automated Austrian taxation. Imported interest can be linked without changing its tax treatment; manually created interest is stored as excluded. Archive requires a zero current balance.
 
 Example:
 

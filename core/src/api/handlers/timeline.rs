@@ -3,9 +3,12 @@ use chrono::Utc;
 use serde::Deserialize;
 use utoipa::IntoParams;
 
-use crate::services::events::{get_events, EventType};
+use crate::{
+    database::queries::trade::get_monthly_net_inflow,
+    services::events::{get_events, EventType},
+};
 
-use super::{json_response, parse_ymd_start};
+use super::{internal_error, json_response, parse_ymd_start};
 use crate::api::errors::ErrorResponse;
 
 #[derive(Debug, Deserialize, IntoParams)]
@@ -67,4 +70,22 @@ pub async fn timeline(
             None,
         )
     })
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/timeline/net-inflow",
+    tag = "portfolio",
+    responses(
+        (status = 200, description = "Monthly net trade inflow in EUR", body = [crate::database::models::trade::MonthlyNetInflow]),
+        (status = 401, description = "Unauthorized"),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    ),
+    security(("api_token" = []))
+)]
+pub async fn net_inflow() -> Result<impl IntoResponse, ErrorResponse> {
+    let inflow = get_monthly_net_inflow()
+        .await
+        .map_err(|e| internal_error("NetInflowRetrievalError", e))?;
+    json_response(&inflow).map_err(|status| internal_error("SerializationError", status))
 }

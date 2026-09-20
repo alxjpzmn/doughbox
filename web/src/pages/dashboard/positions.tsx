@@ -22,52 +22,85 @@ import {
 } from "@/components/ui/table";
 import { BASE_URL, fetcher } from "@/lib/http";
 
+const ALL_BROKERS = "all";
+
 const Positions = () => {
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
-  const { data, isLoading } = useSwr<PositionWithName[]>(
-    `${BASE_URL}/positions?date=${format(selectedDate, "yyyy-LL-dd")}`,
-    fetcher,
+  const [broker, setBroker] = useState(ALL_BROKERS);
+  const { data: brokers } = useSwr<string[]>(`${BASE_URL}/brokers`, fetcher);
+  const date = format(selectedDate, "yyyy-LL-dd");
+  const { data, isLoading, error } = useSwr<PositionWithName[]>(
+    ["positions", date, broker],
+    async () => {
+      const params = new URLSearchParams({ date });
+      if (broker !== ALL_BROKERS) params.set("broker", broker);
+      const res = await fetch(`${BASE_URL}/positions?${params.toString()}`, { cache: "no-store" });
+      if (!res.ok) throw new Error("Positions could not be loaded.");
+      return res.json();
+    },
   );
 
   return (
     <div>
-      {/* Date Picker Card */}
       <Card className="w-full flex flex-col justify-start mb-6">
         <CardHeader>
-          <CardTitle>Date</CardTitle>
+          <CardTitle>Filters</CardTitle>
         </CardHeader>
-        <CardContent>
-          <Popover>
-            <PopoverTrigger asChild>
-              <Button
-                variant={"outline"}
-                className={cn(
-                  "w-60 justify-start text-left font-normal",
-                  !selectedDate && "text-muted-foreground",
-                )}
-              >
-                <CalendarIcon />
-                {selectedDate ? (
-                  format(selectedDate, "PPP")
-                ) : (
-                  <span>Pick a date</span>
-                )}
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent className="w-auto p-0" align="start">
-              <Calendar
-                mode="single"
-                selected={selectedDate}
-                required
-                // @ts-ignore
-                onSelect={setSelectedDate}
-              />
-            </PopoverContent>
-          </Popover>
+        <CardContent className="flex flex-col gap-4 sm:flex-row">
+          <div className="space-y-2">
+            <p className="text-sm font-medium">Date</p>
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button
+                  variant={"outline"}
+                  className={cn(
+                    "w-60 justify-start text-left font-normal",
+                    !selectedDate && "text-muted-foreground",
+                  )}
+                >
+                  <CalendarIcon />
+                  {selectedDate ? (
+                    format(selectedDate, "PPP")
+                  ) : (
+                    <span>Pick a date</span>
+                  )}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-auto p-0" align="start">
+                <Calendar
+                  mode="single"
+                  selected={selectedDate}
+                  required
+                  // @ts-ignore
+                  onSelect={setSelectedDate}
+                />
+              </PopoverContent>
+            </Popover>
+          </div>
+          <div className="space-y-2">
+            <p className="text-sm font-medium">Broker</p>
+            <select
+              value={broker}
+              onChange={(event) => setBroker(event.target.value)}
+              className="border-input bg-background h-9 w-60 cursor-pointer rounded-md border px-3 text-sm shadow-xs"
+            >
+              <option value={ALL_BROKERS}>All brokers</option>
+              {(brokers ?? []).map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          </div>
         </CardContent>
       </Card>
 
-      {/* Skeleton Loader or Data */}
+      {error && (
+        <div role="alert" className="bg-destructive/10 text-destructive mb-6 rounded-xl border border-destructive/20 p-4 text-sm">
+          Positions could not be loaded.
+        </div>
+      )}
+
       {isLoading ? (
         <Card>
           <CardHeader>
@@ -105,13 +138,15 @@ const Positions = () => {
             </Table>
           </CardContent>
         </Card>
-      ) : data?.length === 0 ? (
+      ) : data?.length === 0 && broker === ALL_BROKERS ? (
         <EmptyState />
       ) : (
         <>
           <Card>
             <CardHeader>
-              <CardTitle>Positions</CardTitle>
+              <CardTitle>
+                {broker === ALL_BROKERS ? "Positions" : `Positions · ${broker}`}
+              </CardTitle>
             </CardHeader>
             <CardContent>
               <Table>
@@ -122,7 +157,13 @@ const Positions = () => {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {data?.map((item) => (
+                  {data?.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={2} className="text-muted-foreground">
+                        No open positions for this broker.
+                      </TableCell>
+                    </TableRow>
+                  ) : data?.map((item) => (
                     <TableRow key={`${item?.isin}`}>
                       <TableCell>
                         <a

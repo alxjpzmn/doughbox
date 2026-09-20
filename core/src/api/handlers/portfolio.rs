@@ -80,6 +80,8 @@ pub struct PositionsQuery {
     pub date: Option<String>,
     /// Restrict to a single ISIN.
     pub isin: Option<String>,
+    /// Exact broker name as stored (see GET /api/brokers).
+    pub broker: Option<String>,
 }
 
 #[utoipa::path(
@@ -103,8 +105,12 @@ pub async fn positions(
     });
     let timestamp = parse_timestamp(format!("{date} 19:00:00").as_str())
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let positions = get_positions_overview(Some(timestamp), query.isin.as_deref())
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let positions = get_positions_overview(
+        Some(timestamp),
+        query.isin.as_deref(),
+        query.broker.as_deref(),
+    )
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     json_response(&positions)
 }

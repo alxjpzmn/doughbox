@@ -14,13 +14,20 @@ use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
 use super::handlers::{
+    assets::{
+        archive_asset, cash_summary, create_asset, create_balance_snapshot, create_interest,
+        create_trade, create_transaction, create_valuation, delete_balance_snapshot, delete_trade,
+        delete_transaction, delete_valuation, get_asset, holdings, link_interest, list_assets,
+        restore_asset, unlink_interest, update_asset, update_balance_snapshot, update_interest,
+        update_trade, update_transaction, update_valuation,
+    },
     auth::{auth_state, login, logout},
     check_auth,
     market::{brokers, instrument, instruments},
     performance::{live_performance, past_performance, performance_overview},
     portfolio::{portfolio, positions},
     taxation::{taxation, taxation_detailed, taxation_transactions},
-    timeline::timeline,
+    timeline::{net_inflow, timeline},
     trades::{buy_ins, dividends, fx_conversions, interest, trades},
 };
 use super::openapi::ApiDoc;
@@ -39,8 +46,47 @@ pub fn create_router() -> anyhow::Result<Router> {
 
     let protected_routes = Router::new()
         .route("/portfolio", get(portfolio))
+        .route("/assets", get(list_assets).post(create_asset))
+        .route("/assets/holdings", get(holdings))
+        .route("/cash-accounts/summary", get(cash_summary))
+        .route(
+            "/assets/{asset_id}",
+            get(get_asset).put(update_asset).delete(archive_asset),
+        )
+        .route("/assets/{asset_id}/restore", post(restore_asset))
+        .route("/assets/{asset_id}/trades", post(create_trade))
+        .route(
+            "/assets/{asset_id}/trades/{record_id}",
+            axum::routing::put(update_trade).delete(delete_trade),
+        )
+        .route("/assets/{asset_id}/valuations", post(create_valuation))
+        .route(
+            "/assets/{asset_id}/valuations/{record_id}",
+            axum::routing::put(update_valuation).delete(delete_valuation),
+        )
+        .route("/assets/{asset_id}/transactions", post(create_transaction))
+        .route(
+            "/assets/{asset_id}/transactions/{record_id}",
+            axum::routing::put(update_transaction).delete(delete_transaction),
+        )
+        .route(
+            "/assets/{asset_id}/balance-snapshots",
+            post(create_balance_snapshot),
+        )
+        .route(
+            "/assets/{asset_id}/balance-snapshots/{record_id}",
+            axum::routing::put(update_balance_snapshot).delete(delete_balance_snapshot),
+        )
+        .route("/assets/{asset_id}/interest", post(create_interest))
+        .route(
+            "/assets/{asset_id}/interest/{interest_id}",
+            post(link_interest)
+                .put(update_interest)
+                .delete(unlink_interest),
+        )
         .route("/positions", get(positions))
         .route("/timeline", get(timeline))
+        .route("/timeline/net-inflow", get(net_inflow))
         .route("/trades", get(trades))
         .route("/buy-ins", get(buy_ins))
         .route("/dividends", get(dividends))
@@ -60,7 +106,13 @@ pub fn create_router() -> anyhow::Result<Router> {
 
     let cors_layer = CorsLayer::new()
         .allow_origin(Any)
-        .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
+        .allow_methods([
+            axum::http::Method::GET,
+            axum::http::Method::POST,
+            axum::http::Method::PATCH,
+            axum::http::Method::PUT,
+            axum::http::Method::DELETE,
+        ])
         .allow_headers([
             axum::http::header::CONTENT_TYPE,
             axum::http::header::AUTHORIZATION,

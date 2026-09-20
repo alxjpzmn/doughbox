@@ -16,7 +16,7 @@ use crate::{
 
 #[derive(Debug, Tabled, Serialize, Clone)]
 struct StringifiedPositionWithAllocation {
-    isin: String,
+    identifier: String,
     name: String,
     value: String,
     units: String,
@@ -35,11 +35,17 @@ pub async fn portfolio(args: PortfolioArgs) -> anyhow::Result<()> {
     let mut formatted_positions_with_allocation: Vec<StringifiedPositionWithAllocation> = vec![];
     for position in position_overview.positions {
         let item = StringifiedPositionWithAllocation {
-            isin: position.isin.clone(),
+            identifier: position.isin.unwrap_or(position.asset_id),
             name: position.name,
-            value: format_currency(position.value, true),
+            value: position
+                .value
+                .map(|value| format_currency(value, true))
+                .unwrap_or_else(|| "Unpriced".to_string()),
             units: position.units.to_string(),
-            share: format!("{:.2} %", position.share),
+            share: position
+                .share
+                .map(|share| format!("{share:.2} %"))
+                .unwrap_or_else(|| "-".to_string()),
         };
         formatted_positions_with_allocation.push(item);
     }

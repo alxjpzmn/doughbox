@@ -12,7 +12,7 @@ use crate::{
     },
 };
 
-use super::{listing_change::get_listing_changes, stock_split::get_stock_splits};
+use super::{listing_change::get_listing_changes, stock_split::get_stock_splits, QueryFilter};
 
 pub async fn get_positions_for_isin(
     isin: &str,
@@ -24,7 +24,7 @@ pub async fn get_positions_for_isin(
         Utc::now()
     };
 
-    let positions = get_positions(Some(date), Some(isin)).await?;
+    let positions = get_positions(Some(date), Some(isin), None).await?;
 
     let result = positions.first().unwrap().units;
 
@@ -34,20 +34,21 @@ pub async fn get_positions_for_isin(
 pub async fn get_positions(
     date: Option<DateTime<Utc>>,
     isin: Option<&str>,
+    broker: Option<&str>,
 ) -> anyhow::Result<Vec<Position>> {
     let client = db_client().await?;
 
     let date = date.unwrap_or_else(Utc::now);
+    let filter = QueryFilter {
+        isin: isin.map(str::to_owned),
+        broker: broker.map(str::to_owned),
+        until_date: Some(date),
+        ..QueryFilter::default()
+    };
 
-    let mut query = String::from("select isin, direction, units, date from trade where date <= $1");
-    let mut params: Vec<&(dyn ToSql + Sync)> = vec![&date];
-
-    let for_specific_isin = isin.is_some();
-    if for_specific_isin {
-        query.push_str(" AND isin = $2");
-        let value = &isin;
-        params.push(value);
-    }
+    let mut query = String::from("select isin, direction, units, date, broker from trade where 1=1");
+    let mut params: Vec<&(dyn ToSql + Sync)> = vec![];
+    super::append_common_filters(&mut query, &mut params, &filter);
 
     let rows = client.query(&query, &params).await?;
 
@@ -57,7 +58,18 @@ pub async fn get_positions(
     let mut units_map: HashMap<String, Decimal> = HashMap::new();
 
     for row in rows {
+        let trade_broker: String = row.get(4);
+        if let Some(ref wanted) = filter.broker {
+            if &trade_broker != wanted {
+                continue;
+            }
+        }
         let isin = get_changed_identifier(&row.get::<usize, String>(0), listing_changes.clone());
+        if let Some(ref wanted) = filter.isin {
+            if &isin != wanted {
+                continue;
+            }
+        }
         let direction: String = row.get(1);
         let units = row.get::<usize, Decimal>(2);
         let trade_date = row.get::<usize, DateTime<Utc>>(3);

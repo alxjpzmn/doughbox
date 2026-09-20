@@ -1,3 +1,4 @@
+pub mod assets;
 pub mod dtt;
 pub mod events;
 pub mod files;

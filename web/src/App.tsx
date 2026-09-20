@@ -7,6 +7,7 @@ import Performance from "@/pages/dashboard/performance";
 import Timeline from "@/pages/dashboard/timeline";
 import Positions from "@/pages/dashboard/positions";
 import Taxation from "@/pages/dashboard/taxation";
+import Assets from "@/pages/dashboard/assets";
 import useIsMobile from "@/hooks/useIsMobile";
 import { Menu, MobileMenu } from "@/components/composite/menu";
 import useAuth from "@/hooks/useAuth";
@@ -34,6 +35,7 @@ export default function App() {
                 <Route path="/timeline" component={Timeline} />
                 <Route path="/positions" component={Positions} />
                 <Route path="/taxation" component={Taxation} />
+                <Route path="/assets" component={Assets} />
               </Route>
             </Switch>
           </div >

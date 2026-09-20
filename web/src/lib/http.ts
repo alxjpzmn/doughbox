@@ -8,8 +8,6 @@ interface MutateRequestOptions {
 const defaultHeaders = {
 };
 
-type GenericPayload = { [key: string]: any };
-
 type FetcherArgs = [string, RequestInit?];
 
 
@@ -76,14 +74,14 @@ export const fetcher = async (...args: FetcherArgs) => {
 
 export const sendMutateRequest = async (
   apiPath: string,
-  payload?: GenericPayload,
+  payload?: unknown,
   requestOptions: MutateRequestOptions = { method: "POST" },
-) => {
+): Promise<Response> => {
   try {
     const res = await fetch(`${apiPath}`, {
       method: requestOptions.method,
       headers: { "Content-Type": "application/json", ...defaultHeaders },
-      body: JSON.stringify(payload),
+      body: payload === undefined ? undefined : JSON.stringify(payload),
     });
 
     if (!res.ok) {
