@@ -7,7 +7,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { BarList } from '@/components/composite/bar-list';
 import { BASE_URL, fetcher } from '@/lib/http';
 import { formatCurrency, formatRelativeAmount } from '@/lib/utils';
-import { Triangle, TriangleDashed } from 'lucide-react';
+import { Triangle, TriangleAlert, TriangleDashed } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
 
 const Portfolio = () => {
   const { data, isLoading, error } = useSwr<PortfolioOverview>(`${BASE_URL}/portfolio`, fetcher);
@@ -26,7 +27,12 @@ const Portfolio = () => {
 
   return (
     <>
-      {error && !error.details.events_present && <EmptyState variant={EmptyStateVariants.WithCliInstructionImportTrades} docker={error.details?.in_docker} />}
+      {error && error.details?.events_present === false && <EmptyState variant={EmptyStateVariants.WithCliInstructionImportTrades} docker={error.details?.in_docker} />}
+      {error && error.details?.events_present !== false && (
+        <div role="alert" className="bg-destructive/10 text-destructive mb-6 rounded-xl border border-destructive/20 p-4 text-sm">
+          Portfolio could not be loaded.
+        </div>
+      )}
       {isLoading ? (
         <>
           {/* Skeleton for Portfolio Overview Card */}
@@ -83,10 +89,16 @@ const Portfolio = () => {
                 {
                   overviewData.unformatted_return === 0 && <TriangleDashed size={16} className='stroke-muted-foreground' />
                 }
-                <p>{overviewData.absolute_return} (
-                  {overviewData.relative_return}
-                  )</p>
+                <p>{data.returns_incomplete ? 'Known return: ' : ''}{overviewData.absolute_return}{data.returns_incomplete ? '' : ` (${overviewData.relative_return})`}</p>
               </div>
+              {data.unpriced_assets > 0 && (
+                <div className="text-muted-foreground mt-4 flex items-start gap-2 rounded-lg border p-3 text-sm">
+                  <TriangleAlert className="mt-0.5 size-4 shrink-0" />
+                  <p>
+                     {data.unpriced_assets} {data.unpriced_assets === 1 ? 'asset is' : 'assets are'} unpriced. Portfolio value and return figures include known values only.
+                  </p>
+                </div>
+              )}
             </CardContent>
           </Card>
 
@@ -99,18 +111,40 @@ const Portfolio = () => {
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                <BarList
-                  data={data?.positions
+                {data.positions.some((position) => position.value != null) && (
+                  <BarList
+                    data={data.positions
+                      .filter((position) => position.value != null)
                     .map((position: PositionWithValueAndAllocation) => {
                       return {
-                        name: `${position.share}% · ${position.name}`,
-                        value: parseFloat(position.value),
-                        href: `https://duckduckgo.com/?q=${position.isin}`,
+                        key: position.asset_id,
+                        name: `${position.share != null ? `${position.share}% · ` : ''}${position.name}`,
+                        value: parseFloat(position.value!),
+                        href: position.asset_class === 'Security' && position.isin
+                          ? `https://duckduckgo.com/?q=${position.isin}`
+                          : undefined,
                       };
                     })}
-                  className="mt-4"
-                  valueFormatter={formatCurrency}
-                />
+                    className="mt-4"
+                    valueFormatter={formatCurrency}
+                  />
+                )}
+                {data.positions.some((position) => position.value == null) && (
+                  <div className="mt-5 space-y-2 border-t pt-4">
+                    <p className="text-muted-foreground text-xs font-medium uppercase tracking-wide">Unpriced</p>
+                    {data.positions
+                      .filter((position) => position.value == null)
+                      .map((position) => (
+                        <div key={position.asset_id} className="bg-muted/40 flex items-center justify-between gap-3 rounded-lg px-3 py-2.5">
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-medium">{position.name}</p>
+                            <p className="text-muted-foreground text-xs">{position.units} {position.unit_label}</p>
+                          </div>
+                          <Badge variant="outline">Unpriced</Badge>
+                        </div>
+                      ))}
+                  </div>
+                )}
               </CardContent>
             </Card>
           )}
@@ -122,4 +156,3 @@ const Portfolio = () => {
 };
 
 export default Portfolio;
-

@@ -1,5 +1,12 @@
 use crate::{
-    database::{db_client, models::interest::InterestPayment, queries::QueryFilter},
+    database::{
+        db_client,
+        models::{
+            asset::{InterestOrigin, TaxTreatment},
+            interest::{InterestPayment, InterestRecord},
+        },
+        queries::QueryFilter,
+    },
     services::shared::util::hash_string,
 };
 
@@ -60,12 +67,13 @@ pub async fn add_interest_to_db(
     Ok(result == 1)
 }
 
-pub async fn get_interest(filter: QueryFilter) -> anyhow::Result<Vec<InterestPayment>> {
+pub async fn get_interest(filter: QueryFilter) -> anyhow::Result<Vec<InterestRecord>> {
     let client = db_client().await?;
 
     let mut statement = String::from(
-        "SELECT date, amount, broker, principal, currency, amount_eur, \
-         withholding_tax, withholding_tax_currency FROM interest WHERE 1=1",
+        "SELECT id, asset_id, date, amount, broker, principal, currency, amount_eur, \
+         withholding_tax, withholding_tax_currency, tax_treatment, origin \
+         FROM interest WHERE 1=1",
     );
     let mut params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = vec![];
     super::append_common_filters(&mut statement, &mut params, &filter);
@@ -74,7 +82,9 @@ pub async fn get_interest(filter: QueryFilter) -> anyhow::Result<Vec<InterestPay
     let rows = client.query(&statement, &params).await?;
     Ok(rows
         .iter()
-        .map(|row| InterestPayment {
+        .map(|row| InterestRecord {
+            id: row.get("id"),
+            asset_id: row.get("asset_id"),
             date: row.get("date"),
             amount: row.get("amount"),
             broker: row.get("broker"),
@@ -83,6 +93,14 @@ pub async fn get_interest(filter: QueryFilter) -> anyhow::Result<Vec<InterestPay
             amount_eur: row.get("amount_eur"),
             withholding_tax: row.get("withholding_tax"),
             withholding_tax_currency: row.get("withholding_tax_currency"),
+            tax_treatment: match row.get::<_, &str>("tax_treatment") {
+                "Included" => TaxTreatment::Included,
+                _ => TaxTreatment::Excluded,
+            },
+            origin: match row.get::<_, &str>("origin") {
+                "Manual" => InterestOrigin::Manual,
+                _ => InterestOrigin::Imported,
+            },
         })
         .collect())
 }

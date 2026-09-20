@@ -10,8 +10,9 @@ use crate::database::{
 pub async fn get_positions_overview(
     date: Option<DateTime<Utc>>,
     isin: Option<&str>,
+    broker: Option<&str>,
 ) -> anyhow::Result<Vec<PositionWithName>> {
-    let positions = get_positions(date, isin).await?;
+    let positions = get_positions(date, isin, broker).await?;
 
     let isins: Vec<_> = positions
         .iter()

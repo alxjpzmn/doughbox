@@ -18,9 +18,11 @@ pub async fn get_used_currencies() -> anyhow::Result<Vec<String>> {
         select distinct currency from (
             select to_currency AS currency from fx_conversion
             union
-            select currency AS currency from trade
-            union
-            select currency AS currency from interest
+             select currency AS currency from trade
+             union
+             select currency AS currency from interest
+             union
+             select currency AS currency from asset
         ) as all_currencies"
         .to_string();
 
@@ -49,12 +51,22 @@ pub async fn events_exist(filter: EventFilter) -> anyhow::Result<bool> {
                 EXISTS (SELECT 1 FROM trade LIMIT 1) OR
                 EXISTS (SELECT 1 FROM dividend LIMIT 1) OR
                 EXISTS (SELECT 1 FROM interest LIMIT 1) OR
-                EXISTS (SELECT 1 FROM fx_conversion LIMIT 1) AS any_event_table_has_entries
+                EXISTS (SELECT 1 FROM fx_conversion LIMIT 1) OR
+                EXISTS (SELECT 1 FROM asset_trade LIMIT 1) OR
+                EXISTS (SELECT 1 FROM asset_transaction LIMIT 1) OR
+                EXISTS (SELECT 1 FROM asset_balance_snapshot LIMIT 1)
+                AS any_event_table_has_entries
         "
         .to_string(),
 
         EventFilter::TradesOnly => "
-            SELECT EXISTS (SELECT 1 FROM trade LIMIT 1) AS table_has_entries
+            SELECT
+                EXISTS (SELECT 1 FROM trade LIMIT 1) OR
+                EXISTS (SELECT 1 FROM asset_trade LIMIT 1) OR
+                EXISTS (SELECT 1 FROM asset_transaction LIMIT 1) OR
+                EXISTS (SELECT 1 FROM asset_balance_snapshot LIMIT 1) OR
+                EXISTS (SELECT 1 FROM interest WHERE asset_id IS NOT NULL LIMIT 1)
+                AS table_has_entries
         "
         .to_string(),
     };
@@ -105,7 +117,7 @@ pub async fn get_brokers() -> anyhow::Result<Vec<String>> {
                 SELECT broker FROM interest
                 UNION
                 SELECT broker FROM fx_conversion
-            ) b ORDER BY broker",
+            ) b WHERE broker IS NOT NULL AND btrim(broker) <> '' ORDER BY broker",
             &[],
         )
         .await?;
@@ -190,6 +202,14 @@ pub async fn get_active_years() -> anyhow::Result<Vec<i32>> {
                 SELECT date FROM fx_conversion
                 UNION ALL
                 SELECT date FROM dividend
+                UNION ALL
+                SELECT date FROM asset_trade
+                UNION ALL
+                SELECT date FROM asset_transaction
+                UNION ALL
+                SELECT date FROM asset_balance_snapshot
+                UNION ALL
+                SELECT date FROM asset_valuation
                 ) AS all_dates
             )
             SELECT 

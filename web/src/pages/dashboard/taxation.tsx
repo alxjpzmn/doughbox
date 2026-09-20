@@ -79,10 +79,18 @@ type SortDirection = "asc" | "desc";
 const eventTypeLabels: Record<EventType, string> = {
   [EventType.CashInterest]: "Interest",
   [EventType.ShareInterest]: "Share Interest",
+  [EventType.PrivateDebtInterest]: "Private Debt Interest",
   [EventType.Dividend]: "Dividend",
   [EventType.Trade]: "Trade",
   [EventType.FxConversion]: "FX",
   [EventType.DividendAequivalent]: "Div. Equivalent",
+  [EventType.Deposit]: "Deposit",
+  [EventType.Withdrawal]: "Withdrawal",
+  [EventType.PrincipalAdvance]: "Principal Advance",
+  [EventType.PrincipalRepayment]: "Principal Repayment",
+  [EventType.OpeningBalance]: "Opening Balance",
+  [EventType.BalanceReconciliation]: "Balance Reconciliation",
+  [EventType.Valuation]: "Valuation",
 };
 
 const Taxation = () => {
@@ -598,13 +606,13 @@ const TransactionTaxView = ({ data, error, isLoading, isFiltered, fromDate, unti
                       </span>
                     </TableCell>
                     <TableCell>{item.broker}</TableCell>
-                    <TableCell className="max-w-32 truncate" title={item.identifier || "-"}>
-                      {item.identifier || "-"}
+                    <TableCell className="max-w-32 truncate" title={item.name || item.identifier || "-"}>
+                      {item.name || item.identifier || "-"}
                     </TableCell>
                     <TableCell>{item.direction || "-"}</TableCell>
                     <TableCell className="text-right">{parseFloat(item.units).toFixed(2)}</TableCell>
-                    <TableCell className="text-right">{formatCurrency(parseFloat(item.price_unit))} {item.currency}</TableCell>
-                    <TableCell className="text-right">{formatCurrency(parseFloat(item.total))}</TableCell>
+                    <TableCell className="text-right">{formatCurrency(parseFloat(item.price_unit), item.currency)}</TableCell>
+                    <TableCell className="text-right">{formatCurrency(parseFloat(item.total), item.total_currency)}</TableCell>
                     <TableCell>
                       <span
                         className={cn(

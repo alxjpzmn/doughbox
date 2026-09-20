@@ -132,7 +132,7 @@ pub async fn dividends(
     tag = "trades",
     params(ResourceQuery),
     responses(
-        (status = 200, description = "Interest payments matching the filters", body = [crate::database::models::interest::InterestPayment]),
+        (status = 200, description = "Interest payments matching the filters", body = [crate::database::models::interest::InterestRecord]),
         (status = 400, description = "Invalid date", body = ErrorResponse),
         (status = 401, description = "Unauthorized"),
         (status = 500, description = "Internal server error", body = ErrorResponse)

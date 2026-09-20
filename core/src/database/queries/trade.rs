@@ -4,7 +4,7 @@ use rust_decimal_macros::dec;
 use crate::{
     database::{
         db_client,
-        models::trade::{Trade, TradeWithHash},
+        models::trade::{MonthlyNetInflow, Trade, TradeWithHash},
         queries::{listing_change::get_listing_changes, QueryFilter},
     },
     services::instruments::identifiers::get_changed_identifier,
@@ -135,4 +135,32 @@ pub async fn get_total_invested_value() -> anyhow::Result<Decimal> {
         .await?;
 
     Ok(result.try_get::<usize, Decimal>(0).unwrap_or(dec!(0.0)))
+}
+
+pub async fn get_monthly_net_inflow() -> anyhow::Result<Vec<MonthlyNetInflow>> {
+    let client = db_client().await?;
+    let rows = client
+        .query(
+            "SELECT to_char(date_trunc('month', date AT TIME ZONE 'UTC'), 'YYYY-MM') AS month,
+                    COALESCE(ROUND(SUM(
+                        CASE
+                            WHEN direction = 'Buy' THEN eur_avg_price_per_unit * units
+                            WHEN direction = 'Sell' THEN -(eur_avg_price_per_unit * units)
+                            ELSE 0
+                        END
+                    ), 2), 0) AS net_eur
+             FROM trade
+             GROUP BY 1
+             ORDER BY 1",
+            &[],
+        )
+        .await?;
+
+    Ok(rows
+        .iter()
+        .map(|row| MonthlyNetInflow {
+            month: row.get("month"),
+            net_eur: row.get("net_eur"),
+        })
+        .collect())
 }

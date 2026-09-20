@@ -18,9 +18,7 @@ use crate::services::market_data::fx_rates::convert_amount;
 use crate::services::shared::constants::OUT_DIR;
 
 use super::process::get_capital_gains_tax_report;
-use super::types::{
-    DetailedTaxationReport, TaxRates, TaxReportMetadata, TransactionTaxImpact,
-};
+use super::types::{DetailedTaxationReport, TaxRates, TaxReportMetadata, TransactionTaxImpact};
 use super::wac::{FxWac, SecWac};
 
 struct ImpactContext {
@@ -104,6 +102,7 @@ pub async fn get_transaction_tax_impacts(
                         units: event.units,
                         price_unit: event.price_unit,
                         total: event.total,
+                        total_currency: event.total_currency.clone(),
                         broker: event.broker.clone(),
                         impact_type: "Error".to_string(),
                         taxable_amount: dec!(0.0),
@@ -128,6 +127,31 @@ async fn compute_event_impact(
     event: &PortfolioEvent,
     ctx: &mut ImpactContext,
 ) -> Result<TransactionTaxImpact> {
+    if !event.tax_supported {
+        return Ok(TransactionTaxImpact {
+            date: event.date,
+            event_type: event.event_type.clone(),
+            identifier: event.identifier.clone(),
+            name: event.name.clone(),
+            direction: event.direction.clone(),
+            currency: event.currency.clone(),
+            units: event.units,
+            price_unit: event.price_unit,
+            total: event.total,
+            total_currency: event.total_currency.clone(),
+            broker: event.broker.clone(),
+            impact_type: "Excluded custom asset".to_string(),
+            taxable_amount: dec!(0),
+            withheld_tax: dec!(0),
+            tax_liability: dec!(0),
+            tax_rate_percent: dec!(0),
+            source_country: None,
+            dtt_rate_percent: None,
+            notes: "Custom asset activity is excluded from automated taxation".to_string(),
+            is_tax_relevant: false,
+        });
+    }
+
     match event.event_type {
         EventType::CashInterest | EventType::ShareInterest | EventType::Dividend => {
             compute_interest_or_dividend_impact(event, ctx).await
@@ -135,6 +159,14 @@ async fn compute_event_impact(
         EventType::Trade => compute_trade_impact(event, ctx).await,
         EventType::FxConversion => compute_fx_conversion_impact(event, ctx).await,
         EventType::DividendAequivalent => compute_dividend_aequivalent_impact(event, ctx).await,
+        EventType::Deposit
+        | EventType::Withdrawal
+        | EventType::PrincipalAdvance
+        | EventType::PrincipalRepayment
+        | EventType::OpeningBalance
+        | EventType::BalanceReconciliation
+        | EventType::PrivateDebtInterest
+        | EventType::Valuation => unreachable!("custom asset events return above"),
     }
 }
 
@@ -198,7 +230,7 @@ async fn compute_interest_or_dividend_impact(
     } else {
         (
             taxable_remainder / fx_rate,
-            (capped_wht_percent * taxable_remainder) * fx_rate,
+            (capped_wht_percent * taxable_remainder) / fx_rate,
         )
     };
 
@@ -249,6 +281,7 @@ async fn compute_interest_or_dividend_impact(
         units: event.units,
         price_unit: event.price_unit,
         total: event.total,
+        total_currency: event.total_currency.clone(),
         broker: event.broker.clone(),
         impact_type,
         taxable_amount: taxed_amount.round_dp(2),
@@ -332,6 +365,7 @@ async fn compute_buy_impact(
         units: event.units,
         price_unit: event.price_unit,
         total: event.total,
+        total_currency: event.total_currency.clone(),
         broker: event.broker.clone(),
         impact_type: "Buy".to_string(),
         taxable_amount: dec!(0.0),
@@ -462,7 +496,7 @@ async fn compute_sell_impact(
         if event.currency == "EUR" {
             wht_amount
         } else {
-            wht_amount * event.applied_fx_rate.unwrap_or(dec!(1.0))
+            wht_amount / event.applied_fx_rate.unwrap_or(dec!(1.0))
         }
     } else {
         dec!(0.0)
@@ -495,6 +529,7 @@ async fn compute_sell_impact(
         units: event.units,
         price_unit: event.price_unit,
         total: event.total,
+        total_currency: event.total_currency.clone(),
         broker: event.broker.clone(),
         impact_type,
         taxable_amount: taxable_amount.round_dp(2),
@@ -544,6 +579,7 @@ async fn compute_fx_conversion_impact(
                 units: event.units,
                 price_unit: event.price_unit,
                 total: event.total,
+                total_currency: event.total_currency.clone(),
                 broker: event.broker.clone(),
                 impact_type: "FX Buy".to_string(),
                 taxable_amount: dec!(0.0),
@@ -613,6 +649,7 @@ async fn compute_fx_conversion_impact(
                 units: event.units,
                 price_unit: event.price_unit,
                 total: event.total,
+                total_currency: event.total_currency.clone(),
                 broker: event.broker.clone(),
                 impact_type: impact_type.to_string(),
                 taxable_amount: taxed_amount.round_dp(2),
@@ -707,6 +744,7 @@ async fn compute_dividend_aequivalent_impact(
         units: units_held,
         price_unit: income_per_share,
         total: event.total,
+        total_currency: event.total_currency.clone(),
         broker: event.broker.clone(),
         impact_type: "Dividend Equivalent".to_string(),
         taxable_amount: income_eur.round_dp(2),
@@ -770,8 +808,9 @@ pub async fn get_detailed_capital_gains_tax_report(
     for events in events_by_year.values() {
         for event in events {
             if let Some(ref id) = event.identifier {
-                if event.event_type == EventType::Trade
-                    || event.event_type == EventType::DividendAequivalent
+                if event.tax_supported
+                    && (event.event_type == EventType::Trade
+                        || event.event_type == EventType::DividendAequivalent)
                 {
                     unique_securities.insert(id.clone());
                 }

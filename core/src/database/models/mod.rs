@@ -1,3 +1,4 @@
+pub mod asset;
 pub mod dividend;
 pub mod fund_report;
 pub mod fx_conversion;

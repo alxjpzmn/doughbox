@@ -37,15 +37,24 @@ pub enum TradeDirection {
 pub enum EventType {
     CashInterest,
     ShareInterest,
+    PrivateDebtInterest,
     Dividend,
     Trade,
     FxConversion,
     DividendAequivalent,
+    Deposit,
+    Withdrawal,
+    PrincipalAdvance,
+    PrincipalRepayment,
+    OpeningBalance,
+    BalanceReconciliation,
+    Valuation,
 }
 
 #[typeshare]
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct PortfolioEvent {
+    pub event_id: Option<String>,
     pub date: DateTime<Utc>,
     pub event_type: EventType,
     pub currency: String,
@@ -53,11 +62,14 @@ pub struct PortfolioEvent {
     pub price_unit: Decimal,
     pub identifier: Option<String>,
     pub name: Option<String>,
+    pub unit_label: Option<String>,
     pub direction: Option<TradeDirection>,
     pub applied_fx_rate: Option<Decimal>,
     pub withholding_tax_percent: Option<Decimal>,
     pub total: Decimal,
+    pub total_currency: String,
     pub broker: String,
+    pub tax_supported: bool,
 }
 
 pub async fn get_events(
@@ -66,12 +78,26 @@ pub async fn get_events(
 ) -> anyhow::Result<Vec<PortfolioEvent>> {
     let client = db_client().await?;
 
-    let (interest_rows, fund_report_rows, dividend_rows, trade_rows, fx_conversion_rows) = try_join!(
+    let (
+        interest_rows,
+        fund_report_rows,
+        dividend_rows,
+        trade_rows,
+        fx_conversion_rows,
+        asset_trade_rows,
+        asset_transaction_rows,
+        asset_snapshot_rows,
+        asset_valuation_rows,
+    ) = try_join!(
         query_interest(&client, &start_date, &end_date),
         query_fund_reports(&client, &start_date, &end_date),
         query_dividends(&client, &start_date, &end_date),
         query_trades(&client, &start_date, &end_date),
-        query_fx_conversions(&client, &start_date, &end_date)
+        query_fx_conversions(&client, &start_date, &end_date),
+        query_asset_trades(&client, &start_date, &end_date),
+        query_asset_transactions(&client, &start_date, &end_date),
+        query_asset_snapshots(&client, &start_date, &end_date),
+        query_asset_valuations(&client, &start_date, &end_date)
     )?;
 
     let mut events = Vec::new();
@@ -80,6 +106,10 @@ pub async fn get_events(
     events.extend(process_dividend_rows(dividend_rows).await?);
     events.extend(process_trade_rows(trade_rows).await?);
     events.extend(process_fx_conversion_rows(fx_conversion_rows)?);
+    events.extend(process_asset_trade_rows(asset_trade_rows)?);
+    events.extend(process_asset_transaction_rows(asset_transaction_rows)?);
+    events.extend(process_asset_snapshot_rows(asset_snapshot_rows)?);
+    events.extend(process_asset_valuation_rows(asset_valuation_rows)?);
 
     events.sort_by(|event_a, event_b| event_a.date.cmp(&event_b.date));
 
@@ -93,7 +123,73 @@ async fn query_interest(
 ) -> anyhow::Result<Vec<Row>> {
     Ok(client
         .query(
-            "select date, amount, currency, principal, withholding_tax, withholding_tax_currency, amount_eur, broker FROM interest WHERE date >= $1 AND date < $2",
+            "SELECT i.date, i.amount, i.currency, i.principal, i.withholding_tax, \
+             i.withholding_tax_currency, i.amount_eur, i.broker, i.asset_id, \
+              i.tax_treatment, a.name, a.unit_label, i.id FROM interest i LEFT JOIN asset a ON a.id = i.asset_id \
+             WHERE i.date >= $1 AND i.date < $2",
+            &[start_date, end_date],
+        )
+        .await?)
+}
+
+async fn query_asset_trades(
+    client: &Client,
+    start_date: &DateTime<Utc>,
+    end_date: &DateTime<Utc>,
+) -> anyhow::Result<Vec<Row>> {
+    Ok(client
+        .query(
+            "SELECT t.id AS event_id, t.date, t.units, t.price_per_unit, t.eur_price_per_unit, t.currency, \
+              t.direction, t.broker, a.id AS asset_id, a.name, a.unit_label FROM asset_trade t \
+             JOIN asset a ON a.id = t.asset_id WHERE t.date >= $1 AND t.date < $2",
+            &[start_date, end_date],
+        )
+        .await?)
+}
+
+async fn query_asset_transactions(
+    client: &Client,
+    start_date: &DateTime<Utc>,
+    end_date: &DateTime<Utc>,
+) -> anyhow::Result<Vec<Row>> {
+    Ok(client
+        .query(
+            "SELECT t.id AS event_id, t.date, t.kind, t.amount, t.amount_eur, t.currency, \
+              a.id AS asset_id, a.name, a.unit_label \
+             FROM asset_transaction t JOIN asset a ON a.id = t.asset_id \
+             WHERE t.date >= $1 AND t.date < $2",
+            &[start_date, end_date],
+        )
+        .await?)
+}
+
+async fn query_asset_snapshots(
+    client: &Client,
+    start_date: &DateTime<Utc>,
+    end_date: &DateTime<Utc>,
+) -> anyhow::Result<Vec<Row>> {
+    Ok(client
+        .query(
+            "SELECT s.id AS event_id, s.date, s.kind, s.balance, s.balance_eur, a.currency, \
+              a.id AS asset_id, a.name, a.unit_label \
+             FROM asset_balance_snapshot s JOIN asset a ON a.id = s.asset_id \
+             WHERE s.date >= $1 AND s.date < $2",
+            &[start_date, end_date],
+        )
+        .await?)
+}
+
+async fn query_asset_valuations(
+    client: &Client,
+    start_date: &DateTime<Utc>,
+    end_date: &DateTime<Utc>,
+) -> anyhow::Result<Vec<Row>> {
+    Ok(client
+        .query(
+            "SELECT v.id AS event_id, v.date, v.price_per_unit, v.eur_price_per_unit, \
+              v.currency, a.id AS asset_id, a.name, a.unit_label FROM asset_valuation v \
+             JOIN asset a ON a.id = v.asset_id WHERE v.source = 'Manual' \
+             AND v.date >= $1 AND v.date < $2",
             &[start_date, end_date],
         )
         .await?)
@@ -119,7 +215,8 @@ async fn query_dividends(
 ) -> anyhow::Result<Vec<Row>> {
     Ok(client
         .query(
-            "select date, amount, currency, isin, withholding_tax, withholding_tax_currency, amount_eur, broker FROM dividend WHERE date >= $1 AND date < $2",
+            "select date, amount, currency, isin, withholding_tax, withholding_tax_currency, \
+             amount_eur, broker, id FROM dividend WHERE date >= $1 AND date < $2",
             &[start_date, end_date],
         )
         .await?)
@@ -132,7 +229,9 @@ async fn query_trades(
 ) -> anyhow::Result<Vec<Row>> {
     Ok(client
         .query(
-            "select date, units, avg_price_per_unit, currency, isin, direction, withholding_tax, withholding_tax_currency, eur_avg_price_per_unit, broker FROM trade WHERE date >= $1 AND date < $2",
+            "select date, units, avg_price_per_unit, currency, isin, direction, withholding_tax, \
+             withholding_tax_currency, eur_avg_price_per_unit, broker, hash FROM trade \
+             WHERE date >= $1 AND date < $2",
             &[start_date, end_date],
         )
         .await?)
@@ -145,7 +244,8 @@ async fn query_fx_conversions(
 ) -> anyhow::Result<Vec<Row>> {
     Ok(client
         .query(
-            "select date, from_amount, to_amount, from_currency, to_currency, broker FROM fx_conversion WHERE date >= $1 AND date < $2",
+            "select date, from_amount, to_amount, from_currency, to_currency, broker, id \
+             FROM fx_conversion WHERE date >= $1 AND date < $2",
             &[start_date, end_date],
         )
         .await?)
@@ -176,15 +276,22 @@ async fn process_interest_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEv
         let event_currency: String = try_get_col(row, 2, "currency", &ctx)?;
         let withholding_tax_currency: Option<String> =
             try_get_col(row, 5, "withholding_tax_currency", &ctx)?;
-        let principal: String = try_get_col(row, 3, "principal", &ctx)?;
-        let broker: String = try_get_col(row, 7, "broker", &ctx)?;
+        let principal: Option<String> = try_get_col(row, 3, "principal", &ctx)?;
+        let broker: Option<String> = try_get_col(row, 7, "broker", &ctx)?;
+        let asset_id: Option<String> = try_get_col(row, 8, "asset_id", &ctx)?;
+        let tax_treatment: String = try_get_col(row, 9, "tax_treatment", &ctx)?;
+        let asset_name: Option<String> = try_get_col(row, 10, "name", &ctx)?;
+        let unit_label: Option<String> = try_get_col(row, 11, "unit_label", &ctx)?;
+        let tax_supported = tax_treatment == "Included";
 
         let withholding_tax = withholding_tax.unwrap_or(dec!(0.0));
         let withholding_tax_currency =
             withholding_tax_currency.unwrap_or_else(|| event_currency.clone());
 
         // Calculate withholding tax percent
-        let withholding_tax_percent = if withholding_tax == dec!(0.0) {
+        let withholding_tax_percent = if !tax_supported {
+            None
+        } else if withholding_tax == dec!(0.0) {
             Some(dec!(0.0))
         } else if amount == dec!(0.0) || amount_eur == dec!(0.0) {
             // Can't calculate percentage with zero amount — skip withholding tax
@@ -255,14 +362,16 @@ async fn process_interest_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEv
         };
 
         let event = PortfolioEvent {
+            event_id: Some(try_get_col(row, 12, "id", &ctx)?),
             date,
-            event_type: if principal == "Cash" {
-                EventType::CashInterest
-            } else {
-                EventType::ShareInterest
+            event_type: match principal.as_deref() {
+                Some("Cash") => EventType::CashInterest,
+                Some("PrivateDebt") => EventType::PrivateDebtInterest,
+                _ => EventType::ShareInterest,
             },
-            identifier: None,
-            name: None,
+            identifier: asset_id,
+            name: asset_name,
+            unit_label,
             units: amount,
             price_unit: dec!(1.00),
             currency: event_currency,
@@ -270,7 +379,9 @@ async fn process_interest_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEv
             applied_fx_rate,
             withholding_tax_percent,
             total: amount_eur,
-            broker,
+            total_currency: "EUR".to_string(),
+            broker: broker.unwrap_or_else(|| "Manual".to_string()),
+            tax_supported,
         };
         events.push(event);
     }
@@ -288,18 +399,22 @@ fn process_fund_report_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent
         let currency: String = try_get_col(row, 2, "currency", &ctx)?;
 
         let event = PortfolioEvent {
+            event_id: Some(format!("fund-report-{id}")),
             date,
             event_type: EventType::DividendAequivalent,
             identifier: Some(id.to_string()),
             name: None,
+            unit_label: None,
             units: dec!(1.00),
             price_unit: dec!(1.00),
-            currency,
+            currency: currency.clone(),
             direction: None,
             applied_fx_rate: None,
             withholding_tax_percent: None,
             total: dec!(1.00),
+            total_currency: currency.clone(),
             broker: "OeKB Fund Report".to_string(),
+            tax_supported: true,
         };
         events.push(event);
     }
@@ -420,18 +535,22 @@ async fn process_dividend_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEv
         };
 
         let event = PortfolioEvent {
+            event_id: Some(try_get_col(row, 8, "id", &ctx)?),
             date,
             event_type: EventType::Dividend,
             identifier: Some(name_map.get(&isin).unwrap_or(&&isin).to_string()),
             name: None,
+            unit_label: None,
             units: amount,
             price_unit: dec!(1.00),
-            currency: event_currency,
+            currency: event_currency.clone(),
             direction: None,
             applied_fx_rate,
             withholding_tax_percent,
             total: amount_eur,
+            total_currency: "EUR".to_string(),
             broker,
+            tax_supported: true,
         };
         events.push(event);
     }
@@ -578,13 +697,15 @@ async fn process_trade_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent
         };
 
         let event = PortfolioEvent {
+            event_id: Some(try_get_col(row, 10, "hash", &ctx)?),
             date,
             event_type: EventType::Trade,
             identifier: Some(isin.to_string()),
             name: Some(name_map.get(&isin).unwrap_or(&&isin).to_string()),
+            unit_label: None,
             units: split_adjusted_units,
             price_unit: split_adjusted_price_per_unit,
-            currency: event_currency,
+            currency: event_currency.clone(),
             direction: Some(if direction == *"Buy" {
                 TradeDirection::Buy
             } else {
@@ -593,7 +714,9 @@ async fn process_trade_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent
             applied_fx_rate: Some(applied_fx_rate),
             withholding_tax_percent,
             total: split_adjusted_units * split_adjusted_price_per_unit,
+            total_currency: event_currency.clone(),
             broker,
+            tax_supported: true,
         };
         events.push(event);
     }
@@ -614,11 +737,13 @@ fn process_fx_conversion_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEve
         let broker: String = try_get_col(row, 5, "broker", &ctx)?;
 
         let event = PortfolioEvent {
+            event_id: Some(try_get_col(row, 6, "id", &ctx)?),
             date,
             event_type: EventType::FxConversion,
             currency: from_currency.clone(),
             identifier: Some(format!("{}{}", from_currency, to_currency)),
             name: None,
+            unit_label: None,
             direction: Some(if from_currency == *"EUR" {
                 TradeDirection::Buy
             } else {
@@ -629,9 +754,155 @@ fn process_fx_conversion_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEve
             price_unit: to_amount / from_amount,
             withholding_tax_percent: None,
             total: from_amount * to_amount / from_amount,
+            total_currency: to_currency.clone(),
             broker,
+            tax_supported: true,
         };
         events.push(event);
     }
     Ok(events)
+}
+
+fn process_asset_trade_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent>> {
+    rows.iter()
+        .map(|row| {
+            let date: DateTime<Utc> = row.try_get("date")?;
+            let units: Decimal = row.try_get("units")?;
+            let price_per_unit: Decimal = row.try_get("price_per_unit")?;
+            let eur_price_per_unit: Decimal = row.try_get("eur_price_per_unit")?;
+            let direction: String = row.try_get("direction")?;
+            Ok(PortfolioEvent {
+                event_id: Some(row.try_get("event_id")?),
+                date,
+                event_type: EventType::Trade,
+                currency: row.try_get("currency")?,
+                units,
+                price_unit: price_per_unit,
+                identifier: Some(row.try_get("asset_id")?),
+                name: Some(row.try_get("name")?),
+                unit_label: Some(row.try_get("unit_label")?),
+                direction: Some(if direction == "Buy" {
+                    TradeDirection::Buy
+                } else {
+                    TradeDirection::Sell
+                }),
+                applied_fx_rate: if eur_price_per_unit == dec!(0) {
+                    None
+                } else {
+                    Some(price_per_unit / eur_price_per_unit)
+                },
+                withholding_tax_percent: None,
+                total: units * eur_price_per_unit,
+                total_currency: "EUR".to_string(),
+                broker: row.try_get("broker")?,
+                tax_supported: false,
+            })
+        })
+        .collect()
+}
+
+fn process_asset_transaction_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent>> {
+    rows.iter()
+        .map(|row| {
+            let kind: String = row.try_get("kind")?;
+            let event_type = match kind.as_str() {
+                "Deposit" => EventType::Deposit,
+                "Withdrawal" => EventType::Withdrawal,
+                "PrincipalAdvance" => EventType::PrincipalAdvance,
+                "PrincipalRepayment" => EventType::PrincipalRepayment,
+                _ => return Err(anyhow::anyhow!("Unknown custom asset transaction: {kind}")),
+            };
+            let amount: Decimal = row.try_get("amount")?;
+            let amount_eur: Decimal = row.try_get("amount_eur")?;
+            Ok(PortfolioEvent {
+                event_id: Some(row.try_get("event_id")?),
+                date: row.try_get("date")?,
+                event_type,
+                currency: row.try_get("currency")?,
+                units: amount,
+                price_unit: dec!(1),
+                identifier: Some(row.try_get("asset_id")?),
+                name: Some(row.try_get("name")?),
+                unit_label: Some(row.try_get("unit_label")?),
+                direction: None,
+                applied_fx_rate: if amount_eur > dec!(0) {
+                    Some(amount / amount_eur)
+                } else {
+                    None
+                },
+                withholding_tax_percent: None,
+                total: amount_eur,
+                total_currency: "EUR".to_string(),
+                broker: "Manual".to_string(),
+                tax_supported: false,
+            })
+        })
+        .collect()
+}
+
+fn process_asset_snapshot_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent>> {
+    rows.iter()
+        .map(|row| {
+            let kind: String = row.try_get("kind")?;
+            let balance: Decimal = row.try_get("balance")?;
+            let balance_eur: Decimal = row.try_get("balance_eur")?;
+            Ok(PortfolioEvent {
+                event_id: Some(row.try_get("event_id")?),
+                date: row.try_get("date")?,
+                event_type: if kind == "Opening" {
+                    EventType::OpeningBalance
+                } else {
+                    EventType::BalanceReconciliation
+                },
+                currency: row.try_get("currency")?,
+                units: balance,
+                price_unit: dec!(1),
+                identifier: Some(row.try_get("asset_id")?),
+                name: Some(row.try_get("name")?),
+                unit_label: Some(row.try_get("unit_label")?),
+                direction: None,
+                applied_fx_rate: if balance_eur > dec!(0) {
+                    Some(balance / balance_eur)
+                } else {
+                    None
+                },
+                withholding_tax_percent: None,
+                total: balance_eur,
+                total_currency: "EUR".to_string(),
+                broker: "Manual".to_string(),
+                tax_supported: false,
+            })
+        })
+        .collect()
+}
+
+fn process_asset_valuation_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent>> {
+    rows.iter()
+        .map(|row| {
+            let price_per_unit: Decimal = row.try_get("price_per_unit")?;
+            let eur_price_per_unit: Decimal = row.try_get("eur_price_per_unit")?;
+            Ok(PortfolioEvent {
+                event_id: Some(row.try_get("event_id")?),
+                date: row.try_get("date")?,
+                event_type: EventType::Valuation,
+                currency: row.try_get("currency")?,
+                units: dec!(1),
+                price_unit: price_per_unit,
+                identifier: Some(row.try_get("asset_id")?),
+                name: Some(row.try_get("name")?),
+                unit_label: Some(row.try_get("unit_label")?),
+                direction: None,
+                applied_fx_rate: if eur_price_per_unit > dec!(0) {
+                    Some(price_per_unit / eur_price_per_unit)
+                } else {
+                    None
+                },
+                withholding_tax_percent: None,
+                total: eur_price_per_unit,
+                total_currency: "EUR".to_string(),
+                broker: "Manual".to_string(),
+                tax_supported: false,
+            })
+        })
+        .collect()
 }

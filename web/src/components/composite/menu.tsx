@@ -1,6 +1,6 @@
 import useAuth from "@/hooks/useAuth";
 import { Link, useLocation } from "wouter";
-import { ChartArea, ChartBar, FileChartPie, FileClock, NotepadText } from "lucide-react";
+import { ChartArea, ChartBar, FileChartPie, FileClock, Landmark, NotepadText } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   NavigationMenu,
@@ -37,6 +37,12 @@ const menuItems = [
     iconFill: (props: any) => <FileChartPie {...props} />
   },
   {
+    text: 'Assets',
+    route: '/assets',
+    iconOutline: (props: any) => <Landmark {...props} />,
+    iconFill: (props: any) => <Landmark {...props} />
+  },
+  {
     text: 'Taxation',
     route: '/taxation',
     iconOutline: (props: any) => <NotepadText {...props} />,
@@ -48,22 +54,26 @@ const Menu = () => {
   const { logout } = useAuth();
   const [location] = useLocation();
 
-  return <NavigationMenu className="min-w-2xl my-4 flex justify-between items-center">
-    <NavigationMenuList>
-      {menuItems.map(menuItem =>
-        <NavigationMenuItem key={menuItem.route}>
-          <Link href={menuItem.route} >
-            <NavigationMenuLink className={cn(menuItem.route === location ? "bg-muted" : "bg-transparent")}>
-              {menuItem.text}
-            </NavigationMenuLink>
-          </Link>
-        </NavigationMenuItem>
-      )}
-    </NavigationMenuList>
-    <Button variant='outline' onClick={async () => {
-      await logout()
-    }} type='button'>Logout</Button>
-  </NavigationMenu>
+  return (
+    <div className="my-4 flex w-full items-center justify-between">
+      <NavigationMenu>
+        <NavigationMenuList>
+          {menuItems.map(menuItem =>
+            <NavigationMenuItem key={menuItem.route}>
+              <NavigationMenuLink asChild className={cn(menuItem.route === location ? "bg-muted" : "bg-transparent")}>
+                <Link href={menuItem.route} aria-current={menuItem.route === location ? "page" : undefined}>
+                  {menuItem.text}
+                </Link>
+              </NavigationMenuLink>
+            </NavigationMenuItem>
+          )}
+        </NavigationMenuList>
+      </NavigationMenu>
+      <Button variant="outline" onClick={async () => {
+        await logout()
+      }} type="button">Logout</Button>
+    </div>
+  )
 }
 
 const MobileMenu = () => {
@@ -75,14 +85,16 @@ const MobileMenu = () => {
         <Link
           href={menuItem.route}
           key={menuItem.route}
-          className="flex flex-col items-center gap-1 flex-1"
+          aria-label={menuItem.text}
+          aria-current={menuItem.route === location ? "page" : undefined}
+          className="flex min-h-11 flex-col cursor-pointer items-center justify-center gap-1 flex-1"
         >
           {location !== menuItem.route
             ? menuItem.iconOutline({ className: 'stroke-muted-foreground', size: 24 })
             : menuItem.iconFill({ className: 'stroke-foreground', size: 24 })}
           <p
             className={cn(
-              'text-xs max-[389px]:hidden min-[390px]:block', // Hide text on iPhone SE-sized screens
+              'text-[10px] max-[389px]:hidden min-[390px]:block', // Hide text on iPhone SE-sized screens
               location !== menuItem.route ? 'text-muted-foreground' : 'text-foreground'
             )}
           >
