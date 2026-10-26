@@ -1,3 +1,4 @@
+use anyhow::Context;
 use reqwest::Client;
 use rust_decimal::Decimal;
 use serde::Deserialize;
@@ -30,7 +31,8 @@ pub async fn get_stock_split_information(
     sleep(Duration::from_millis(12000)).await;
     let client = Client::new();
 
-    let polygon_key = get_env_variable("POLYGON_TOKEN").unwrap();
+    let polygon_key = get_env_variable("POLYGON_TOKEN")
+        .context("POLYGON_TOKEN is required for stock-split housekeeping")?;
 
     let polygon_response_body = client
         .get(format!(

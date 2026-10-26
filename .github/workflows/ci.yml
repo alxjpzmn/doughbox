@@ -8,6 +8,20 @@ on:
 jobs:
   rust:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: doughbox_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     defaults:
       run:
         working-directory: core
@@ -18,6 +32,9 @@ jobs:
           toolchain: 1.97.1
           components: clippy
       - run: cargo test
+      - run: cargo test pricing_database -- --ignored
+        env:
+          TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/doughbox_test
       - run: cargo clippy --all-targets
 
   web:

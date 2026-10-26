@@ -7,13 +7,13 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { BarList } from '@/components/composite/bar-list';
 import { BASE_URL, fetcher } from '@/lib/http';
 import { formatCurrency, formatRelativeAmount } from '@/lib/utils';
-import { Triangle, TriangleDashed } from 'lucide-react';
+import { ArrowUpIcon, ArrowDownIcon, MinusIcon } from '@phosphor-icons/react';
 
 const Portfolio = () => {
-  const { data, isLoading, error } = useSwr<PortfolioOverview>(`${BASE_URL}/portfolio`, fetcher);
+  const { data, isLoading, error } = useSwr<PortfolioOverview>(`${BASE_URL}/portfolio`, fetcher, { refreshInterval: 60_000 });
 
   let overviewData = {
-    title: 'Current Portfolio Value',
+    title: data && !data.valuation_complete ? 'Partial Portfolio Value' : 'Current Portfolio Value',
     portfolio_value: `${formatCurrency(isLoading || !data ? 0 : parseFloat(data.total_value))}`,
     absolute_return: `${formatCurrency(
       isLoading || !data ? 0 : parseFloat(data?.total_return_abs)
@@ -73,20 +73,22 @@ const Portfolio = () => {
               <div className="flex justify-start mb-2 truncate">
                 <p className='text-4xl font-bold'>{overviewData.portfolio_value}</p>
               </div>
-              <div className="text-muted-foreground flex gap-2 items-center leading-none text-sm truncate">
+              {data.valuation_complete ? <div className="text-muted-foreground flex gap-2 items-center leading-none text-sm truncate">
                 {
-                  overviewData.unformatted_return > 0 && <Triangle size={16} className='stroke-success-foreground' />
+                  overviewData.unformatted_return > 0 && <ArrowUpIcon size={16} className='text-success-foreground' />
                 }
                 {
-                  overviewData.unformatted_return < 0 && <Triangle size={16} className='rotate-180 stroke-destructive-foreground' />
+                  overviewData.unformatted_return < 0 && <ArrowDownIcon size={16} className='text-destructive-foreground' />
                 }
                 {
-                  overviewData.unformatted_return === 0 && <TriangleDashed size={16} className='stroke-muted-foreground' />
+                  overviewData.unformatted_return === 0 && <MinusIcon size={16} className='text-muted-foreground' />
                 }
                 <p>{overviewData.absolute_return} (
                   {overviewData.relative_return}
                   )</p>
-              </div>
+              </div> : <p className="text-sm text-destructive-foreground">
+                Excludes holdings without a usable price: {data.unpriced_isins.join(', ')}. Returns are unavailable until all holdings are priced.
+              </p>}
             </CardContent>
           </Card>
 
@@ -122,4 +124,3 @@ const Portfolio = () => {
 };
 
 export default Portfolio;
-

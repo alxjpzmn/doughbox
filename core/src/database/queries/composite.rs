@@ -4,7 +4,7 @@ use crate::{
     database::{
         db_client,
         models::{instrument::Instrument, trade::Trade},
-        queries::instrument::{get_instrument_by_id, update_instrument_price},
+        queries::instrument::update_instrument_price,
     },
     services::{instruments::identifiers::get_changed_identifier, shared::util::hash_string},
 };
@@ -140,36 +140,15 @@ pub async fn add_trade_to_db(trade: Trade, id: Option<String>) -> anyhow::Result
 
     println!("✅ Trade added: {:?}", trade);
 
-    let existing_instrument_entry = get_instrument_by_id(&trade.isin).await?;
-
-    match existing_instrument_entry {
-        Some(_) => {
-            let last_price_update = existing_instrument_entry.unwrap().last_price_update;
-
-            // Update instrument price if the last update is older than the trade date
-            if last_price_update < trade.date {
-                let instrument = Instrument {
-                    id: trade.isin.clone(),
-                    last_price_update: trade.date,
-                    price: trade.eur_avg_price_per_unit,
-                    name: trade.isin.clone(),
-                };
-
-                update_instrument_price(instrument).await?;
-            }
-        }
-        None => {
-            // Insert new instrument if it doesn't exist
-            let instrument = Instrument {
-                id: trade.isin.clone(),
-                last_price_update: trade.date,
-                price: trade.eur_avg_price_per_unit,
-                name: trade.isin.clone(),
-            };
-
-            update_instrument_price(instrument).await?;
-        }
-    }
+    // Atomically retain the latest execution fallback without replacing an automatic
+    // quote or manual pin. Even older imports can improve a previously absent fallback.
+    update_instrument_price(Instrument {
+        id: trade.isin.clone(),
+        last_price_update: trade.date,
+        price: trade.eur_avg_price_per_unit,
+        name: trade.isin.clone(),
+    })
+    .await?;
 
     Ok(())
 }

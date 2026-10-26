@@ -5,19 +5,28 @@ use utoipa::{
 
 use super::handlers::{
     auth::{self, LoginRequestData},
-    market, performance, portfolio, taxation, timeline, trades,
+    market, performance, portfolio, settings, taxation, timeline, trades,
 };
 use crate::{
     api::errors::{ErrorDetails, ErrorResponse},
     database::models::{
-        dividend::Dividend, fx_conversion::FxConversion, instrument::Instrument,
-        interest::InterestPayment, performance::PerformanceSignal, position::PositionWithName,
-        position::PositionWithValueAndAllocation, trade::Trade,
+        dividend::Dividend,
+        fx_conversion::FxConversion,
+        instrument::{Instrument, InstrumentDetails},
+        interest::InterestPayment,
+        performance::PerformanceSignal,
+        position::PositionWithName,
+        position::PositionWithValueAndAllocation,
+        trade::Trade,
     },
     services::{
         events::{EventType, PortfolioEvent, TradeDirection},
+        market_data::prices::types::{
+            PriceFeedStatus, PriceQuote, PriceSchedulerSettings, PricingStatus,
+        },
         performance::{BuyIn, PortfolioPerformance, PositionPerformance},
         portfolio::PortfolioOverview,
+        shared::settings::ApplicationSettings,
         taxation::{AnnualTaxableAmounts, FxWac, SecWac, TaxationReport, TransactionTaxImpact},
     },
 };
@@ -48,7 +57,7 @@ impl Modify for SecurityAddon {
 #[openapi(
     info(
         title = "Doughbox API",
-        description = "Read-only REST API for portfolio allocations, trades, buy-ins, performance, and Austrian tax reports.\n\n\
+        description = "REST API for portfolio allocations, trades, buy-ins, performance, Austrian tax reports, and managing existing instrument names and manual EUR price pins.\n\n\
             Authenticate with a session cookie from `POST /api/login` or `Authorization: Bearer $API_TOKEN`.",
         version = "0.1.0"
     ),
@@ -69,7 +78,17 @@ impl Modify for SecurityAddon {
         performance::past_performance,
         market::instruments,
         market::instrument,
+        market::rename,
+        market::set_price,
+        market::unpin_price,
         market::brokers,
+        market::prices,
+        market::save_scheduler,
+        market::refresh_prices,
+        market::refresh_price_feed,
+        market::reset_price_feed,
+        settings::get_settings,
+        settings::save_settings,
         taxation::taxation,
         taxation::taxation_detailed,
         taxation::taxation_transactions,
@@ -93,6 +112,14 @@ impl Modify for SecurityAddon {
         PositionPerformance,
         PerformanceSignal,
         Instrument,
+        InstrumentDetails,
+        market::RenameInstrumentRequest,
+        market::ManualPriceRequest,
+        PricingStatus,
+        PriceFeedStatus,
+        PriceSchedulerSettings,
+        PriceQuote,
+        ApplicationSettings,
         TaxationReport,
         AnnualTaxableAmounts,
         SecWac,
@@ -104,7 +131,7 @@ impl Modify for SecurityAddon {
         (name = "portfolio", description = "Allocations, holdings, and timeline"),
         (name = "trades", description = "Trades, buy-ins, dividends, interest, and FX"),
         (name = "performance", description = "Live and precomputed performance"),
-        (name = "market", description = "Instruments and brokers"),
+        (name = "market", description = "Existing instruments, manual EUR price pins, automatic pricing status, and brokers"),
         (name = "taxation", description = "Austrian capital-gains tax reports"),
     ),
     modifiers(&SecurityAddon)

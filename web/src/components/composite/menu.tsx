@@ -1,6 +1,6 @@
 import useAuth from "@/hooks/useAuth";
 import { Link, useLocation } from "wouter";
-import { ChartArea, ChartBar, FileChartPie, FileClock, NotepadText } from "lucide-react";
+import { ChartLineIcon, ChartBarIcon, TrayArrowDownIcon, NotepadIcon, GearSixIcon } from "@phosphor-icons/react";
 import { cn } from "@/lib/utils";
 import {
   NavigationMenu,
@@ -12,51 +12,26 @@ import { Button } from "@/components/ui/button";
 
 
 const menuItems = [
-  {
-    text: 'Portfolio',
-    route: '/portfolio',
-    iconOutline: (props: any) => <ChartBar {...props} />,
-    iconFill: (props: any) => <ChartBar {...props} />
-  },
-  {
-    text: 'Performance',
-    route: '/performance',
-    iconOutline: (props: any) => <ChartArea {...props} />,
-    iconFill: (props: any) => <ChartArea {...props} />
-  },
-  {
-    text: 'Timeline',
-    route: '/timeline',
-    iconOutline: (props: any) => <FileClock {...props} />,
-    iconFill: (props: any) => <FileClock {...props} />
-  },
-  {
-    text: 'Positions',
-    route: '/positions',
-    iconOutline: (props: any) => <FileChartPie {...props} />,
-    iconFill: (props: any) => <FileChartPie {...props} />
-  },
-  {
-    text: 'Taxation',
-    route: '/taxation',
-    iconOutline: (props: any) => <NotepadText {...props} />,
-    iconFill: (props: any) => <NotepadText {...props} />
-  }
+  { text: 'Overview', route: '/overview', icon: ChartBarIcon },
+  { text: 'Performance', route: '/performance', icon: ChartLineIcon },
+  { text: 'Data', route: '/instruments', icon: TrayArrowDownIcon },
+  { text: 'Taxation', route: '/taxation', icon: NotepadIcon },
+  { text: 'Settings', route: '/settings', icon: GearSixIcon },
 ];
 
 const Menu = () => {
   const { logout } = useAuth();
   const [location] = useLocation();
 
-  return <NavigationMenu className="min-w-2xl my-4 flex justify-between items-center">
-    <NavigationMenuList>
+  return <NavigationMenu aria-label="Dashboard" className="my-4 w-full max-w-none flex-wrap justify-between gap-2">
+    <NavigationMenuList className="flex-wrap justify-start">
       {menuItems.map(menuItem =>
         <NavigationMenuItem key={menuItem.route}>
-          <Link href={menuItem.route} >
-            <NavigationMenuLink className={cn(menuItem.route === location ? "bg-muted" : "bg-transparent")}>
+          <NavigationMenuLink asChild active={menuItem.route === location} className={cn("min-h-11 flex-row items-center justify-center gap-1.5 px-2", menuItem.route === location ? "bg-muted" : "bg-transparent")}>
+            <Link href={menuItem.route} aria-current={menuItem.route === location ? "page" : undefined}>
               {menuItem.text}
-            </NavigationMenuLink>
-          </Link>
+            </Link>
+          </NavigationMenuLink>
         </NavigationMenuItem>
       )}
     </NavigationMenuList>
@@ -70,19 +45,23 @@ const MobileMenu = () => {
   const [location] = useLocation();
 
   return (
-    <div className="w-full fixed z-10 left-0 bottom-0 h-24 bg-primary-foreground border-t border-primary-foreground-muted pt-6 pb-12 flex justify-around items-center">
+    <nav aria-label="Dashboard" className="z-10 grid w-full shrink-0 grid-cols-5 gap-1 border-t bg-background px-2 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
       {menuItems.map((menuItem) => (
         <Link
           href={menuItem.route}
           key={menuItem.route}
-          className="flex flex-col items-center gap-1 flex-1"
+          className="flex min-h-11 min-w-0 flex-col items-center justify-center gap-1 rounded-md focus-visible:outline focus-visible:outline-2"
+          aria-label={menuItem.text}
+          aria-current={location === menuItem.route ? 'page' : undefined}
         >
-          {location !== menuItem.route
-            ? menuItem.iconOutline({ className: 'stroke-muted-foreground', size: 24 })
-            : menuItem.iconFill({ className: 'stroke-foreground', size: 24 })}
+          <menuItem.icon
+            className={location === menuItem.route ? 'text-foreground' : 'text-muted-foreground'}
+            size={20}
+            aria-hidden="true"
+          />
           <p
             className={cn(
-              'text-xs max-[389px]:hidden min-[390px]:block', // Hide text on iPhone SE-sized screens
+              'w-full truncate text-center text-[11px]',
               location !== menuItem.route ? 'text-muted-foreground' : 'text-foreground'
             )}
           >
@@ -90,7 +69,7 @@ const MobileMenu = () => {
           </p>
         </Link>
       ))}
-    </div>
+    </nav>
   )
 }
 

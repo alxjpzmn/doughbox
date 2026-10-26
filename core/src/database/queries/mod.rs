@@ -1,3 +1,5 @@
+pub mod application_settings;
+pub mod background_job;
 pub mod composite;
 pub mod dividend;
 pub mod fund_report;
@@ -8,6 +10,8 @@ pub mod interest;
 pub mod listing_change;
 pub mod performance;
 pub mod position;
+pub mod price;
+pub mod price_scheduler;
 pub mod stock_split;
 pub mod tax_optimization;
 pub mod ticker_conversion;

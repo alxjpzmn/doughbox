@@ -1,6 +1,6 @@
 import { EventType, TradeDirection, PortfolioEvent } from '@/types/core';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { ArrowDownLeft, ArrowDownUp, ArrowUpRight, HandCoins, Scroll } from 'lucide-react';
+import { ArrowDownLeftIcon, ArrowsDownUpIcon, ArrowUpRightIcon, HandCoinsIcon, ScrollIcon } from '@phosphor-icons/react';
 import { Separator } from '@/components/ui/separator';
 import { Skeleton } from '@/components/ui/skeleton';
 import { formatCurrency, formatDate } from '@/lib/utils';
@@ -48,7 +48,7 @@ const TradeCard: React.FC<TimelineCardProps> = ({ timelineEvent }) => {
         <Separator className='my-2' />
         <div className='flex justify-between items-center'>
           <p className='text-muted-foreground text-sm'>{formatDate(new Date(timelineEvent?.date))}</p>
-          {timelineEvent.direction === TradeDirection.Buy ? <ArrowDownLeft className='stroke-success-foreground' size={16} /> : <ArrowUpRight className='stroke-red-400' size={16} />}
+          {timelineEvent.direction === TradeDirection.Buy ? <ArrowDownLeftIcon className='text-success-foreground' size={16} /> : <ArrowUpRightIcon className='text-red-400' size={16} />}
         </div>
       </CardContent>
     </Card >
@@ -71,7 +71,7 @@ const InterestCard: React.FC<TimelineCardProps> = ({ timelineEvent }) => {
         <Separator className='my-2' />
         <div className='flex justify-between items-center'>
           <p className='text-muted-foreground text-sm'>{formatDate(new Date(timelineEvent?.date))}</p>
-          <HandCoins size={16} className='stroke-indigo-400' />
+          <HandCoinsIcon size={16} className='text-indigo-400' />
         </div>
       </CardContent>
     </Card >
@@ -96,7 +96,7 @@ const DividendCard: React.FC<TimelineCardProps> = ({ timelineEvent }) => {
         <Separator className='my-2' />
         <div className='flex justify-between items-center'>
           <p className='text-muted-foreground text-sm'>{formatDate(new Date(timelineEvent?.date))}</p>
-          <Scroll size={16} className='stroke-indigo-400' />
+          <ScrollIcon size={16} className='text-indigo-400' />
         </div>
       </CardContent>
     </Card >
@@ -119,7 +119,7 @@ const FxCard: React.FC<TimelineCardProps> = ({ timelineEvent }) => {
         <Separator className='my-2' />
         <div className='flex justify-between items-center'>
           <p className='text-muted-foreground text-sm'>{formatDate(new Date(timelineEvent?.date))}</p>
-          <ArrowDownUp size={16} className='stroke-pink-400' />
+          <ArrowsDownUpIcon size={16} className='text-pink-400' />
         </div>
       </CardContent>
     </Card >

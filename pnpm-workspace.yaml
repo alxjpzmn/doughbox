@@ -1,6 +1,21 @@
 packages:
   - "core"
   - "web"
+# Retain native optional dependencies when sharing a checkout with macOS/Linux.
+supportedArchitectures:
+  os:
+    - current
+    - darwin
+    - linux
+  cpu:
+    - current
+    - arm64
+    - x64
+  # Prepare glibc Linux tooling from macOS, plus the installer's native libc.
+  # Do not opt in to musl unless it is the current libc.
+  libc:
+    - current
+    - glibc
 allowBuilds:
   core-js: true
   esbuild: true

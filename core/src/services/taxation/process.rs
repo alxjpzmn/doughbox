@@ -66,7 +66,10 @@ impl ProcessingContext<'_> {
     }
 }
 
-pub(crate) async fn process_event(event: PortfolioEvent, ctx: &mut ProcessingContext<'_>) -> Result<()> {
+pub(crate) async fn process_event(
+    event: PortfolioEvent,
+    ctx: &mut ProcessingContext<'_>,
+) -> Result<()> {
     info!(target: "tax_report", "Processing event: {:?} ({:?}) on {:?}", event.identifier.clone().unwrap_or("No identifier".to_string()), event.event_type, event.date);
 
     match event.event_type {
@@ -630,11 +633,11 @@ pub(crate) fn post_process(
     securities_wacs: &mut BTreeMap<String, SecWac>,
 ) {
     for amounts in taxable_amounts.values_mut() {
-        amounts.net_capital_gains =
-            (amounts.capital_gains - amounts.capital_losses).max(dec!(0.0));
+        amounts.net_capital_gains = (amounts.capital_gains - amounts.capital_losses).max(dec!(0.0));
         amounts.tax_owed_dividends =
             (amounts.dividends * dec!(0.275) - amounts.withheld_tax_dividends).max(dec!(0.0));
-        amounts.tax_owed_dividend_equivalents = amounts.tax_owed_dividend_equivalents.max(dec!(0.0));
+        amounts.tax_owed_dividend_equivalents =
+            amounts.tax_owed_dividend_equivalents.max(dec!(0.0));
         amounts.round_all(2);
     }
 
@@ -774,8 +777,18 @@ mod tests {
             from_date: None,
             until_date: None,
         };
-        process_eur_sell(trade(TradeDirection::Sell, dec!(4), dec!(150), date(2024, 6, 1)), &mut ctx, "US0378331005").unwrap();
-        process_eur_sell(trade(TradeDirection::Sell, dec!(4), dec!(50), date(2024, 7, 1)), &mut ctx, "US0378331005").unwrap();
+        process_eur_sell(
+            trade(TradeDirection::Sell, dec!(4), dec!(150), date(2024, 6, 1)),
+            &mut ctx,
+            "US0378331005",
+        )
+        .unwrap();
+        process_eur_sell(
+            trade(TradeDirection::Sell, dec!(4), dec!(50), date(2024, 7, 1)),
+            &mut ctx,
+            "US0378331005",
+        )
+        .unwrap();
         let year = ctx.get_year_entry();
         assert_eq!(year.capital_gains, dec!(200));
         assert_eq!(year.capital_losses, dec!(200));
@@ -872,7 +885,11 @@ mod tests {
         .await
         .unwrap();
 
-        post_process(&mut taxable_amounts, &mut currency_wacs, &mut securities_wacs);
+        post_process(
+            &mut taxable_amounts,
+            &mut currency_wacs,
+            &mut securities_wacs,
+        );
         let year = taxable_amounts.get(&2024).unwrap();
         assert_eq!(year.capital_gains, dec!(500));
         assert_eq!(year.capital_losses, dec!(0));

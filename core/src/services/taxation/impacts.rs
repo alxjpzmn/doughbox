@@ -18,9 +18,7 @@ use crate::services::market_data::fx_rates::convert_amount;
 use crate::services::shared::constants::OUT_DIR;
 
 use super::process::get_capital_gains_tax_report;
-use super::types::{
-    DetailedTaxationReport, TaxRates, TaxReportMetadata, TransactionTaxImpact,
-};
+use super::types::{DetailedTaxationReport, TaxRates, TaxReportMetadata, TransactionTaxImpact};
 use super::wac::{FxWac, SecWac};
 
 struct ImpactContext {

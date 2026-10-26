@@ -13,6 +13,7 @@ If you need to take care of capital gains taxes in Austria, you can use Doughbox
 - Self-hosted, with a Docker image for easy deployment.
 - Web interface, CLI and API.
 - Support for FX conversions and trades in non-Euro currencies with FX rates from the ECB.
+- Optional automatic EUR equity/ETF prices from Xetra, Tradegate, Frankfurt, Cboe Europe and Euronext, using a durable Postgres queue with scheduling and worker limits managed in the web UI.
 - Import brokerage statements from various brokers, e.g. Trade Republic, Revolut, Trading 212, etc.
 - Display Portfolio Allocation across brokerage accounts.
 - Display returns over time for the portfolio and individual positions (both open and closed).
@@ -28,10 +29,10 @@ If you need to take care of capital gains taxes in Austria, you can use Doughbox
 ## (Known) Limitations
 
 - EUR as base currency — it supports trades in other currencies, but the base currency needs to be EUR.
-- Current quotes for securities are not fetched automatically. They're kept in a separate table and need to be refreshed either manually or via API (more on this below).
+- Automatic prices are opt-in and currently cover EUR monetary quotations for instruments imported as `Equity` (including ETFs). Bonds, derivatives and non-EUR market quotations are not automatically priced. Coverage depends on eligible post-trade reports on the enabled venues, including zero-volume price indications; these are delayed valuations, not guaranteed executed-trade prices, live quotes or official closing prices.
 - Doughbox uses ISINs as primary identifier, so it's agnostic to the trading venue an instrument was bought. If it encounters a ticker symbol during the import, it attempts to convert it to an ISIN via the OpenFIGI API
 - Crypto, Real Estate, Cash Holdings aren't supported. Basically, if it has an ISIN, it _might_ work with Doughbox, if it hasn't, then it sure won't.
-- The web interface is currently used for visualizations only, commands need to be invoked using the CLI.
+- Imports and portfolio/performance/tax calculations still run through the CLI. The web interface manages price feeds and scheduling, worker concurrency, log verbosity, existing instrument names, and manual EUR prices.
 
 ## Supported brokers
 
@@ -46,25 +47,37 @@ If you need to take care of capital gains taxes in Austria, you can use Doughbox
 | Lightyear            | ✅              | n.a.          | n.a.          | ✅            | ✅             |
 | Trading 212 (Invest) | ✅              | n.a.          | n.a.          | ✅            | ✅             |
 
+## Supported price feeds
+
+| Exchange / feed | Coverage                                                                                                   | Feed key             |
+| --------------- | ---------------------------------------------------------------------------------------------------------- | -------------------- |
+| Xetra           | Deutsche Börse delayed post-trade reports                                                                  | `DETR-posttrade`     |
+| Tradegate       | Deutsche Börse delayed post-trade reports                                                                  | `DGAT-posttrade`     |
+| Frankfurt       | Deutsche Börse delayed post-trade reports                                                                  | `DFRA-posttrade`     |
+| Cboe Europe     | BXE, CXE and DXE exchange streams; APA/TRF reporting excluded                                              | `CBOE-posttrade`     |
+| Euronext        | Equities and ETFs/funds across Amsterdam, Brussels, Dublin, Lisbon, Milan, Oslo and Paris, where available | `EURONEXT-posttrade` |
+
+All feeds use eligible EUR monetary reports for known equity/ETF ISINs. Select exchanges in **Data → Price Feeds → Manage scheduler**; refresh and reset controls are available per exchange. These are delayed valuations, not live quotes or guaranteed closing prices. See [Fetch current prices](#fetch-current-prices) for availability, prioritization and provider terms. gettex and EIX remain deferred pending verified post-trade formats and correction semantics.
+
 ## Why does this exist?
 
 Doughbox is scratching my own itch: I have lots of different brokerage accounts and I wanted an easy way to stay on top of my portfolio allocation and its performance. While there are great portfolio tracking apps out there (Delta, Finanzfluss Co-Pilot, Parqet, Quin), I wanted to have full control over the data and the supported brokers. And when the need for some custom visulations and capital gains tax preparation came about, I started developing Doughbox. Since I use a lot of open source, self-hosted services, it makes sense for me to open source my personal infrastructure, too.
 
 ## Get Started
 
-In order for Doughbox to run, you need a running Postgres instance and a polygon.io API key.
+In order for Doughbox to run, you need a running Postgres instance. A polygon.io API key is needed for stock-split housekeeping, but not for the API or price refreshes.
 
 ### Environment variables
 
-| Variable | Required | Purpose |
-| --- | --- | --- |
-| `POSTGRES_URL` | yes | Postgres connection string |
-| `POLYGON_TOKEN` | yes | Stock-split data from polygon.io |
-| `FRED_TOKEN` | no | S&P 500 benchmark via FRED |
-| `PASSWORD` | no | Web UI login password |
-| `API_TOKEN` | no | Bearer token for the HTTP API |
-| `TG_TOKEN` / `TG_CHAT_ID` | no | Telegram notifications (`portfolio -n`) |
-| `RUST_ENV` | no | Loads `.env.dev` when `development` (default), `.env.prod` when `production` |
+| Variable                  | Required         | Purpose                                                                      |
+| ------------------------- | ---------------- | ---------------------------------------------------------------------------- |
+| `POSTGRES_URL`            | yes              | Postgres connection string                                                   |
+| `POLYGON_TOKEN`           | for stock splits | Stock-split data from polygon.io                                             |
+| `FRED_TOKEN`              | no               | S&P 500 benchmark via FRED                                                   |
+| `PASSWORD`                | no               | Web UI login password                                                        |
+| `API_TOKEN`               | no               | Bearer token for the HTTP API                                                |
+| `TG_TOKEN` / `TG_CHAT_ID` | no               | Telegram notifications (`portfolio -n`)                                      |
+| `RUST_ENV`                | no               | Loads `.env.dev` when `development` (default), `.env.prod` when `production` |
 
 ### Docker
 
@@ -102,26 +115,45 @@ You can run the following commands in the CLI:
 
 `api`: the command to run the web server that serves both the web frontend and the API. The docker container automatically runs this.
 
+`prices refresh [--feed xetra|tradegate|frankfurt|cboe|euronext] [--dry-run]`: enqueue the persisted feed selection (or one explicitly named feed) and wait for completion, or validate the available last 48 hours without writing prices/checkpoints/jobs. Shows queue status and refresh progress; does not prompt for FX updates. With no selected feeds, choose a feed explicitly or update the UI selection.
+
+`prices status`: JSON summary of the schedule, queue and current holdings' price sources/timestamps.
+
+`prices worker`: run queue consumers for all supported feeds without the HTTP server or scheduler. Useful for a separate worker container; automatic scheduling requires an `api` process and the persisted scheduler enabled. Each process applies the worker limit saved in the web UI.
+
+`prices set <ISIN> --price 123.45 [--as-of 2026-10-15T12:00:00Z]`: pin a positive manual **EUR per-unit** price. `prices unpin <ISIN>` removes the override and reselects stored market data or an execution fallback.
+
 ### REST API
 
-The API is read-only. Browser sessions from `POST /api/login` and `Authorization: Bearer $API_TOKEN` are both accepted.
+The API provides portfolio/tax reads, instrument name/manual-price management, scheduler/import controls, and non-sensitive application settings. Browser sessions from `POST /api/login` and `Authorization: Bearer $API_TOKEN` are both accepted; all writes use the same authentication.
 
-| Method | Path | Purpose |
-| --- | --- | --- |
-| `GET` | `/api/docs` | Interactive Swagger UI (no auth) |
-| `GET` | `/api/openapi.json` | OpenAPI spec |
-| `GET` | `/api/portfolio` | Allocations and total return |
-| `GET` | `/api/positions?date=&isin=` | Holdings as of a date |
-| `GET` | `/api/trades?isin=&broker=&direction=&from_date=&until_date=` | Trades |
-| `GET` | `/api/buy-ins?isin=&broker=` | WAC cost basis per instrument and broker |
-| `GET` | `/api/performance?isin=&broker=` | Live performance (does not write files) |
-| `GET` | `/api/performance_overview` | Precomputed `output/performance.json` |
-| `GET` | `/api/past_performance` | Historical value snapshots |
-| `GET` | `/api/timeline?start_date=&isin=&broker=&event_type=` | Unified event timeline |
-| `GET` | `/api/instruments` / `/api/instruments/{isin}` | Instrument catalog |
-| `GET` | `/api/brokers` | Distinct broker names (use these as filter values) |
-| `GET` | `/api/dividends` / `/api/interest` / `/api/fx-conversions` | Cash events |
-| `GET` | `/api/taxation` | Tax report |
+Sessions are stored in memory and are lost when the API restarts; separate API replicas do not share session records. A browser retaining an old cookie can then produce `record not found in store` warnings and must sign in again. These session lookups are independent of price-worker jobs.
+
+| Method        | Path                                                          | Purpose                                                                                                                                             |
+| ------------- | ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET`         | `/api/docs`                                                   | Interactive Swagger UI (no auth)                                                                                                                    |
+| `GET`         | `/api/openapi.json`                                           | OpenAPI spec                                                                                                                                        |
+| `GET`         | `/api/portfolio`                                              | Allocations and total return                                                                                                                        |
+| `GET`         | `/api/positions?date=&isin=`                                  | Holdings as of a date                                                                                                                               |
+| `GET`         | `/api/trades?isin=&broker=&direction=&from_date=&until_date=` | Trades                                                                                                                                              |
+| `GET`         | `/api/buy-ins?isin=&broker=`                                  | WAC cost basis per instrument and broker                                                                                                            |
+| `GET`         | `/api/performance?isin=&broker=`                              | Live performance (does not write files)                                                                                                             |
+| `GET`         | `/api/performance_overview`                                   | Precomputed `output/performance.json`                                                                                                               |
+| `GET`         | `/api/past_performance`                                       | Historical value snapshots                                                                                                                          |
+| `GET`         | `/api/timeline?start_date=&isin=&broker=&event_type=`         | Unified event timeline                                                                                                                              |
+| `GET`         | `/api/instruments` / `/api/instruments/{isin}`                | All known instruments with safe `quote` valuation/provenance metadata; existing top-level fields remain available                                   |
+| `PATCH`       | `/api/instruments/{isin}`                                     | Rename an existing instrument with `{"name":"Display name"}`; trims/rejects blank names without changing prices                                     |
+| `PUT`         | `/api/instruments/{isin}/price`                               | Pin a positive manual EUR unit price, e.g. `{"price":"123.456789","as_of":"2026-10-18T12:00:00Z"}`; `as_of` is optional and cannot be in the future |
+| `DELETE`      | `/api/instruments/{isin}/price`                               | Remove the manual pin and reselect stored market data or fallback                                                                                   |
+| `GET`         | `/api/prices`                                                 | Price schedule, queue errors and current holdings' quote provenance (no upstream requests)                                                          |
+| `PUT`         | `/api/prices/scheduler`                                       | Persist `{"enabled":true,"interval_minutes":30,"worker_concurrency":2,"feeds":["DETR-posttrade","DFRA-posttrade"]}`; apply without restart          |
+| `POST`        | `/api/prices/refresh`                                         | Queue the selected feeds, even while automatic scheduling is paused; returns `202` with current status                                              |
+| `POST`        | `/api/prices/feeds/{feed}/refresh`                            | Queue one supported feed; preserves active work and retry backoff                                                                                   |
+| `POST`        | `/api/prices/feeds/{feed}/reset`                              | Retire a queued/running job and queue a fresh attempt; preserve completed checkpoints, reports, prices, pins and history                            |
+| `GET` / `PUT` | `/api/settings`                                               | Read/save non-sensitive preferences, e.g. `{"log_level":"DEBUG"}`; never returns credentials                                                        |
+| `GET`         | `/api/brokers`                                                | Distinct broker names (use these as filter values)                                                                                                  |
+| `GET`         | `/api/dividends` / `/api/interest` / `/api/fx-conversions`    | Cash events                                                                                                                                         |
+| `GET`         | `/api/taxation`                                               | Tax report                                                                                                                                          |
 
 Example:
 
@@ -132,13 +164,32 @@ curl -H "Authorization: Bearer $API_TOKEN" \
 
 ### Local development
 
-You need [Rust](https://www.rust-lang.org/tools/install) (see `rust-toolchain.toml`), [pnpm](https://pnpm.io), Node 22, and a running Postgres instance.
+You need [Rust](https://www.rust-lang.org/tools/install) (see `rust-toolchain.toml`), [pnpm](https://pnpm.io), Node 22.12 or newer, and a running Postgres instance.
 
-1. Copy env vars into `core/.env.dev` (`POSTGRES_URL`, `POLYGON_TOKEN`, and any optional tokens above).
+1. Put credentials/connection details in `core/.env.dev` (`POSTGRES_URL`, `POLYGON_TOKEN` if using stock-split housekeeping, and any optional credentials above). Configure application behavior in the web UI.
 2. From the repo root: `pnpm install`
 3. `pnpm dev` starts the API (`cargo watch` on `:8084`) and the Vite dev server (proxies `/api` to the API).
 4. After changing Rust types marked with `#[typeshare]`, run `pnpm typeshare` to regenerate `web/src/types/core.ts`.
 5. `pnpm test` runs `cargo test`. `pnpm typecheck` runs `tsc --noEmit`. `pnpm core lint` runs clippy.
+
+UI icons use [Phosphor](https://phosphoricons.com/) through `@phosphor-icons/react`, including shared controls. Use canonical `*Icon` exports with the default regular weight and Tailwind `text-*` colors (`currentColor`), not `stroke-*` colors. `web/components.json` selects Phosphor for generated components.
+
+Frontend tooling uses platform-specific optional dependencies. The workspace retains macOS and Linux bindings for ARM64 and x64 so installing inside Linux does not prune macOS bindings from a shared checkout. If Vite reports a missing Rolldown native binding, run these commands in a **shell**, not a Python cell:
+
+```sh
+pnpm install --frozen-lockfile
+pnpm dev
+```
+
+Keep `pnpm-lock.yaml`; no `npm install`, lockfile deletion or WASM fallback is needed.
+
+Queue/price database integration tests are opt-in locally (and run in CI): from `core`, run `TEST_POSTGRES_URL=postgres://... cargo test pricing_database -- --ignored`. Tests create and drop their own uniquely named schemas and never fall back to `POSTGRES_URL` or `.env.dev`.
+
+### Database migrations
+
+Applied migration files must keep their original version, name and contents: Refinery validates them against `refinery_schema_history` at startup. V9 is reserved for the historical `custom_assets` migration; automatic pricing is V10. Keep V9 even when its application features are absent so existing databases retain their migration history and asset data.
+
+If startup reports `V9__custom_assets` versus `V9__automatic_prices`, use the corrected migration files and restart the application. Do not delete history rows, reset the database or disable migration validation.
 
 ## Playbooks
 
@@ -149,10 +200,6 @@ Trade Republic doesn't support any bulk export or direct, documented API access 
 ### Interactive Brokers Trade Export via Flex Query
 
 To import your Interactive Brokers trades into Doughbox, set up a Flex Query: log into IBKR, click "Performance & Reports" > "Flex Queries" > "Create", Select "Trades" under sections, then "Select All". Choose "CSV" under "Format". Give the query a name, tap "Next", then review and "Confirm".
-
-### Fetch current prices
-
-Since Doughbox doesn't have any direct way to fetch current asset prices (if you know a good free API for asset prices with good European coverage, please let me know), you'll need to either update them manually when you want to check your current portfolio value or you automate it by using the `/api/positions` endpoint to fetch your current holdings, then fetch the current EUR price for the respective ISIN from a data source and update the `instruments` table accordingly.
 
 ### Manual imports
 

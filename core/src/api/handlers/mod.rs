@@ -2,6 +2,7 @@ pub mod auth;
 pub mod market;
 pub mod performance;
 pub mod portfolio;
+pub mod settings;
 pub mod taxation;
 pub mod timeline;
 pub mod trades;

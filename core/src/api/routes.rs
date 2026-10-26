@@ -1,6 +1,6 @@
 use axum::{
     http::StatusCode,
-    routing::{get, get_service, post},
+    routing::{get, get_service, post, put},
     Router,
 };
 use tower_cookies::cookie::time::Duration;
@@ -16,9 +16,13 @@ use utoipa_swagger_ui::SwaggerUi;
 use super::handlers::{
     auth::{auth_state, login, logout},
     check_auth,
-    market::{brokers, instrument, instruments},
+    market::{
+        brokers, instrument, instruments, prices, refresh_price_feed, refresh_prices, rename,
+        reset_price_feed, save_scheduler, set_price, unpin_price,
+    },
     performance::{live_performance, past_performance, performance_overview},
     portfolio::{portfolio, positions},
+    settings::{get_settings, save_settings},
     taxation::{taxation, taxation_detailed, taxation_transactions},
     timeline::timeline,
     trades::{buy_ins, dividends, fx_conversions, interest, trades},
@@ -50,7 +54,17 @@ pub fn create_router() -> anyhow::Result<Router> {
         .route("/performance_overview", get(performance_overview))
         .route("/past_performance", get(past_performance))
         .route("/instruments", get(instruments))
-        .route("/instruments/{isin}", get(instrument))
+        .route("/instruments/{isin}", get(instrument).patch(rename))
+        .route(
+            "/instruments/{isin}/price",
+            put(set_price).delete(unpin_price),
+        )
+        .route("/prices", get(prices))
+        .route("/prices/scheduler", put(save_scheduler))
+        .route("/prices/refresh", post(refresh_prices))
+        .route("/prices/feeds/{feed}/refresh", post(refresh_price_feed))
+        .route("/prices/feeds/{feed}/reset", post(reset_price_feed))
+        .route("/settings", get(get_settings).put(save_settings))
         .route("/brokers", get(brokers))
         .route("/taxation", get(taxation))
         .route("/taxation/detailed", get(taxation_detailed))
@@ -60,7 +74,13 @@ pub fn create_router() -> anyhow::Result<Router> {
 
     let cors_layer = CorsLayer::new()
         .allow_origin(Any)
-        .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
+        .allow_methods([
+            axum::http::Method::GET,
+            axum::http::Method::POST,
+            axum::http::Method::PATCH,
+            axum::http::Method::PUT,
+            axum::http::Method::DELETE,
+        ])
         .allow_headers([
             axum::http::header::CONTENT_TYPE,
             axum::http::header::AUTHORIZATION,

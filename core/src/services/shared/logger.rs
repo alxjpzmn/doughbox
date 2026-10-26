@@ -1,23 +1,46 @@
-use tracing::Level;
+use std::sync::{LazyLock, Mutex};
 
-use super::env::get_env_variable;
+use anyhow::Context;
+use tracing_subscriber::{
+    filter::LevelFilter, layer::SubscriberExt, reload, util::SubscriberInitExt, Registry,
+};
+
+use super::settings::parse_log_level;
+
+struct LogController {
+    handle: reload::Handle<LevelFilter, Registry>,
+    current: Mutex<LevelFilter>,
+}
+
+static CONTROLLER: LazyLock<LogController> = LazyLock::new(|| {
+    let (filter, handle) = reload::Layer::new(LevelFilter::INFO);
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(tracing_subscriber::fmt::layer())
+        .init();
+    LogController {
+        handle,
+        current: Mutex::new(LevelFilter::INFO),
+    }
+});
 
 pub fn init_logger() {
-    let verbosity = get_env_variable("VERBOSITY").unwrap_or_else(|| "INFO".to_string());
-    let level = match verbosity.to_uppercase().as_str() {
-        "TRACE" => Level::TRACE,
-        "DEBUG" => Level::DEBUG,
-        "INFO" => Level::INFO,
-        "WARN" => Level::WARN,
-        "ERROR" => Level::ERROR,
-        _ => {
-            eprintln!(
-                "Invalid verbosity level '{}', defaulting to INFO",
-                verbosity
-            );
-            Level::DEBUG
-        }
-    };
+    LazyLock::force(&CONTROLLER);
+}
 
-    tracing_subscriber::fmt().with_max_level(level).init();
+pub fn apply_level(value: &str) -> anyhow::Result<()> {
+    let level = parse_log_level(value)?;
+    let controller = &*CONTROLLER;
+    let mut current = controller
+        .current
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Logger filter lock poisoned"))?;
+    if *current != level {
+        controller
+            .handle
+            .reload(level)
+            .context("Reloading log filter")?;
+        *current = level;
+    }
+    Ok(())
 }

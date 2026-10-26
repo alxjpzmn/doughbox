@@ -31,6 +31,9 @@ pub async fn portfolio(args: PortfolioArgs) -> anyhow::Result<()> {
     let mut sp = Spinner::new(Spinners::Point, "Getting portfolio positions...");
     sp.start();
     let position_overview = get_portfolio_overview().await?;
+    anyhow::ensure!(position_overview.valuation_complete,
+        "Portfolio valuation is incomplete (missing prices: {}); not saving a snapshot or sending notifications",
+        position_overview.unpriced_isins.join(", "));
 
     let mut formatted_positions_with_allocation: Vec<StringifiedPositionWithAllocation> = vec![];
     for position in position_overview.positions {

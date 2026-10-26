@@ -11,8 +11,9 @@ use crate::database::{
     models::position::{PositionWithValue, PositionWithValueAndAllocation},
     queries::{
         composite::{events_exist, EventFilter},
-        instrument::{batch_get_instrument_names, batch_get_instrument_prices},
+        instrument::batch_get_instrument_names,
         position::get_positions,
+        price::quotes,
         trade::{get_realized_return, get_total_invested_value},
     },
 };
@@ -29,6 +30,8 @@ pub struct PortfolioOverview {
     pub total_return_abs: Decimal,
     pub total_return_rel: Decimal,
     pub positions: Vec<PositionWithValueAndAllocation>,
+    pub valuation_complete: bool,
+    pub unpriced_isins: Vec<String>,
 }
 
 pub async fn get_portfolio_overview() -> anyhow::Result<PortfolioOverview> {
@@ -44,7 +47,16 @@ pub async fn get_portfolio_overview() -> anyhow::Result<PortfolioOverview> {
         .map(|position| position.isin.clone())
         .collect();
 
-    let prices = batch_get_instrument_prices(&isins).await?;
+    let price_quotes = quotes(&crate::database::db_client().await?, &isins).await?;
+    let prices: Vec<_> = price_quotes
+        .iter()
+        .map(|quote| quote.price.unwrap_or(dec!(0)))
+        .collect();
+    let unpriced_isins: Vec<_> = price_quotes
+        .into_iter()
+        .filter(|quote| quote.price.is_none())
+        .map(|quote| quote.isin)
+        .collect();
     let names = batch_get_instrument_names(&isins).await?;
 
     let price_map: HashMap<_, _> = isins.iter().zip(prices.iter()).collect();
@@ -72,7 +84,11 @@ pub async fn get_portfolio_overview() -> anyhow::Result<PortfolioOverview> {
     let positions_with_allocation: Vec<PositionWithValueAndAllocation> = positions_with_value
         .iter()
         .map(|position| {
-            let position_share = position.value / total_position;
+            let position_share = if total_position > dec!(0) {
+                position.value / total_position
+            } else {
+                dec!(0)
+            };
             PositionWithValueAndAllocation {
                 isin: position.isin.clone(),
                 name: name_map
@@ -96,15 +112,23 @@ pub async fn get_portfolio_overview() -> anyhow::Result<PortfolioOverview> {
             total_return_abs: dec!(0),
             realized: dec!(0),
             positions: vec![],
+            valuation_complete: true,
+            unpriced_isins: vec![],
         });
     }
 
     Ok(PortfolioOverview {
         generated_at: Utc::now().timestamp(),
         total_value: round_to_decimals(total_position),
-        total_return_rel: round_to_decimals(total_return_abs / invested * dec!(100.0)),
+        total_return_rel: if invested != dec!(0) {
+            round_to_decimals(total_return_abs / invested * dec!(100.0))
+        } else {
+            dec!(0)
+        },
         total_return_abs,
         realized: round_to_decimals(realized),
         positions: positions_with_allocation,
+        valuation_complete: unpriced_isins.is_empty(),
+        unpriced_isins,
     })
 }

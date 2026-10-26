@@ -81,8 +81,8 @@ impl SecWac {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
     use crate::services::events::{EventType, TradeDirection};
+    use chrono::TimeZone;
 
     fn buy(units: Decimal, price: Decimal, fx: Decimal) -> PortfolioEvent {
         PortfolioEvent {

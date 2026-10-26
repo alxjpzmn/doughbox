@@ -19,7 +19,7 @@ use crate::api::errors::{ErrorDetails, ErrorResponse};
     path = "/api/portfolio",
     tag = "portfolio",
     responses(
-        (status = 200, description = "Current allocations and total return", body = crate::services::portfolio::PortfolioOverview),
+        (status = 200, description = "Current allocations and total return. If valuation_complete is false, totals are partial and returns must not be used; see unpriced_isins.", body = crate::services::portfolio::PortfolioOverview),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Empty portfolio", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)

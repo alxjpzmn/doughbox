@@ -156,6 +156,18 @@
   * {
     @apply border-border outline-ring/50;
   }
+  /* Reserve scrollbar space only on desktop; mobile bottom navigation needs the full viewport. */
+  @media (min-width: 48rem) {
+    html {
+      overflow-y: scroll;
+    }
+    @supports (scrollbar-gutter: stable) {
+      html {
+        overflow-y: auto;
+        scrollbar-gutter: stable;
+      }
+    }
+  }
   body {
     @apply bg-background text-foreground;
   }
