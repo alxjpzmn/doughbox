@@ -150,7 +150,10 @@ fn parse_archive(
         .context("Cannot open Euronext CSV member")?;
     ensure!(
         matches!(
-            member.name(),
+            member
+                .name()
+                .context("Invalid Euronext CSV member name")?
+                .as_ref(),
             "Trades_Equities.csv" | "Trades_ETFSFunds.csv"
         ),
         "Unexpected Euronext CSV member name"
