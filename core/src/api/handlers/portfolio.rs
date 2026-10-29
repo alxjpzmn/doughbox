@@ -19,7 +19,7 @@ use crate::api::errors::{ErrorDetails, ErrorResponse};
     path = "/api/portfolio",
     tag = "portfolio",
     responses(
-        (status = 200, description = "Current allocations and total return. If valuation_complete is false, totals are partial and returns must not be used; see unpriced_isins.", body = crate::services::portfolio::PortfolioOverview),
+        (status = 200, description = "Current allocations and total return. If valuation_complete is false, security totals are partial and returns must not be used; see unpriced_isins. If returns_incomplete is true, custom assets lack valuation or cost data and only known returns are included; see unpriced_assets.", body = crate::services::portfolio::PortfolioOverview),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Empty portfolio", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
@@ -80,6 +80,8 @@ pub struct PositionsQuery {
     pub date: Option<String>,
     /// Restrict to a single ISIN.
     pub isin: Option<String>,
+    /// Exact broker name as stored (see GET /api/brokers).
+    pub broker: Option<String>,
 }
 
 #[utoipa::path(
@@ -103,8 +105,12 @@ pub async fn positions(
     });
     let timestamp = parse_timestamp(format!("{date} 19:00:00").as_str())
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let positions = get_positions_overview(Some(timestamp), query.isin.as_deref())
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let positions = get_positions_overview(
+        Some(timestamp),
+        query.isin.as_deref(),
+        query.broker.as_deref(),
+    )
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     json_response(&positions)
 }

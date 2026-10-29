@@ -18,19 +18,15 @@ pub struct PositionWithName {
     pub units: Decimal,
 }
 
-#[derive(Debug)]
-pub struct PositionWithValue {
-    pub isin: String,
-    pub units: Decimal,
-    pub value: Decimal,
-}
-
 #[typeshare]
-#[derive(Debug, Tabled, Serialize, Clone, ToSchema)]
+#[derive(Debug, Serialize, Clone, ToSchema)]
 pub struct PositionWithValueAndAllocation {
-    pub isin: String,
+    pub asset_id: String,
+    pub isin: Option<String>,
+    pub asset_class: String,
     pub name: String,
-    pub value: Decimal,
+    pub value: Option<Decimal>,
     pub units: Decimal,
-    pub share: Decimal,
+    pub unit_label: String,
+    pub share: Option<Decimal>,
 }

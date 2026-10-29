@@ -1,10 +1,13 @@
+pub mod asset;
 pub mod dividend;
 pub mod fund_report;
 pub mod fx_conversion;
 pub mod instrument;
 pub mod interest;
+pub mod investment_activity;
 pub mod listing_change;
 pub mod performance;
 pub mod position;
+pub mod statement_import;
 pub mod tax_optimization;
 pub mod trade;

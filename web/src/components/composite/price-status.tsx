@@ -52,29 +52,35 @@ const importState = (feed: PriceFeedStatus) => {
   }
 };
 
+type PriceSchedulerDraft = Omit<PriceSchedulerSettings, 'interval_minutes' | 'worker_concurrency'> & {
+  interval_minutes: string;
+  worker_concurrency: string;
+};
+
 const SchedulerControls = ({ data, disabled, onSave }: {
   data: PricingStatus;
   disabled: boolean;
   onSave: (settings: PriceSchedulerSettings) => Promise<boolean>;
 }) => {
-  const [draft, setDraft] = useState<PriceSchedulerSettings | null>(null);
-  const [intervalMinutes, setIntervalMinutes] = useState('');
-  const [workerConcurrency, setWorkerConcurrency] = useState('');
+  const [draft, setDraft] = useState<PriceSchedulerDraft | null>(null);
   const selected = data.feeds.filter(feed => feed.enabled);
 
   const save = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!draft) return;
-    if (await onSave({ ...draft, interval_minutes: Number(intervalMinutes), worker_concurrency: Number(workerConcurrency) })) setDraft(null);
+    if (await onSave({ ...draft, interval_minutes: Number(draft.interval_minutes), worker_concurrency: Number(draft.worker_concurrency) })) setDraft(null);
   };
 
   if (!draft) return (
     <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3">
       <p className="text-sm text-muted-foreground">{selected.length} of {data.feeds.length} exchanges selected · worker limit {data.worker_concurrency} per process</p>
       <Button type="button" variant="outline" size="sm" disabled={disabled} onClick={() => {
-        setDraft({ enabled: data.enabled, interval_minutes: data.interval_minutes, worker_concurrency: data.worker_concurrency, feeds: selected.map(feed => feed.feed) });
-        setIntervalMinutes(String(data.interval_minutes));
-        setWorkerConcurrency(String(data.worker_concurrency));
+        setDraft({
+          enabled: data.enabled,
+          interval_minutes: String(data.interval_minutes),
+          worker_concurrency: String(data.worker_concurrency),
+          feeds: selected.map(feed => feed.feed),
+        });
       }}>Manage scheduler</Button>
     </div>
   );
@@ -88,12 +94,12 @@ const SchedulerControls = ({ data, disabled, onSave }: {
       <div className="max-w-56 space-y-2">
         <Label htmlFor="price-scheduler-interval">Interval (minutes)</Label>
         <Input id="price-scheduler-interval" type="number" min={1} max={1440} step={1} required disabled={disabled}
-          value={intervalMinutes} onChange={event => setIntervalMinutes(event.target.value)} />
+          value={draft.interval_minutes} onChange={event => setDraft({ ...draft, interval_minutes: event.target.value })} />
       </div>
       <div className="max-w-56 space-y-2">
         <Label htmlFor="price-worker-concurrency">Concurrent import workers</Label>
         <Input id="price-worker-concurrency" type="number" min={1} max={4} step={1} required disabled={disabled}
-          value={workerConcurrency} onChange={event => setWorkerConcurrency(event.target.value)} />
+          value={draft.worker_concurrency} onChange={event => setDraft({ ...draft, worker_concurrency: event.target.value })} />
       </div>
       <fieldset disabled={disabled} className="space-y-3">
         <legend className="mb-2 text-sm font-medium">Automatically refreshed exchanges</legend>
@@ -122,6 +128,8 @@ const SchedulerControls = ({ data, disabled, onSave }: {
     </form>
   );
 };
+
+const importActive = (feed: PriceFeedStatus) => feed.job_status === 'queued' || feed.job_status === 'running';
 
 const ExchangeImportStatus = ({ feed, disabled, onAction }: {
   feed: PriceFeedStatus;
@@ -160,7 +168,7 @@ const ExchangeImportStatus = ({ feed, disabled, onAction }: {
         <p className="mt-2 break-words text-muted-foreground">{feed.last_error}</p>
       </details>}
       <div className="mt-3 flex flex-wrap gap-2">
-        <Button type="button" variant="outline" size="sm" disabled={disabled} aria-label={`Refresh ${name} now`}
+        <Button type="button" variant="outline" size="sm" disabled={disabled || importActive(feed)} aria-label={`Refresh ${name} now`}
           onClick={() => onAction(feed.feed, 'refresh')}><ArrowClockwiseIcon aria-hidden="true" />Refresh now</Button>
         <Button type="button" variant="outline" size="sm" disabled={disabled || confirmReset}
           aria-label={`Reset ${name} import`} onClick={() => setConfirmReset(true)}>Reset import</Button>
@@ -180,7 +188,7 @@ const ExchangeImportStatus = ({ feed, disabled, onAction }: {
 
 export const PriceStatus = () => {
   const { data, error, mutate } = useSwr<PricingStatus>(`${BASE_URL}/prices`, fetcher, {
-    refreshInterval: status => status?.feeds.some(feed => feed.job_status === 'queued' || feed.job_status === 'running') ? 2_000 : 60_000,
+    refreshInterval: status => status?.feeds.some(importActive) ? 2_000 : 60_000,
   });
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState<{ error: boolean; message: string } | null>(null);
@@ -199,7 +207,7 @@ export const PriceStatus = () => {
       return true;
     } catch (failure) {
       const message = failure && typeof failure === 'object' && 'message' in failure && typeof failure.message === 'string'
-        ? failure.message : 'Price controls could not be updated. Refresh the status before retrying.';
+        ? failure.message : 'Price controls could not be updated. Status updates automatically; try again after it reconnects.';
       setFeedback({ error: true, message });
       return false;
     } finally {
@@ -219,15 +227,19 @@ export const PriceStatus = () => {
       <CardHeader>
         <CardTitle>Instrument prices</CardTitle>
         <CardDescription>
-          {error ? (data ? 'Price status could not be refreshed. Last loaded results are shown.' : 'Price refresh status could not be loaded.') : data?.enabled
+          {error ? (data ? 'Price status could not be refreshed. Last loaded results are shown; retrying automatically.' : 'Price refresh status could not be loaded. Retrying automatically.') : data?.enabled
             ? `Automatic refresh every ${data.interval_minutes} minutes`
             : 'Automatic refresh is paused. Manage the schedule below or refresh an exchange manually.'}
         </CardDescription>
       </CardHeader>
       {data && <CardContent className="space-y-3">
+        <p className="flex items-center gap-2 text-xs text-muted-foreground">
+          <ArrowClockwiseIcon aria-hidden="true" />
+          Status updates automatically · every minute, or every 2 seconds during imports
+        </p>
         <SchedulerControls data={data} disabled={busy || !!error} onSave={settings =>
           submit(`${BASE_URL}/prices/scheduler`, 'PUT', 'Scheduler settings saved.', settings)} />
-        <Button type="button" variant="outline" size="sm" disabled={busy || !!error || !data.feeds.some(feed => feed.enabled)}
+        <Button type="button" variant="outline" size="sm" disabled={busy || !!error || !data.feeds.some(feed => feed.enabled) || data.feeds.some(feed => feed.enabled && importActive(feed))}
           onClick={() => submit(`${BASE_URL}/prices/refresh`, 'POST', 'Refresh queued for selected exchanges. Existing work and retry backoff are preserved.')}>
           <ArrowClockwiseIcon aria-hidden="true" />Refresh selected exchanges now
         </Button>

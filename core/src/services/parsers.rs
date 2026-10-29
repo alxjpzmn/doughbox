@@ -29,6 +29,21 @@ pub enum ImportFileFormat {
     Unsupported,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InteractionMode {
+    Interactive,
+    NonInteractive,
+}
+
+impl InteractionMode {
+    pub fn require_interactive(self, reason: &str) -> anyhow::Result<()> {
+        if self == Self::NonInteractive {
+            return Err(anyhow!("{}; import this statement using the interactive CLI", reason));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum Broker {
     TradeRepublic,
@@ -100,18 +115,41 @@ pub fn extract_pdf_text(file: &[u8]) -> anyhow::Result<String> {
 }
 
 pub async fn parse_file_for_import(file: &[u8], file_path: &Path) -> anyhow::Result<()> {
-    let file_format = detect_file_format(file, file_path);
+    parse_file(file, file_path, InteractionMode::Interactive).await
+}
+
+/// Imports uploaded statements without ever prompting on standard input.
+pub async fn parse_file_for_upload(file: &[u8], file_path: &Path) -> anyhow::Result<()> {
+    parse_file(file, file_path, InteractionMode::NonInteractive).await
+}
+
+async fn parse_file(
+    file: &[u8],
+    file_path: &Path,
+    interaction: InteractionMode,
+) -> anyhow::Result<()> {
+    // File extensions accepted by uploads are case-insensitive.
+    let format_path = match file_path.extension().and_then(|extension| extension.to_str()) {
+        Some(extension) if extension.eq_ignore_ascii_case("pdf") => Path::new("statement.pdf"),
+        Some(extension) if extension.eq_ignore_ascii_case("csv") => Path::new("statement.csv"),
+        _ => file_path,
+    };
+    let file_format = detect_file_format(file, format_path);
 
     match file_format {
         ImportFileFormat::Pdf => {
             let text = extract_pdf_text(file)?;
 
             let broker = detect_broker_from_pdf_text(&text);
+            if interaction == InteractionMode::NonInteractive {
+                // Allow the queue to cancel after synchronous extraction if its lock was lost.
+                tokio::task::yield_now().await;
+            }
 
             match broker {
                 Some(Broker::TradeRepublic) => {
                     info!("Statement from Trade Republic detected.");
-                    extract_trade_republic_record(&text).await?;
+                    extract_trade_republic_record(&text, interaction).await?;
                 }
                 Some(Broker::Scalable) => {
                     info!("Statement from Scalable detected.");
@@ -121,8 +159,8 @@ pub async fn parse_file_for_import(file: &[u8], file_path: &Path) -> anyhow::Res
                     info!("Statement from Erste Bank detected.");
                     extract_erste_bank_record(&text).await?;
                 }
-                Some(_) => panic!("Broker wrongly matched"),
-                None => println!("No broker matched"),
+                Some(_) => return Err(anyhow!("Unsupported PDF broker")),
+                None => return Err(anyhow!("No recognized broker found in PDF statement")),
             }
         }
         ImportFileFormat::Csv => {
@@ -133,6 +171,9 @@ pub async fn parse_file_for_import(file: &[u8], file_path: &Path) -> anyhow::Res
             let mut rdr = ReaderBuilder::new().has_headers(false).from_reader(cursor);
 
             let broker = detect_broker_from_csv_header(rdr.headers()?)?;
+            if interaction == InteractionMode::NonInteractive {
+                tokio::task::yield_now().await;
+            }
 
             match broker {
                 Some(Broker::Trading212) => {
@@ -157,11 +198,11 @@ pub async fn parse_file_for_import(file: &[u8], file_path: &Path) -> anyhow::Res
                     info!("Trade Republic CSV detected.");
                     extract_trade_republic_csv_record(file_content).await?;
                 }
-                Some(_) => panic!("Broker wrongly matched"),
-                None => println!("No broker matched"),
+                Some(_) => return Err(anyhow!("Unsupported CSV broker")),
+                None => return Err(anyhow!("No recognized broker found in CSV header")),
             }
         }
-        ImportFileFormat::Unsupported => println!("File unsupported, skipping"),
+        ImportFileFormat::Unsupported => return Err(anyhow!("Unsupported or empty statement file")),
     }
     Ok(())
 }
@@ -175,8 +216,10 @@ pub fn return_first_match(regex_pattern: &str, text: &str) -> anyhow::Result<Str
     let regex = Regex::new(regex_pattern)?;
     let caps = regex
         .captures(text)?
-        .unwrap_or_else(|| panic!("Expected regex {} couldn't be found", regex_pattern));
-    let matched_text = caps.get(0).unwrap();
+        .ok_or_else(|| anyhow!("Expected statement field not found: {}", regex_pattern))?;
+    let matched_text = caps
+        .get(0)
+        .ok_or_else(|| anyhow!("Expected statement field was empty: {}", regex_pattern))?;
     Ok(matched_text.as_str().to_string())
 }
 
@@ -229,6 +272,50 @@ pub fn parse_timestamp(timestamp_str: &str) -> anyhow::Result<DateTime<Utc>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn upload_rejects_unsupported_empty_and_unknown_content() {
+        for (file, filename) in [
+            (b"plain text".as_slice(), "statement.txt"),
+            (b"".as_slice(), "statement.csv"),
+            (b"not a PDF".as_slice(), "statement.PDF"),
+            (b"%PDF-1.7\nmalformed".as_slice(), "statement.PDF"),
+            (b"unknown,header\nsome,value\n".as_slice(), "statement.CSV"),
+        ] {
+            assert!(parse_file_for_upload(file, Path::new(filename)).await.is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn upload_recognizes_case_insensitive_csv_extension() {
+        let error = parse_file_for_upload(b"unknown,header\n", Path::new("statement.CSV"))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("No recognized broker"));
+    }
+
+    #[tokio::test]
+    async fn upload_rejects_other_brokers_unsupported_and_malformed_pdf_records() {
+        for text in [
+            "Scalable unsupported statement",
+            "Scalable Wertpapierabrechnung without required trade fields",
+            "Scalable Dividendenabrechnung without required dividend fields",
+        ] {
+            assert!(extract_scalable_record(text).await.is_err());
+        }
+        for text in [
+            "Erste Bank unsupported statement",
+            "Erste Bank Kauf Marktplatz without required trade fields",
+        ] {
+            assert!(extract_erste_bank_record(text).await.is_err());
+        }
+        assert_eq!(detect_broker_from_pdf_text("unrecognized statement"), None);
+    }
+
+    #[test]
+    fn missing_pdf_field_returns_error() {
+        assert!(return_first_match(r"\d+", "no amount").is_err());
+    }
 
     #[test]
     fn parse_old_trading212_timestamps() {

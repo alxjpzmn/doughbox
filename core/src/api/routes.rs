@@ -1,4 +1,5 @@
 use axum::{
+    extract::DefaultBodyLimit,
     http::StatusCode,
     routing::{get, get_service, post, put},
     Router,
@@ -14,17 +15,26 @@ use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
 use super::handlers::{
+    assets::{
+        archive_asset, cash_summary, create_asset, create_balance_snapshot, create_interest,
+        create_trade, create_transaction, create_valuation, delete_balance_snapshot, delete_trade,
+        delete_transaction, delete_valuation, get_asset, holdings, link_interest, list_assets,
+        restore_asset, unlink_interest, update_asset, update_balance_snapshot, update_interest,
+        update_trade, update_transaction, update_valuation,
+    },
     auth::{auth_state, login, logout},
     check_auth,
+    data_imports::{get_data_imports, refresh_data_import, save_data_import_scheduler},
     market::{
         brokers, instrument, instruments, prices, refresh_price_feed, refresh_prices, rename,
         reset_price_feed, save_scheduler, set_price, unpin_price,
     },
     performance::{live_performance, past_performance, performance_overview},
     portfolio::{portfolio, positions},
-    settings::{get_settings, save_settings},
+    settings::{get_settings, save_settings, save_telegram_scheduler},
+    statement_imports::{get_statement_imports, upload_statement_imports, MAX_BODY_BYTES},
     taxation::{taxation, taxation_detailed, taxation_transactions},
-    timeline::timeline,
+    timeline::{investment_activity, timeline},
     trades::{buy_ins, dividends, fx_conversions, interest, trades},
 };
 use super::openapi::ApiDoc;
@@ -43,8 +53,53 @@ pub fn create_router() -> anyhow::Result<Router> {
 
     let protected_routes = Router::new()
         .route("/portfolio", get(portfolio))
+        .route("/assets", get(list_assets).post(create_asset))
+        .route("/assets/holdings", get(holdings))
+        .route("/cash-accounts/summary", get(cash_summary))
+        .route(
+            "/assets/{asset_id}",
+            get(get_asset).put(update_asset).delete(archive_asset),
+        )
+        .route("/assets/{asset_id}/restore", post(restore_asset))
+        .route("/assets/{asset_id}/trades", post(create_trade))
+        .route(
+            "/assets/{asset_id}/trades/{record_id}",
+            axum::routing::put(update_trade).delete(delete_trade),
+        )
+        .route("/assets/{asset_id}/valuations", post(create_valuation))
+        .route(
+            "/assets/{asset_id}/valuations/{record_id}",
+            axum::routing::put(update_valuation).delete(delete_valuation),
+        )
+        .route("/assets/{asset_id}/transactions", post(create_transaction))
+        .route(
+            "/assets/{asset_id}/transactions/{record_id}",
+            axum::routing::put(update_transaction).delete(delete_transaction),
+        )
+        .route(
+            "/assets/{asset_id}/balance-snapshots",
+            post(create_balance_snapshot),
+        )
+        .route(
+            "/assets/{asset_id}/balance-snapshots/{record_id}",
+            axum::routing::put(update_balance_snapshot).delete(delete_balance_snapshot),
+        )
+        .route("/assets/{asset_id}/interest", post(create_interest))
+        .route(
+            "/assets/{asset_id}/interest/{interest_id}",
+            post(link_interest)
+                .put(update_interest)
+                .delete(unlink_interest),
+        )
         .route("/positions", get(positions))
         .route("/timeline", get(timeline))
+        .route("/timeline/investment-activity", get(investment_activity))
+        .route(
+            "/statement-imports",
+            get(get_statement_imports)
+                .post(upload_statement_imports)
+                .layer(DefaultBodyLimit::max(MAX_BODY_BYTES)),
+        )
         .route("/trades", get(trades))
         .route("/buy-ins", get(buy_ins))
         .route("/dividends", get(dividends))
@@ -64,7 +119,14 @@ pub fn create_router() -> anyhow::Result<Router> {
         .route("/prices/refresh", post(refresh_prices))
         .route("/prices/feeds/{feed}/refresh", post(refresh_price_feed))
         .route("/prices/feeds/{feed}/reset", post(reset_price_feed))
+        .route("/data-imports", get(get_data_imports))
+        .route("/data-imports/{source}/refresh", post(refresh_data_import))
+        .route(
+            "/data-imports/{source}/scheduler",
+            put(save_data_import_scheduler),
+        )
         .route("/settings", get(get_settings).put(save_settings))
+        .route("/settings/telegram-scheduler", put(save_telegram_scheduler))
         .route("/brokers", get(brokers))
         .route("/taxation", get(taxation))
         .route("/taxation/detailed", get(taxation_detailed))

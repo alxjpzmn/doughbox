@@ -7,13 +7,14 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { BarList } from '@/components/composite/bar-list';
 import { BASE_URL, fetcher } from '@/lib/http';
 import { formatCurrency, formatRelativeAmount } from '@/lib/utils';
-import { ArrowUpIcon, ArrowDownIcon, MinusIcon } from '@phosphor-icons/react';
+import { ArrowUpIcon, ArrowDownIcon, MinusIcon, WarningIcon } from '@phosphor-icons/react';
+import { Badge } from '@/components/ui/badge';
 
 const Portfolio = () => {
   const { data, isLoading, error } = useSwr<PortfolioOverview>(`${BASE_URL}/portfolio`, fetcher, { refreshInterval: 60_000 });
 
   let overviewData = {
-    title: data && !data.valuation_complete ? 'Partial Portfolio Value' : 'Current Portfolio Value',
+    title: data && (!data.valuation_complete || data.positions.some((position) => position.value == null)) ? 'Partial Portfolio Value' : 'Current Portfolio Value',
     portfolio_value: `${formatCurrency(isLoading || !data ? 0 : parseFloat(data.total_value))}`,
     absolute_return: `${formatCurrency(
       isLoading || !data ? 0 : parseFloat(data?.total_return_abs)
@@ -26,7 +27,12 @@ const Portfolio = () => {
 
   return (
     <>
-      {error && !error.details.events_present && <EmptyState variant={EmptyStateVariants.WithCliInstructionImportTrades} docker={error.details?.in_docker} />}
+      {error && error.details?.events_present === false && <EmptyState variant={EmptyStateVariants.WithCliInstructionImportTrades} docker={error.details?.in_docker} />}
+      {error && error.details?.events_present !== false && (
+        <div role="alert" className="bg-destructive/10 text-destructive mb-6 rounded-xl border border-destructive/20 p-4 text-sm">
+          Portfolio could not be loaded.
+        </div>
+      )}
       {isLoading ? (
         <>
           {/* Skeleton for Portfolio Overview Card */}
@@ -70,10 +76,10 @@ const Portfolio = () => {
               <CardTitle>{overviewData.title}</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="flex justify-start mb-2 truncate">
-                <p className='text-4xl font-bold'>{overviewData.portfolio_value}</p>
+              <div className="mb-2 min-w-0">
+                <p className="break-words text-2xl font-bold tabular-nums min-[400px]:text-3xl sm:text-4xl">{overviewData.portfolio_value}</p>
               </div>
-              {data.valuation_complete ? <div className="text-muted-foreground flex gap-2 items-center leading-none text-sm truncate">
+              {data.valuation_complete ? <div className="text-muted-foreground flex flex-wrap gap-2 items-center leading-none text-sm">
                 {
                   overviewData.unformatted_return > 0 && <ArrowUpIcon size={16} className='text-success-foreground' />
                 }
@@ -83,12 +89,18 @@ const Portfolio = () => {
                 {
                   overviewData.unformatted_return === 0 && <MinusIcon size={16} className='text-muted-foreground' />
                 }
-                <p>{overviewData.absolute_return} (
-                  {overviewData.relative_return}
-                  )</p>
+                <p className="min-w-0 break-words">{data.returns_incomplete ? 'Known return: ' : ''}{overviewData.absolute_return}{data.returns_incomplete ? '' : ` (${overviewData.relative_return})`}</p>
               </div> : <p className="text-sm text-destructive-foreground">
-                Excludes holdings without a usable price: {data.unpriced_isins.join(', ')}. Returns are unavailable until all holdings are priced.
+                Excludes holdings without a usable price: {data.unpriced_isins.join(', ')}. Returns are unavailable until all securities are priced.
               </p>}
+              {data.unpriced_assets > 0 && (
+                <div className="text-muted-foreground mt-4 flex items-start gap-2 rounded-lg border p-3 text-sm">
+                  <WarningIcon className="mt-0.5 size-4 shrink-0" />
+                  <p>
+                    {data.unpriced_assets} custom {data.unpriced_assets === 1 ? 'asset has' : 'assets have'} incomplete valuation or cost data. Portfolio value and return figures include known values only.
+                  </p>
+                </div>
+              )}
             </CardContent>
           </Card>
 
@@ -97,22 +109,44 @@ const Portfolio = () => {
             <Card>
               <CardHeader>
                 <CardTitle>
-                  Portfolio
+                  Holdings
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                <BarList
-                  data={data?.positions
+                {data.positions.some((position) => position.value != null) && (
+                  <BarList
+                    data={data.positions
+                      .filter((position) => position.value != null)
                     .map((position: PositionWithValueAndAllocation) => {
                       return {
-                        name: `${position.share}% · ${position.name}`,
-                        value: parseFloat(position.value),
-                        href: `https://duckduckgo.com/?q=${position.isin}`,
+                        key: position.asset_id,
+                        name: `${position.share != null ? `${position.share}% · ` : ''}${position.name}`,
+                        value: parseFloat(position.value!),
+                        href: position.asset_class === 'Security' && position.isin
+                          ? `https://duckduckgo.com/?q=${position.isin}`
+                          : undefined,
                       };
                     })}
-                  className="mt-4"
-                  valueFormatter={formatCurrency}
-                />
+                    className="mt-4"
+                    valueFormatter={formatCurrency}
+                  />
+                )}
+                {data.positions.some((position) => position.value == null) && (
+                  <div className="mt-5 space-y-2 border-t pt-4">
+                    <p className="text-muted-foreground text-xs font-medium uppercase tracking-wide">Unpriced</p>
+                    {data.positions
+                      .filter((position) => position.value == null)
+                      .map((position) => (
+                        <div key={position.asset_id} className="bg-muted/40 flex items-center justify-between gap-3 rounded-lg px-3 py-2.5">
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-medium">{position.name}</p>
+                            <p className="text-muted-foreground text-xs">{position.units} {position.unit_label}</p>
+                          </div>
+                          <Badge variant="outline">Unpriced</Badge>
+                        </div>
+                      ))}
+                  </div>
+                )}
               </CardContent>
             </Card>
           )}

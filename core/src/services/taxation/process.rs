@@ -70,6 +70,9 @@ pub(crate) async fn process_event(
     event: PortfolioEvent,
     ctx: &mut ProcessingContext<'_>,
 ) -> Result<()> {
+    if !event.tax_supported {
+        return Ok(());
+    }
     info!(target: "tax_report", "Processing event: {:?} ({:?}) on {:?}", event.identifier.clone().unwrap_or("No identifier".to_string()), event.event_type, event.date);
 
     match event.event_type {
@@ -79,6 +82,14 @@ pub(crate) async fn process_event(
         EventType::Trade => process_trade(event, ctx).await,
         EventType::FxConversion => process_fx_conversion(event, ctx).await,
         EventType::DividendAequivalent => process_dividend_aequivalent(event, ctx).await,
+        EventType::Deposit
+        | EventType::Withdrawal
+        | EventType::PrincipalAdvance
+        | EventType::PrincipalRepayment
+        | EventType::OpeningBalance
+        | EventType::BalanceReconciliation
+        | EventType::PrivateDebtInterest
+        | EventType::Valuation => Ok(()),
     }
 }
 
@@ -169,7 +180,7 @@ pub(crate) fn calculate_taxable_values(
     } else {
         (
             taxable_remainder / fx_rate,
-            (remaining_withholding_tax_percent * taxable_remainder) * fx_rate,
+            (remaining_withholding_tax_percent * taxable_remainder) / fx_rate,
         )
     };
 
@@ -276,7 +287,7 @@ async fn process_sell(event: PortfolioEvent, ctx: &mut ProcessingContext<'_>) ->
             let withheld_tax = if event.currency == "EUR" {
                 wht_currency_agnostic
             } else {
-                wht_currency_agnostic * event.applied_fx_rate.unwrap()
+                wht_currency_agnostic / event.applied_fx_rate.unwrap()
             };
             ctx.get_year_entry().withheld_tax_capital_gains += withheld_tax;
         }
@@ -677,6 +688,7 @@ mod tests {
         when: DateTime<Utc>,
     ) -> PortfolioEvent {
         PortfolioEvent {
+            event_id: None,
             date: when,
             event_type: EventType::Trade,
             currency: "EUR".to_string(),
@@ -684,16 +696,20 @@ mod tests {
             price_unit: price,
             identifier: Some("US0378331005".to_string()),
             name: Some("Apple".to_string()),
+            unit_label: None,
             direction: Some(direction),
             applied_fx_rate: Some(dec!(1)),
             withholding_tax_percent: None,
             total: units * price,
+            total_currency: "EUR".to_string(),
             broker: "Trading212".to_string(),
+            tax_supported: true,
         }
     }
 
     fn dividend(amount: Decimal, wht: Decimal, isin: &str, broker: &str) -> PortfolioEvent {
         PortfolioEvent {
+            event_id: None,
             date: date(2024, 6, 1),
             event_type: EventType::Dividend,
             currency: "EUR".to_string(),
@@ -701,11 +717,14 @@ mod tests {
             price_unit: amount,
             identifier: Some(isin.to_string()),
             name: Some("Fund".to_string()),
+            unit_label: None,
             direction: None,
             applied_fx_rate: Some(dec!(1)),
             withholding_tax_percent: Some(wht),
             total: amount,
+            total_currency: "EUR".to_string(),
             broker: broker.to_string(),
+            tax_supported: true,
         }
     }
 
@@ -813,6 +832,31 @@ mod tests {
         let (taxed, withheld) = calculate_taxable_values(&event, &mut ctx, dec!(1)).unwrap();
         assert_eq!(taxed, dec!(100));
         assert_eq!(withheld, dec!(15));
+    }
+
+    #[test]
+    fn foreign_withholding_uses_native_units_per_eur_rate() {
+        let mut taxable_amounts = BTreeMap::new();
+        let mut currency_wacs = BTreeMap::new();
+        let mut securities_wacs = BTreeMap::new();
+        let tax_rates = rates();
+        let mut ctx = ProcessingContext {
+            taxable_amounts: &mut taxable_amounts,
+            currency_wacs: &mut currency_wacs,
+            securities_wacs: &mut securities_wacs,
+            tax_rates: &tax_rates,
+            year: 2024,
+            from_date: None,
+            until_date: None,
+        };
+        let mut event = dividend(dec!(100), dec!(0.15), "US0378331005", "Trading212");
+        event.currency = "USD".to_string();
+
+        let (taxed, withheld) =
+            calculate_taxable_values(&event, &mut ctx, dec!(10) / dec!(9)).unwrap();
+
+        assert_eq!(taxed, dec!(90));
+        assert_eq!(withheld, dec!(13.5));
     }
 
     #[test]

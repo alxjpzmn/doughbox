@@ -495,7 +495,7 @@ pub async fn refresh_now(
 pub async fn status() -> anyhow::Result<PricingStatus> {
     let db = db_client().await?;
     let config = price_scheduler::read(&db).await?;
-    let isins: Vec<_> = get_positions(None, None)
+    let isins: Vec<_> = get_positions(None, None, None)
         .await?
         .into_iter()
         .map(|p| p.isin)

@@ -32,7 +32,9 @@ jobs:
           toolchain: 1.97.1
           components: clippy
       - run: cargo test
-      - run: cargo test pricing_database -- --ignored
+      - run: |
+          cargo test pricing_database -- --ignored
+          cargo test investment_activity_database -- --ignored
         env:
           TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/doughbox_test
       - run: cargo clippy --all-targets

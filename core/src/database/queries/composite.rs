@@ -1,15 +1,93 @@
-use chrono::Utc;
+use chrono::{DateTime, Utc};
+use tokio_postgres::Client;
 
 use crate::{
     database::{
         db_client,
-        models::{instrument::Instrument, trade::Trade},
+        models::{
+            instrument::Instrument, investment_activity::MonthlyInvestmentActivity, trade::Trade,
+        },
         queries::instrument::update_instrument_price,
     },
     services::{instruments::identifiers::get_changed_identifier, shared::util::hash_string},
 };
 
 use super::listing_change::get_listing_changes;
+
+#[cfg(test)]
+mod tests;
+
+pub async fn get_monthly_investment_activity(
+    client: &Client,
+    start_date: Option<DateTime<Utc>>,
+) -> anyhow::Result<Vec<MonthlyInvestmentActivity>> {
+    let rows = client
+        .query(
+            "SELECT to_char(date_trunc('month', date AT TIME ZONE 'UTC'), 'YYYY-MM') AS month,
+                    ROUND(SUM(net_purchases_eur), 2) AS net_purchases_eur,
+                    ROUND(SUM(net_cash_added_eur), 2) AS net_cash_added_eur,
+                    ROUND(SUM(dividends_interest_eur), 2) AS dividends_interest_eur
+             FROM (
+                 SELECT date,
+                        CASE direction
+                            WHEN 'Buy' THEN eur_avg_price_per_unit * units
+                            ELSE -(eur_avg_price_per_unit * units)
+                        END AS net_purchases_eur,
+                        0::numeric AS net_cash_added_eur,
+                        0::numeric AS dividends_interest_eur
+                 FROM trade
+                 WHERE direction IN ('Buy', 'Sell')
+                 UNION ALL
+                 SELECT date,
+                        CASE direction
+                            WHEN 'Buy' THEN eur_price_per_unit * units
+                            ELSE -(eur_price_per_unit * units)
+                        END,
+                        0::numeric,
+                        0::numeric
+                 FROM asset_trade
+                 UNION ALL
+                 SELECT tx.date,
+                        0::numeric,
+                        CASE tx.kind
+                            WHEN 'Deposit' THEN tx.amount_eur
+                            ELSE -tx.amount_eur
+                        END,
+                        0::numeric
+                 FROM asset_transaction AS tx
+                 JOIN asset ON asset.id = tx.asset_id
+                 WHERE asset.asset_class = 'CashAccount'
+                   AND tx.kind IN ('Deposit', 'Withdrawal')
+                 UNION ALL
+                 SELECT date,
+                        0::numeric,
+                        0::numeric,
+                        amount_eur
+                 FROM dividend
+                 UNION ALL
+                 SELECT date,
+                        0::numeric,
+                        0::numeric,
+                        amount_eur
+                 FROM interest
+             ) AS activity
+             WHERE ($1::timestamptz IS NULL OR date >= $1)
+             GROUP BY 1
+             ORDER BY 1",
+            &[&start_date],
+        )
+        .await?;
+
+    Ok(rows
+        .iter()
+        .map(|row| MonthlyInvestmentActivity {
+            month: row.get("month"),
+            net_purchases_eur: row.get("net_purchases_eur"),
+            net_cash_added_eur: row.get("net_cash_added_eur"),
+            dividends_interest_eur: row.get("dividends_interest_eur"),
+        })
+        .collect())
+}
 
 pub async fn get_used_currencies() -> anyhow::Result<Vec<String>> {
     let client = db_client().await?;
@@ -18,9 +96,11 @@ pub async fn get_used_currencies() -> anyhow::Result<Vec<String>> {
         select distinct currency from (
             select to_currency AS currency from fx_conversion
             union
-            select currency AS currency from trade
-            union
-            select currency AS currency from interest
+             select currency AS currency from trade
+             union
+             select currency AS currency from interest
+             union
+             select currency AS currency from asset
         ) as all_currencies"
         .to_string();
 
@@ -49,12 +129,22 @@ pub async fn events_exist(filter: EventFilter) -> anyhow::Result<bool> {
                 EXISTS (SELECT 1 FROM trade LIMIT 1) OR
                 EXISTS (SELECT 1 FROM dividend LIMIT 1) OR
                 EXISTS (SELECT 1 FROM interest LIMIT 1) OR
-                EXISTS (SELECT 1 FROM fx_conversion LIMIT 1) AS any_event_table_has_entries
+                EXISTS (SELECT 1 FROM fx_conversion LIMIT 1) OR
+                EXISTS (SELECT 1 FROM asset_trade LIMIT 1) OR
+                EXISTS (SELECT 1 FROM asset_transaction LIMIT 1) OR
+                EXISTS (SELECT 1 FROM asset_balance_snapshot LIMIT 1)
+                AS any_event_table_has_entries
         "
         .to_string(),
 
         EventFilter::TradesOnly => "
-            SELECT EXISTS (SELECT 1 FROM trade LIMIT 1) AS table_has_entries
+            SELECT
+                EXISTS (SELECT 1 FROM trade LIMIT 1) OR
+                EXISTS (SELECT 1 FROM asset_trade LIMIT 1) OR
+                EXISTS (SELECT 1 FROM asset_transaction LIMIT 1) OR
+                EXISTS (SELECT 1 FROM asset_balance_snapshot LIMIT 1) OR
+                EXISTS (SELECT 1 FROM interest WHERE asset_id IS NOT NULL LIMIT 1)
+                AS table_has_entries
         "
         .to_string(),
     };
@@ -105,7 +195,7 @@ pub async fn get_brokers() -> anyhow::Result<Vec<String>> {
                 SELECT broker FROM interest
                 UNION
                 SELECT broker FROM fx_conversion
-            ) b ORDER BY broker",
+            ) b WHERE broker IS NOT NULL AND btrim(broker) <> '' ORDER BY broker",
             &[],
         )
         .await?;
@@ -169,6 +259,14 @@ pub async fn get_active_years() -> anyhow::Result<Vec<i32>> {
                 SELECT date FROM fx_conversion
                 UNION ALL
                 SELECT date FROM dividend
+                UNION ALL
+                SELECT date FROM asset_trade
+                UNION ALL
+                SELECT date FROM asset_transaction
+                UNION ALL
+                SELECT date FROM asset_balance_snapshot
+                UNION ALL
+                SELECT date FROM asset_valuation
                 ) AS all_dates
             )
             SELECT 

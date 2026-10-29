@@ -23,6 +23,146 @@ export interface ApplicationSettings {
 	log_level: string;
 }
 
+export interface TelegramReportScheduleStatus {
+	enabled: boolean;
+	send_time_utc: string;
+	next_report_at?: Date;
+	last_sent_at?: Date;
+	/** not_run, running, succeeded, or failed. */
+	last_status: string;
+	last_error?: string;
+}
+
+export interface ApplicationSettingsStatus {
+	log_level: string;
+	/** Whether TG_TOKEN is non-empty; never includes the credential itself. */
+	telegram_token_set: boolean;
+	/** Whether TG_CHAT_ID is non-empty; does not validate the chat with Telegram. */
+	telegram_chat_id_set: boolean;
+	telegram_schedule: TelegramReportScheduleStatus;
+}
+
+export enum AssetClass {
+	PhysicalGold = "PhysicalGold",
+	RealEstate = "RealEstate",
+	PrivateDebt = "PrivateDebt",
+	CashAccount = "CashAccount",
+}
+
+export enum TaxTreatment {
+	Included = "Included",
+	Excluded = "Excluded",
+}
+
+export interface Asset {
+	id: string;
+	name: string;
+	asset_class: AssetClass;
+	currency: string;
+	unit_label: string;
+	current_interest_rate_percent?: string;
+	interest_rate_updated_at?: Date;
+	tax_treatment: TaxTreatment;
+	archived_at?: Date;
+	created_at: Date;
+	updated_at: Date;
+}
+
+export enum AssetBalanceSnapshotKind {
+	Opening = "Opening",
+	Reconciliation = "Reconciliation",
+}
+
+export interface AssetBalanceSnapshot {
+	id: string;
+	asset_id: string;
+	date: Date;
+	kind: AssetBalanceSnapshotKind;
+	balance: string;
+	balance_eur: string;
+	note?: string;
+	created_at: Date;
+}
+
+export type AssetActivity = 
+	| { asset_class: "PhysicalGold", activity: TradeAssetActivity }
+	| { asset_class: "RealEstate", activity: TradeAssetActivity }
+	| { asset_class: "PrivateDebt", activity: PrivateDebtActivity }
+	| { asset_class: "CashAccount", activity: CashAccountActivity };
+
+export interface AssetDetailRecord {
+	asset: Asset;
+	activity: AssetActivity;
+}
+
+export interface AssetListRecord {
+	id: string;
+	name: string;
+	asset_class: AssetClass;
+	currency: string;
+	unit_label: string;
+	current_interest_rate_percent?: string;
+	interest_rate_updated_at?: Date;
+	tax_treatment: TaxTreatment;
+	archived_at?: Date;
+}
+
+export enum AssetTradeDirection {
+	Buy = "Buy",
+	Sell = "Sell",
+}
+
+export interface AssetTrade {
+	id: string;
+	asset_id: string;
+	date: Date;
+	units: string;
+	price_per_unit: string;
+	eur_price_per_unit: string;
+	direction: AssetTradeDirection;
+	currency: string;
+	broker: string;
+	fees: string;
+	fees_eur: string;
+	note?: string;
+	created_at: Date;
+}
+
+export enum AssetTransactionKind {
+	Deposit = "Deposit",
+	Withdrawal = "Withdrawal",
+	PrincipalAdvance = "PrincipalAdvance",
+	PrincipalRepayment = "PrincipalRepayment",
+}
+
+export interface AssetTransaction {
+	id: string;
+	asset_id: string;
+	date: Date;
+	kind: AssetTransactionKind;
+	amount: string;
+	amount_eur: string;
+	currency: string;
+	note?: string;
+	created_at: Date;
+}
+
+export enum AssetValuationSource {
+	Manual = "Manual",
+	Trade = "Trade",
+}
+
+export interface AssetValuation {
+	id: string;
+	asset_id: string;
+	date: Date;
+	price_per_unit: string;
+	eur_price_per_unit: string;
+	currency: string;
+	source: AssetValuationSource;
+	created_at: Date;
+}
+
 export interface BuyIn {
 	isin: string;
 	name: string;
@@ -33,6 +173,123 @@ export interface BuyIn {
 	current_price: string;
 	current_value: string;
 	unrealized: string;
+}
+
+export enum InterestOrigin {
+	Imported = "Imported",
+	Manual = "Manual",
+}
+
+export interface LinkedAssetInterest {
+	id: string;
+	asset_id?: string;
+	date: Date;
+	amount: string;
+	broker?: string;
+	principal?: string;
+	currency: string;
+	amount_eur: string;
+	withholding_tax?: string;
+	withholding_tax_currency?: string;
+	tax_treatment: TaxTreatment;
+	origin: InterestOrigin;
+}
+
+export interface CashAccountActivity {
+	transactions: AssetTransaction[];
+	balance_snapshots: AssetBalanceSnapshot[];
+	interest: LinkedAssetInterest[];
+}
+
+export interface CashAccountSummary {
+	asset_id: string;
+	name: string;
+	currency: string;
+	current_balance: string;
+	current_balance_eur?: string;
+	current_interest_rate_percent: string;
+	interest_rate_updated_at?: Date;
+}
+
+export interface CreateAssetBalanceSnapshotRequest {
+	date: Date;
+	kind: AssetBalanceSnapshotKind;
+	balance: string;
+	balance_eur?: string;
+	note?: string;
+}
+
+export interface CreateAssetRequest {
+	name: string;
+	asset_class: AssetClass;
+	currency: string;
+	unit_label: string;
+	current_interest_rate_percent?: string;
+}
+
+export interface CreateAssetTradeRequest {
+	date: Date;
+	units: string;
+	price_per_unit: string;
+	eur_price_per_unit?: string;
+	direction: AssetTradeDirection;
+	currency: string;
+	broker: string;
+	fees?: string;
+	note?: string;
+}
+
+export interface CreateAssetTransactionRequest {
+	date: Date;
+	kind: AssetTransactionKind;
+	amount: string;
+	amount_eur?: string;
+	currency: string;
+	note?: string;
+}
+
+export interface CreateAssetValuationRequest {
+	date: Date;
+	price_per_unit: string;
+	eur_price_per_unit?: string;
+	currency: string;
+}
+
+export interface CreateLinkedInterestRequest {
+	date: Date;
+	amount: string;
+	amount_eur?: string;
+	currency: string;
+	broker?: string;
+	principal?: string;
+	withholding_tax?: string;
+	withholding_tax_currency?: string;
+}
+
+export interface CustomAssetHolding {
+	asset_id: string;
+	name: string;
+	asset_class: AssetClass;
+	currency: string;
+	unit_label: string;
+	units_or_balance: string;
+	current_value?: string;
+	current_value_eur?: string;
+	net_contributions_eur: string;
+	invested_eur: string;
+	realized_return_eur: string;
+	unrealized_return_eur?: string;
+	total_return_eur?: string;
+	income_eur: string;
+	valuation_date?: Date;
+}
+
+export interface CustomAssetPortfolioSummary {
+	current_value_eur: string;
+	invested_eur: string;
+	known_invested_eur: string;
+	total_return_eur: string;
+	incomplete_asset_count: number;
 }
 
 export interface Dividend {
@@ -102,6 +359,28 @@ export interface InterestPayment {
 	withholding_tax_currency: string;
 }
 
+export interface InterestRecord {
+	id: string;
+	asset_id?: string;
+	date: Date;
+	amount: string;
+	broker?: string;
+	principal?: string;
+	currency: string;
+	amount_eur: string;
+	withholding_tax?: string;
+	withholding_tax_currency?: string;
+	tax_treatment: TaxTreatment;
+	origin: InterestOrigin;
+}
+
+export interface MonthlyInvestmentActivity {
+	month: string;
+	net_purchases_eur: string;
+	net_cash_added_eur: string;
+	dividends_interest_eur: string;
+}
+
 export interface PerformanceSignal {
 	date: Date;
 	total_value: string;
@@ -111,10 +390,18 @@ export interface PerformanceSignal {
 export enum EventType {
 	CashInterest = "CashInterest",
 	ShareInterest = "ShareInterest",
+	PrivateDebtInterest = "PrivateDebtInterest",
 	Dividend = "Dividend",
 	Trade = "Trade",
 	FxConversion = "FxConversion",
 	DividendAequivalent = "DividendAequivalent",
+	Deposit = "Deposit",
+	Withdrawal = "Withdrawal",
+	PrincipalAdvance = "PrincipalAdvance",
+	PrincipalRepayment = "PrincipalRepayment",
+	OpeningBalance = "OpeningBalance",
+	BalanceReconciliation = "BalanceReconciliation",
+	Valuation = "Valuation",
 }
 
 export enum TradeDirection {
@@ -123,6 +410,7 @@ export enum TradeDirection {
 }
 
 export interface PortfolioEvent {
+	event_id?: string;
 	date: Date;
 	event_type: EventType;
 	currency: string;
@@ -130,19 +418,25 @@ export interface PortfolioEvent {
 	price_unit: string;
 	identifier?: string;
 	name?: string;
+	unit_label?: string;
 	direction?: TradeDirection;
 	applied_fx_rate?: string;
 	withholding_tax_percent?: string;
 	total: string;
+	total_currency: string;
 	broker: string;
+	tax_supported: boolean;
 }
 
 export interface PositionWithValueAndAllocation {
-	isin: string;
+	asset_id: string;
+	isin?: string;
+	asset_class: string;
 	name: string;
-	value: string;
+	value?: string;
 	units: string;
-	share: string;
+	unit_label: string;
+	share?: string;
 }
 
 export interface PortfolioOverview {
@@ -151,6 +445,8 @@ export interface PortfolioOverview {
 	realized: string;
 	total_return_abs: string;
 	total_return_rel: string;
+	returns_incomplete: boolean;
+	unpriced_assets: number;
 	positions: PositionWithValueAndAllocation[];
 	valuation_complete: boolean;
 	unpriced_isins: string[];
@@ -210,6 +506,11 @@ export interface PricingStatus {
 	quotes: PriceQuote[];
 }
 
+export interface PrivateDebtActivity {
+	transactions: AssetTransaction[];
+	interest: LinkedAssetInterest[];
+}
+
 export interface SecWac {
 	units: string;
 	average_cost: string;
@@ -224,6 +525,12 @@ export interface TaxationReport {
 	taxable_amounts: any;
 	securities_wacs: any;
 	currency_wacs: any;
+}
+
+export interface TelegramReportScheduleSettings {
+	enabled: boolean;
+	/** Strict 24-hour HH:MM, always UTC. */
+	send_time_utc: string;
 }
 
 export interface Trade {
@@ -242,6 +549,11 @@ export interface Trade {
 	withholding_tax_currency: string;
 }
 
+export interface TradeAssetActivity {
+	trades: AssetTrade[];
+	valuations: AssetValuation[];
+}
+
 export interface TransactionTaxImpact {
 	date: Date;
 	event_type: EventType;
@@ -252,6 +564,7 @@ export interface TransactionTaxImpact {
 	units: string;
 	price_unit: string;
 	total: string;
+	total_currency: string;
 	broker: string;
 	impact_type: string;
 	taxable_amount: string;
@@ -264,6 +577,56 @@ export interface TransactionTaxImpact {
 	is_tax_relevant: boolean;
 }
 
+export interface UpdateAssetBalanceSnapshotRequest {
+	date: Date;
+	kind: AssetBalanceSnapshotKind;
+	balance: string;
+	balance_eur?: string;
+	note?: string;
+}
+
+export interface UpdateAssetRequest {
+	name: string;
+	currency: string;
+	unit_label: string;
+	current_interest_rate_percent?: string;
+}
+
+export interface UpdateAssetTradeRequest {
+	date: Date;
+	units: string;
+	price_per_unit: string;
+	eur_price_per_unit?: string;
+	direction: AssetTradeDirection;
+	currency: string;
+	broker: string;
+	fees?: string;
+	note?: string;
+}
+
+export interface UpdateAssetTransactionRequest {
+	date: Date;
+	kind: AssetTransactionKind;
+	amount: string;
+	amount_eur?: string;
+	currency: string;
+	note?: string;
+}
+
+export interface UpdateAssetValuationRequest {
+	date: Date;
+	price_per_unit: string;
+	eur_price_per_unit?: string;
+	currency: string;
+}
+
+export interface WeightedCashInterestSummary {
+	average_interest_rate_percent?: string;
+	eligible_balance_eur: string;
+	unconverted_count: number;
+	accounts: CashAccountSummary[];
+}
+
 /**
  * Custom JSON reviver and replacer functions for dynamic data transformation
  * ReviverFunc is used during JSON parsing to detect and transform specific data structures
@@ -271,7 +634,7 @@ export interface TransactionTaxImpact {
  * These functions allow for flexible encoding and decoding of data, ensuring that complex types are properly handled when converting between TS objects and JSON
  */
 export const ReviverFunc = (key: string, value: unknown): unknown => {
-    if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/.test(value) && (key === "as_of" || key === "created_at" || key === "date" || key === "date_added" || key === "from_date" || key === "last_price_update" || key === "last_success_at" || key === "next_refresh_at" || key === "received_at" || key === "until_date")) {
+    if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/.test(value) && (key === "archived_at" || key === "as_of" || key === "created_at" || key === "date" || key === "date_added" || key === "from_date" || key === "interest_rate_updated_at" || key === "last_price_update" || key === "last_sent_at" || key === "last_success_at" || key === "next_refresh_at" || key === "next_report_at" || key === "received_at" || key === "until_date" || key === "updated_at" || key === "valuation_date")) {
         return new Date(value);
     }
     return value;

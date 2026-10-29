@@ -3,9 +3,12 @@ use chrono::Utc;
 use serde::Deserialize;
 use utoipa::IntoParams;
 
-use crate::services::events::{get_events, EventType};
+use crate::{
+    database::{db_client, queries::composite::get_monthly_investment_activity},
+    services::events::{get_events, EventType},
+};
 
-use super::{json_response, parse_ymd_start};
+use super::{internal_error, json_response, parse_ymd_start};
 use crate::api::errors::ErrorResponse;
 
 #[derive(Debug, Deserialize, IntoParams)]
@@ -67,4 +70,40 @@ pub async fn timeline(
             None,
         )
     })
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct InvestmentActivityQuery {
+    /// Inclusive UTC start date (YYYY-MM-DD). Omit for all recorded activity.
+    pub start_date: Option<String>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/timeline/investment-activity",
+    tag = "portfolio",
+    params(InvestmentActivityQuery),
+    responses(
+        (status = 200, description = "Monthly UTC EUR net purchases (imported and manual buys minus sales, before fees), net cash added (cash-account deposits minus withdrawals), and dividends & interest (recorded gross EUR amounts before withholding tax, including imported/manual and linked/unlinked interest regardless of tax treatment). Separate measures, not additive; preserves archived history and excludes projected interest, valuations, opening/reconciliation balances, and loan principal movements.", body = [crate::database::models::investment_activity::MonthlyInvestmentActivity]),
+        (status = 400, description = "Invalid start date", body = ErrorResponse),
+        (status = 401, description = "Unauthorized"),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    ),
+    security(("api_token" = []))
+)]
+pub async fn investment_activity(
+    Query(query): Query<InvestmentActivityQuery>,
+) -> Result<impl IntoResponse, ErrorResponse> {
+    let start_date = query
+        .start_date
+        .as_deref()
+        .map(parse_ymd_start)
+        .transpose()?;
+    let client = db_client()
+        .await
+        .map_err(|e| internal_error("InvestmentActivityRetrievalError", e))?;
+    let activity = get_monthly_investment_activity(&client, start_date)
+        .await
+        .map_err(|e| internal_error("InvestmentActivityRetrievalError", e))?;
+    json_response(&activity).map_err(|status| internal_error("SerializationError", status))
 }

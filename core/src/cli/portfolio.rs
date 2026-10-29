@@ -1,4 +1,3 @@
-use chrono::Utc;
 use log::info;
 use owo_colors::{OwoColorize, Style};
 use serde::Serialize;
@@ -6,17 +5,16 @@ use spinners_rs::{Spinner, Spinners};
 use tabled::{Table, Tabled};
 
 use crate::{
-    cli::shared::format_currency,
-    database::{
-        models::performance::PerformanceSignal,
-        queries::performance::{add_performance_signal_to_db, get_latest_performance_signal},
+    services::{
+        portfolio::get_portfolio_overview,
+        portfolio_reports::{complete_snapshot, send_report},
+        shared::util::format_currency,
     },
-    services::{notifications::Notification, portfolio::get_portfolio_overview},
 };
 
 #[derive(Debug, Tabled, Serialize, Clone)]
 struct StringifiedPositionWithAllocation {
-    isin: String,
+    identifier: String,
     name: String,
     value: String,
     units: String,
@@ -31,76 +29,34 @@ pub async fn portfolio(args: PortfolioArgs) -> anyhow::Result<()> {
     let mut sp = Spinner::new(Spinners::Point, "Getting portfolio positions...");
     sp.start();
     let position_overview = get_portfolio_overview().await?;
-    anyhow::ensure!(position_overview.valuation_complete,
-        "Portfolio valuation is incomplete (missing prices: {}); not saving a snapshot or sending notifications",
-        position_overview.unpriced_isins.join(", "));
+    let performance_signal_to_save = complete_snapshot(&position_overview)?;
 
     let mut formatted_positions_with_allocation: Vec<StringifiedPositionWithAllocation> = vec![];
     for position in position_overview.positions {
         let item = StringifiedPositionWithAllocation {
-            isin: position.isin.clone(),
+            identifier: position.isin.unwrap_or(position.asset_id),
             name: position.name,
-            value: format_currency(position.value, true),
+            value: position
+                .value
+                .map(|value| format_currency(value, true))
+                .unwrap_or_else(|| "Unpriced".to_string()),
             units: position.units.to_string(),
-            share: format!("{:.2} %", position.share),
+            share: position
+                .share
+                .map(|share| format!("{share:.2} %"))
+                .unwrap_or_else(|| "-".to_string()),
         };
         formatted_positions_with_allocation.push(item);
     }
 
-    let performance_signal_to_save = PerformanceSignal {
-        date: Utc::now(),
-        total_value: position_overview.total_value,
-        total_invested: position_overview.total_value - position_overview.total_return_abs,
-    };
 
-    match args.notify {
-        Some(notify) => {
-            if notify {
-                let latest_performance_signal = get_latest_performance_signal().await?;
-                if let Some(latest_performance_signal) = latest_performance_signal {
-                    let total_value_now = performance_signal_to_save.total_value;
-                    let total_invested_now = performance_signal_to_save.total_invested;
-                    let unrealized_gain = total_value_now - total_invested_now;
-                    let total_value_previously = &latest_performance_signal.total_value;
-                    let total_invested_previously = &latest_performance_signal.total_invested;
-
-                    let capital_flow = total_invested_now - total_invested_previously;
-                    let value_change = total_value_now - total_value_previously;
-                    let performance_delta = value_change - capital_flow;
-                    let date_string = latest_performance_signal.date.format("%Y/%m/%d %H:%M");
-
-                    let summary_text = format!(
-                        "<b>Portfolio Update</b>\n\n\
-                         <b>Current Values</b>\n\
-                         • Current Portfolio Value: {}\n\
-                         • Total Invested: {}\n\
-                         • Unrealized P&amp;L: {}\n\n\
-                         <b>Changes (since {date_string})</b>\n\
-                         • Value Change: {}\n\
-                         • Capital Flow: {}\n\
-                         • Capital Gain: {}",
-                        format_currency(total_value_now, true),
-                        format_currency(total_invested_now, true),
-                        format_currency(unrealized_gain, true),
-                        format_currency(value_change, true),
-                        format_currency(capital_flow, true),
-                        format_currency(performance_delta, true),
-                    );
-                    let notification = Notification {
-                        content: summary_text,
-                    };
-                    Notification::send(&notification).await?;
-                }
-            } else {
-                info!("Notifications not enabled.")
-            }
-        }
-        None => {
-            info!("Notifications not enabled.")
-        }
+    if args.notify == Some(true) {
+        send_report(&performance_signal_to_save).await?;
+    } else {
+        info!("Notifications not enabled.");
     }
 
-    add_performance_signal_to_db(performance_signal_to_save).await?;
+    crate::database::queries::performance::add_performance_signal_to_db(performance_signal_to_save).await?;
 
     let table = Table::new(&formatted_positions_with_allocation).to_string();
 

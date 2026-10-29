@@ -2,6 +2,7 @@ import useSWR from "swr";
 import { useState } from "react";
 import { format } from "date-fns";
 import {
+  AssetActivityCard,
   DividendCard,
   FxCard,
   InterestCard,
@@ -22,18 +23,22 @@ import { cn } from "@/lib/utils";
 import { Calendar } from "@/components/ui/calendar";
 import { CalendarIcon } from "@phosphor-icons/react";
 import { BASE_URL, fetcher } from "@/lib/http";
+import InvestmentActivityChart from "@/components/charts/investment-activity-chart";
+import { StatementImportsPanel } from "@/components/composite/statement-imports";
 
 export const Timeline = () => {
   const [selectedDate, setSelectedDate] = useState<Date>(
     new Date(new Date().setMonth(new Date().getMonth() - 3)),
   );
-  const { data, isLoading } = useSWR<PortfolioEvent[]>(
-    `${BASE_URL}/timeline?start_date=${format(selectedDate, "yyyy-LL-dd")}`,
+  const startDate = format(selectedDate, "yyyy-LL-dd");
+  const { data, isLoading, error } = useSWR<PortfolioEvent[]>(
+    `${BASE_URL}/timeline?start_date=${startDate}`,
     fetcher,
   );
 
   return (
     <>
+      <StatementImportsPanel />
       <Card className="w-full flex flex-col justify-start mb-6">
         <CardHeader>
           <CardTitle>Start Date</CardTitle>
@@ -69,8 +74,13 @@ export const Timeline = () => {
         </CardContent>
       </Card>
 
-      {/* Skeleton for Timeline Events */}
-      {isLoading ? (
+      <InvestmentActivityChart startDate={startDate} />
+
+      {error ? (
+        <div role="alert" className="bg-destructive/10 text-destructive mb-6 rounded-xl border border-destructive/20 p-4 text-sm">
+          Timeline could not be loaded.
+        </div>
+      ) : isLoading ? (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {Array.from({ length: 100 }).map((_, index) => (
             <SkeletonCard key={index} />
@@ -81,7 +91,7 @@ export const Timeline = () => {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {data?.map((timelineEvent: PortfolioEvent) => {
-            let identifier = `${timelineEvent.date}${timelineEvent.identifier}${timelineEvent.units}`;
+            let identifier = timelineEvent.event_id ?? `${timelineEvent.date}${timelineEvent.identifier}${timelineEvent.units}`;
             let eventComponent;
             switch (timelineEvent.event_type) {
               case EventType.Trade:
@@ -98,6 +108,7 @@ export const Timeline = () => {
                 );
                 break;
               case EventType.ShareInterest:
+              case EventType.PrivateDebtInterest:
                 eventComponent = (
                   <InterestCard
                     timelineEvent={timelineEvent}
@@ -124,6 +135,17 @@ export const Timeline = () => {
               case EventType.FxConversion:
                 eventComponent = (
                   <FxCard timelineEvent={timelineEvent} key={identifier} />
+                );
+                break;
+              case EventType.Deposit:
+              case EventType.Withdrawal:
+              case EventType.PrincipalAdvance:
+              case EventType.PrincipalRepayment:
+              case EventType.OpeningBalance:
+              case EventType.BalanceReconciliation:
+              case EventType.Valuation:
+                eventComponent = (
+                  <AssetActivityCard timelineEvent={timelineEvent} key={identifier} />
                 );
                 break;
               default:

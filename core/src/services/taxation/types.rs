@@ -136,6 +136,7 @@ pub struct TransactionTaxImpact {
     pub units: Decimal,
     pub price_unit: Decimal,
     pub total: Decimal,
+    pub total_currency: String,
     pub broker: String,
     pub impact_type: String,
     pub taxable_amount: Decimal,

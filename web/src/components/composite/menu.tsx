@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 
 
 const menuItems = [
-  { text: 'Overview', route: '/overview', icon: ChartBarIcon },
+  { text: 'Portfolio', route: '/overview', icon: ChartBarIcon },
   { text: 'Performance', route: '/performance', icon: ChartLineIcon },
   { text: 'Data', route: '/instruments', icon: TrayArrowDownIcon },
   { text: 'Taxation', route: '/taxation', icon: NotepadIcon },

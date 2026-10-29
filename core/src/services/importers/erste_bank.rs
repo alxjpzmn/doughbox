@@ -161,7 +161,9 @@ pub async fn extract_erste_bank_record(text: &str) -> anyhow::Result<()> {
                 println!("💵 Dividend added: {:?}", dividend);
             }
         }
-        RecordType::Unmatched => (),
+        RecordType::Unmatched => {
+            return Err(anyhow::anyhow!("Unrecognized or unsupported Erste Bank PDF record"));
+        }
     }
     Ok(())
 }

@@ -86,6 +86,7 @@ mod tests {
 
     fn buy(units: Decimal, price: Decimal, fx: Decimal) -> PortfolioEvent {
         PortfolioEvent {
+            event_id: None,
             date: chrono::Utc.with_ymd_and_hms(2024, 6, 1, 0, 0, 0).unwrap(),
             event_type: EventType::Trade,
             currency: "EUR".to_string(),
@@ -93,11 +94,14 @@ mod tests {
             price_unit: price,
             identifier: Some("US0378331005".to_string()),
             name: Some("Apple".to_string()),
+            unit_label: None,
             direction: Some(TradeDirection::Buy),
             applied_fx_rate: Some(fx),
             withholding_tax_percent: None,
             total: units * price,
+            total_currency: "EUR".to_string(),
             broker: "Trading212".to_string(),
+            tax_supported: true,
         }
     }
 

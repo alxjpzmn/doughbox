@@ -1,3 +1,5 @@
+pub mod assets;
+pub mod data_imports;
 pub mod dtt;
 pub mod events;
 pub mod files;
@@ -8,6 +10,9 @@ pub mod notifications;
 pub mod parsers;
 pub mod performance;
 pub mod portfolio;
+pub mod portfolio_reports;
 pub mod positions;
 pub mod shared;
+pub mod statement_imports;
 pub mod taxation;
+pub mod telegram_reports;
