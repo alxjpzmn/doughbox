@@ -170,7 +170,12 @@ mod tests {
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
             let mut request = [0; 1024];
-            socket.read(&mut request).await.unwrap();
+            let mut received = 0;
+            while !request[..received].ends_with(b"\r\n\r\n") {
+                let count = socket.read(&mut request[received..]).await.unwrap();
+                assert!(count > 0, "incomplete HTTP request headers");
+                received += count;
+            }
             let body = r#"[{"PERIOD":"2026-10-23","OBS":"1.08"}]"#;
             socket.write_all(format!("HTTP/1.1 503 Service Unavailable\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
         });
