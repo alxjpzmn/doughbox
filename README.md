@@ -243,6 +243,8 @@ pnpm dev
 
 Keep `pnpm-lock.yaml`; no `npm install`, lockfile deletion or WASM fallback is needed.
 
+For dependency refreshes, run `pnpm --recursive update --latest` from the root so both root tooling and web packages are included. Update Rust requirements in `core/Cargo.toml` for new major releases, then run `cargo update` from `core` to refresh transitive dependencies. Keep both lockfiles and verify with `pnpm test`, `pnpm typecheck`, and `pnpm web build:docker`.
+
 Queue/price and investment-activity database integration tests are opt-in locally and run in CI. From `core`, run `TEST_POSTGRES_URL=postgres://... cargo test pricing_database -- --ignored` and `TEST_POSTGRES_URL=postgres://... cargo test investment_activity_database -- --ignored`. Tests create and drop their own uniquely named schemas and never fall back to `POSTGRES_URL` or `.env.dev`.
 
 ### Database migrations

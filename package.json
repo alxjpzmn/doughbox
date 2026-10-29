@@ -15,6 +15,6 @@
     "typeshare": "typeshare ./core --lang=typescript --output-file=./web/src/types/core.ts"
   },
   "devDependencies": {
-    "concurrently": "^10.0.5"
+    "concurrently": "^10.0.6"
   }
 }
