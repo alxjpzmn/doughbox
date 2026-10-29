@@ -5,7 +5,12 @@ use crate::database::{db_client, models::listing_change::ListingChange};
 
 pub async fn get_listing_changes() -> anyhow::Result<Vec<ListingChange>> {
     let client = db_client().await?;
+    get_listing_changes_with_client(&client).await
+}
 
+pub(crate) async fn get_listing_changes_with_client(
+    client: &tokio_postgres::Client,
+) -> anyhow::Result<Vec<ListingChange>> {
     let rows = client.query(r#"select * from listing_change"#, &[]).await?;
 
     let mut listing_changes: Vec<ListingChange> = vec![];

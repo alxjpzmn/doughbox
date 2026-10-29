@@ -1,6 +1,6 @@
 import { EventType, TradeDirection, PortfolioEvent } from '@/types/core';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { ArrowDownLeft, ArrowDownUp, ArrowUpRight, HandCoins, Scale, Scroll } from 'lucide-react';
+import { ArrowDownLeftIcon, ArrowsDownUpIcon, ArrowUpRightIcon, HandCoinsIcon, ScrollIcon, ScalesIcon } from '@phosphor-icons/react';
 import { Separator } from '@/components/ui/separator';
 import { Skeleton } from '@/components/ui/skeleton';
 import { formatCurrency, formatDate } from '@/lib/utils';
@@ -56,7 +56,7 @@ const TradeCard: React.FC<TimelineCardProps> = ({ timelineEvent }) => {
           <p className='text-muted-foreground text-sm'>{formatDate(new Date(timelineEvent?.date))}</p>
           <div className="flex items-center gap-2">
             <TaxStatus timelineEvent={timelineEvent} />
-            {timelineEvent.direction === TradeDirection.Buy ? <ArrowDownLeft className='stroke-success-foreground' size={16} /> : <ArrowUpRight className='stroke-destructive-foreground' size={16} />}
+            {timelineEvent.direction === TradeDirection.Buy ? <ArrowDownLeftIcon className='text-success-foreground' size={16} /> : <ArrowUpRightIcon className='text-red-400' size={16} />}
           </div>
         </div>
       </CardContent>
@@ -82,7 +82,7 @@ const InterestCard: React.FC<TimelineCardProps> = ({ timelineEvent }) => {
           <p className='text-muted-foreground text-sm'>{formatDate(new Date(timelineEvent?.date))}</p>
           <div className="flex items-center gap-2">
             <TaxStatus timelineEvent={timelineEvent} />
-            <HandCoins size={16} className='stroke-muted-foreground' />
+            <HandCoinsIcon size={16} className='text-indigo-400' />
           </div>
         </div>
       </CardContent>
@@ -110,7 +110,7 @@ const DividendCard: React.FC<TimelineCardProps> = ({ timelineEvent }) => {
           <p className='text-muted-foreground text-sm'>{formatDate(new Date(timelineEvent?.date))}</p>
           <div className="flex items-center gap-2">
             <TaxStatus timelineEvent={timelineEvent} />
-            <Scroll size={16} className='stroke-muted-foreground' />
+            <ScrollIcon size={16} className='text-indigo-400' />
           </div>
         </div>
       </CardContent>
@@ -136,7 +136,7 @@ const FxCard: React.FC<TimelineCardProps> = ({ timelineEvent }) => {
           <p className='text-muted-foreground text-sm'>{formatDate(new Date(timelineEvent?.date))}</p>
           <div className="flex items-center gap-2">
             <TaxStatus timelineEvent={timelineEvent} />
-            <ArrowDownUp size={16} className='stroke-muted-foreground' />
+            <ArrowsDownUpIcon size={16} className='text-pink-400' />
           </div>
         </div>
       </CardContent>
@@ -160,7 +160,7 @@ const AssetActivityCard: React.FC<TimelineCardProps> = ({ timelineEvent }) => {
   const isSnapshot = timelineEvent.event_type === EventType.OpeningBalance
     || timelineEvent.event_type === EventType.BalanceReconciliation
   const isValuation = timelineEvent.event_type === EventType.Valuation
-  const ActivityIcon = isSnapshot ? Scale : isIncoming ? ArrowDownLeft : ArrowUpRight
+  const ActivityIcon = isSnapshot ? ScalesIcon : isIncoming ? ArrowDownLeftIcon : ArrowUpRightIcon
 
   return (
     <Card>
@@ -180,7 +180,7 @@ const AssetActivityCard: React.FC<TimelineCardProps> = ({ timelineEvent }) => {
           <p className='text-muted-foreground text-sm'>{formatDate(new Date(timelineEvent.date))}</p>
           <div className="flex items-center gap-2">
             <TaxStatus timelineEvent={timelineEvent} />
-            <ActivityIcon className={isIncoming ? "stroke-success-foreground" : isSnapshot || isValuation ? "stroke-muted-foreground" : "stroke-destructive-foreground"} size={16} />
+            <ActivityIcon className={isIncoming ? "text-success-foreground" : isSnapshot || isValuation ? "text-muted-foreground" : "text-destructive-foreground"} size={16} />
           </div>
         </div>
       </CardContent>

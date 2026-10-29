@@ -158,6 +158,34 @@ fn parse_csv_decimal(value: &str) -> anyhow::Result<Decimal> {
         .map_err(|e| anyhow!("Failed to parse decimal '{}': {}", value, e))
 }
 
+/// Failed supported rows make the file fail even when other rows were imported.
+/// Cash transfers and unsupported row types classified as Skip/Unmatched remain ignored.
+#[derive(Default)]
+struct RowFailures {
+    count: usize,
+    first: Option<String>,
+}
+
+impl RowFailures {
+    fn record(&mut self, row: usize, error: &dyn std::fmt::Display) {
+        self.count += 1;
+        if self.first.is_none() {
+            self.first = Some(format!("record {}: {}", row, error));
+        }
+    }
+
+    fn finish(self) -> anyhow::Result<()> {
+        if let Some(first) = self.first {
+            return Err(anyhow!(
+                "{} Trade Republic CSV row(s) failed; first failure: {}. Other rows may already have been imported.",
+                self.count,
+                first
+            ));
+        }
+        Ok(())
+    }
+}
+
 pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::Result<()> {
     let broker = "Trade Republic".to_string();
     let cursor = Cursor::new(file_content);
@@ -201,12 +229,14 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
     let mut liquidation_duplicates = 0;
     let mut skip_count = 0;
     let mut unmatched_count = 0;
+    let mut failures = RowFailures::default();
 
     for result in rdr.records() {
         record_count += 1;
         let record = match result {
             Ok(r) => r,
             Err(e) => {
+                failures.record(record_count, &e);
                 log::error!("Failed to parse CSV record {}: {:?}", record_count, e);
                 continue;
             }
@@ -247,6 +277,7 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
                 let date = match parse_timestamp(datetime_str) {
                     Ok(d) => d,
                     Err(e) => {
+                        failures.record(record_count, &e);
                         log::error!(
                             "Failed to parse date '{}' at record {}: {:?}",
                             datetime_str,
@@ -262,6 +293,7 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
                 let shares = match parse_csv_decimal(shares_str) {
                     Ok(s) => s.abs(),
                     Err(e) => {
+                        failures.record(record_count, &e);
                         log::error!(
                             "Failed to parse shares '{}' at record {}: {:?}",
                             shares_str,
@@ -276,6 +308,7 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
                 let avg_price_per_unit = match parse_csv_decimal(price_str) {
                     Ok(p) => p.abs(),
                     Err(e) => {
+                        failures.record(record_count, &e);
                         log::error!(
                             "Failed to parse price '{}' at record {}: {:?}",
                             price_str,
@@ -290,6 +323,7 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
                 let amount = match parse_csv_decimal(amount_str) {
                     Ok(a) => a,
                     Err(e) => {
+                        failures.record(record_count, &e);
                         log::error!(
                             "Failed to parse amount '{}' at record {}: {:?}",
                             amount_str,
@@ -304,6 +338,7 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
                 let fee = match parse_csv_decimal(fee_str) {
                     Ok(f) => f.abs(),
                     Err(e) => {
+                        failures.record(record_count, &e);
                         log::error!(
                             "Failed to parse fee '{}' at record {}: {:?}",
                             fee_str,
@@ -318,6 +353,7 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
                 let withholding_tax = match parse_csv_decimal(tax_str) {
                     Ok(t) => t.abs(),
                     Err(e) => {
+                        failures.record(record_count, &e);
                         log::error!(
                             "Failed to parse tax '{}' at record {}: {:?}",
                             tax_str,
@@ -369,6 +405,7 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
                         trade_skipped_duplicate += 1;
                     }
                     Err(e) => {
+                        failures.record(record_count, &e);
                         log::error!("Failed to add trade at record {}: {:?}", record_count, e);
                     }
                 }
@@ -378,6 +415,7 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
                 let date = match parse_timestamp(datetime_str) {
                     Ok(d) => d,
                     Err(e) => {
+                        failures.record(record_count, &e);
                         log::error!(
                             "Failed to parse date '{}' at record {}: {:?}",
                             datetime_str,
@@ -395,6 +433,7 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
                 let amount = match parse_csv_decimal(amount_str) {
                     Ok(a) => a.abs(),
                     Err(e) => {
+                        failures.record(record_count, &e);
                         log::error!(
                             "Failed to parse amount '{}' at record {}: {:?}",
                             amount_str,
@@ -409,6 +448,7 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
                 let withholding_tax = match parse_csv_decimal(tax_str) {
                     Ok(t) => t.abs(),
                     Err(e) => {
+                        failures.record(record_count, &e);
                         log::error!(
                             "Failed to parse tax '{}' at record {}: {:?}",
                             tax_str,
@@ -428,6 +468,7 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
                         match parse_csv_decimal(orig_amt) {
                             Ok(orig_amount) => (orig_curr.to_string(), orig_amount),
                             Err(e) => {
+                                failures.record(record_count, &e);
                                 log::error!(
                                     "Failed to parse original amount '{}' at record {}: {:?}",
                                     orig_amt,
@@ -463,6 +504,7 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
                     }
                     Ok(false) => dividend_duplicates += 1,
                     Err(e) => {
+                        failures.record(record_count, &e);
                         log::error!("Failed to add dividend at record {}: {:?}", record_count, e);
                     }
                 }
@@ -472,6 +514,7 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
                 let date = match parse_timestamp(datetime_str) {
                     Ok(d) => d,
                     Err(e) => {
+                        failures.record(record_count, &e);
                         log::error!(
                             "Failed to parse date '{}' at record {}: {:?}",
                             datetime_str,
@@ -486,6 +529,7 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
                 let amount = match parse_csv_decimal(amount_str) {
                     Ok(a) => a.abs(),
                     Err(e) => {
+                        failures.record(record_count, &e);
                         log::error!(
                             "Failed to parse amount '{}' at record {}: {:?}",
                             amount_str,
@@ -500,6 +544,7 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
                 let withholding_tax = match parse_csv_decimal(tax_str) {
                     Ok(t) => t.abs(),
                     Err(e) => {
+                        failures.record(record_count, &e);
                         log::error!(
                             "Failed to parse tax '{}' at record {}: {:?}",
                             tax_str,
@@ -550,6 +595,7 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
                     }
                     Ok(false) => interest_duplicates += 1,
                     Err(e) => {
+                        failures.record(record_count, &e);
                         log::error!("Failed to add interest at record {}: {:?}", record_count, e);
                     }
                 }
@@ -560,6 +606,7 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
                 let date = match parse_timestamp(datetime_str) {
                     Ok(d) => d,
                     Err(e) => {
+                        failures.record(record_count, &e);
                         log::error!(
                             "Failed to parse date '{}' at record {}: {:?}",
                             datetime_str,
@@ -576,6 +623,7 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
                 let shares = match parse_csv_decimal(shares_str) {
                     Ok(s) => s.abs(),
                     Err(e) => {
+                        failures.record(record_count, &e);
                         log::error!(
                             "Failed to parse shares '{}' at record {}: {:?}",
                             shares_str,
@@ -590,6 +638,7 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
                 let avg_price_per_unit = match parse_csv_decimal(price_str) {
                     Ok(p) => p.abs(),
                     Err(e) => {
+                        failures.record(record_count, &e);
                         log::error!(
                             "Failed to parse price '{}' at record {}: {:?}",
                             price_str,
@@ -604,6 +653,7 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
                 let fee = match parse_csv_decimal(fee_str) {
                     Ok(f) => f.abs(),
                     Err(e) => {
+                        failures.record(record_count, &e);
                         log::error!(
                             "Failed to parse fee '{}' at record {}: {:?}",
                             fee_str,
@@ -649,6 +699,7 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
                         liquidation_duplicates += 1;
                     }
                     Err(e) => {
+                        failures.record(record_count, &e);
                         log::error!(
                             "Failed to add liquidation trade at record {}: {:?}",
                             record_count,
@@ -662,6 +713,7 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
                 let date = match parse_timestamp(datetime_str) {
                     Ok(d) => d,
                     Err(e) => {
+                        failures.record(record_count, &e);
                         log::error!(
                             "Failed to parse date '{}' at record {}: {:?}",
                             datetime_str,
@@ -678,6 +730,7 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
                 let amount = match parse_csv_decimal(tax_str) {
                     Ok(t) => t,
                     Err(e) => {
+                        failures.record(record_count, &e);
                         log::error!(
                             "Failed to parse tax optimization amount '{}' at record {}: {:?}",
                             tax_str,
@@ -731,6 +784,7 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
                     }
                     Ok(false) => tax_opt_duplicates += 1,
                     Err(e) => {
+                        failures.record(record_count, &e);
                         log::error!(
                             "Failed to add tax optimization at record {}: {:?}",
                             record_count,
@@ -744,6 +798,7 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
                 let date = match parse_timestamp(datetime_str) {
                     Ok(d) => d,
                     Err(e) => {
+                        failures.record(record_count, &e);
                         log::error!(
                             "Failed to parse date '{}' at record {}: {:?}",
                             datetime_str,
@@ -760,6 +815,7 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
                 let amount = match parse_csv_decimal(tax_str) {
                     Ok(t) => t,
                     Err(e) => {
+                        failures.record(record_count, &e);
                         log::error!(
                             "Failed to parse tax '{}' at record {}: {:?}",
                             tax_str,
@@ -796,6 +852,7 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
                     }
                     Ok(false) => tax_opt_duplicates += 1,
                     Err(e) => {
+                        failures.record(record_count, &e);
                         log::error!(
                             "Failed to add dividend equivalent at record {}: {:?}",
                             record_count,
@@ -840,12 +897,29 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
         unmatched_count
     );
 
-    Ok(())
+    failures.finish()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn upload_csv_aggregates_failed_rows_and_preserves_intentional_skips() {
+        let file = concat!(
+            "datetime,type,category,symbol,amount,fee,tax,transaction_id\n",
+            "invalid,BUY,TRADING,US0378331005,-1,0,0,buy-1\n",
+            "invalid,INTEREST_PAYMENT,CASH,,1,0,0,interest-1\n",
+            "invalid,CUSTOMER_INBOUND,CASH,,100,0,0,transfer-1\n",
+            "short,row\n",
+        );
+        let error = extract_trade_republic_csv_record(file.as_bytes()).await.unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("3 Trade Republic CSV row(s) failed"));
+        assert!(message.contains("record 1: Unable to parse timestamp"));
+        assert!(message.contains("may already have been imported"));
+    }
+
 
     #[test]
     fn parse_csv_decimal_handles_empty_and_values() {

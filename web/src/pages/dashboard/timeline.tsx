@@ -21,21 +21,24 @@ import {
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { Calendar } from "@/components/ui/calendar";
-import { CalendarIcon } from "lucide-react";
+import { CalendarIcon } from "@phosphor-icons/react";
 import { BASE_URL, fetcher } from "@/lib/http";
-import NetInflowChart from "@/components/charts/net-inflow-chart";
+import InvestmentActivityChart from "@/components/charts/investment-activity-chart";
+import { StatementImportsPanel } from "@/components/composite/statement-imports";
 
 export const Timeline = () => {
   const [selectedDate, setSelectedDate] = useState<Date>(
     new Date(new Date().setMonth(new Date().getMonth() - 3)),
   );
+  const startDate = format(selectedDate, "yyyy-LL-dd");
   const { data, isLoading, error } = useSWR<PortfolioEvent[]>(
-    `${BASE_URL}/timeline?start_date=${format(selectedDate, "yyyy-LL-dd")}`,
+    `${BASE_URL}/timeline?start_date=${startDate}`,
     fetcher,
   );
 
   return (
     <>
+      <StatementImportsPanel />
       <Card className="w-full flex flex-col justify-start mb-6">
         <CardHeader>
           <CardTitle>Start Date</CardTitle>
@@ -71,7 +74,7 @@ export const Timeline = () => {
         </CardContent>
       </Card>
 
-      <NetInflowChart />
+      <InvestmentActivityChart startDate={startDate} />
 
       {error ? (
         <div role="alert" className="bg-destructive/10 text-destructive mb-6 rounded-xl border border-destructive/20 p-4 text-sm">

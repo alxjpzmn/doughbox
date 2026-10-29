@@ -30,7 +30,7 @@ const useAuth = () => {
   const loggedIn = !loggedOut;
 
   if (!isLoading && loggedIn && (location === "/login" || location === '/')) {
-    navigate("/dashboard/portfolio");
+    navigate("/dashboard/overview");
   }
 
   if (!isLoading && loggedOut && (routeRequiresAuth || location === '/')) {
@@ -61,7 +61,7 @@ const useAuth = () => {
       } else {
         mutate();
         clearSWRCache(cache);
-        navigate("/dashboard/portfolio");
+        navigate("/dashboard/overview");
       }
     } catch (err) {
       throw err;

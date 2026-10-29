@@ -2,15 +2,14 @@ use dotenvy::{dotenv, from_filename, var};
 use std::path::Path;
 
 pub fn check_for_env_variables() {
-    // the first to env variables are necessary for operation, thus the app panics if they aren't
-    // present
+    // Price retrieval and the API need PostgreSQL, but not a stock-split API token.
     match get_env_variable("POSTGRES_URL") {
         Some(_) => println!("Postgres URL set ✅"),
         None => panic!("Please set a valid Postgres connection URL as POSTGRES_URL in your environment variables"),
     };
     match get_env_variable("POLYGON_TOKEN") {
         Some(_) => println!("Polygon token set ✅"),
-        None => panic!("Please create a Polygon token via polygon.io, otherwise stock splits can't be retrieved."),
+        None => println!("Polygon token not set; stock-split housekeeping is unavailable. ⚠️"),
     };
     match get_env_variable("FRED_TOKEN") {
         Some(_) => println!("FRED token set ✅"),

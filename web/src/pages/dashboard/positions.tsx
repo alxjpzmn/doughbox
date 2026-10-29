@@ -9,7 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Popover, PopoverContent } from "@/components/ui/popover";
 import { PopoverTrigger } from "@radix-ui/react-popover";
 import { cn } from "@/lib/utils";
-import { CalendarIcon } from "lucide-react";
+import { CalendarIcon } from "@phosphor-icons/react";
 import { Calendar } from "@/components/ui/calendar";
 import { Button } from "@/components/ui/button";
 import {
@@ -35,13 +35,17 @@ const Positions = () => {
       const params = new URLSearchParams({ date });
       if (broker !== ALL_BROKERS) params.set("broker", broker);
       const res = await fetch(`${BASE_URL}/positions?${params.toString()}`, { cache: "no-store" });
-      if (!res.ok) throw new Error("Positions could not be loaded.");
+      if (!res.ok) throw new Error("Imported holdings could not be loaded.");
       return res.json();
     },
   );
 
   return (
     <div>
+      <div className="mb-6">
+        <h1 className="text-2xl font-bold tracking-tight">Imported holdings</h1>
+        <p className="text-muted-foreground mt-1 text-sm">Securities imported from broker statements or CSV, identified by ISIN. Valued using available quotes or manual price pins.</p>
+      </div>
       <Card className="w-full flex flex-col justify-start mb-6">
         <CardHeader>
           <CardTitle>Filters</CardTitle>
@@ -97,7 +101,7 @@ const Positions = () => {
 
       {error && (
         <div role="alert" className="bg-destructive/10 text-destructive mb-6 rounded-xl border border-destructive/20 p-4 text-sm">
-          Positions could not be loaded.
+          Imported holdings could not be loaded.
         </div>
       )}
 
@@ -145,14 +149,14 @@ const Positions = () => {
           <Card>
             <CardHeader>
               <CardTitle>
-                {broker === ALL_BROKERS ? "Positions" : `Positions · ${broker}`}
+                {broker === ALL_BROKERS ? "Imported holdings" : `Imported holdings · ${broker}`}
               </CardTitle>
             </CardHeader>
             <CardContent>
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Identifier</TableHead>
+                    <TableHead>Instrument / ISIN</TableHead>
                     <TableHead>Units</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -160,7 +164,7 @@ const Positions = () => {
                   {data?.length === 0 ? (
                     <TableRow>
                       <TableCell colSpan={2} className="text-muted-foreground">
-                        No open positions for this broker.
+                        No open imported holdings for this broker.
                       </TableCell>
                     </TableRow>
                   ) : data?.map((item) => (
@@ -172,6 +176,9 @@ const Positions = () => {
                         >
                           {item?.name}
                         </a>
+                        {item.name !== item.isin && (
+                          <p className="text-muted-foreground mt-1 text-xs">{item.isin}</p>
+                        )}
                       </TableCell>
                       <TableCell>{item?.units}</TableCell>
                     </TableRow>

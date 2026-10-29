@@ -17,7 +17,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { Calendar } from "@/components/ui/calendar";
-import { CalendarIcon, X, Download, ArrowDown, ArrowUp, ChevronsUpDown } from "lucide-react";
+import { CalendarIcon, XIcon, DownloadSimpleIcon, ArrowDownIcon, ArrowUpIcon, ArrowsDownUpIcon } from "@phosphor-icons/react";
 import { BASE_URL, fetcher } from "@/lib/http";
 import { formatCurrency, colorMetric } from "@/lib/utils";
 
@@ -170,7 +170,7 @@ const Taxation = () => {
               </Popover>
               {fromDate && (
                 <Button variant="ghost" size="icon" onClick={() => setFromDate(undefined)}>
-                  <X className="h-4 w-4" />
+                  <XIcon className="h-4 w-4" />
                 </Button>
               )}
             </div>
@@ -201,7 +201,7 @@ const Taxation = () => {
               </Popover>
               {untilDate && (
                 <Button variant="ghost" size="icon" onClick={() => setUntilDate(undefined)}>
-                  <X className="h-4 w-4" />
+                  <XIcon className="h-4 w-4" />
                 </Button>
               )}
             </div>
@@ -212,7 +212,7 @@ const Taxation = () => {
               </Button>
             )}
             <Button variant="outline" size="sm" onClick={downloadDetailed}>
-              <Download className="h-4 w-4 mr-1" />
+              <DownloadSimpleIcon className="h-4 w-4 mr-1" />
               Export Detailed
             </Button>
           </div>
@@ -447,9 +447,9 @@ const SortableHead = ({
       >
         {label}
         {active ? (
-          sortDir === "asc" ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />
+          sortDir === "asc" ? <ArrowUpIcon className="h-3 w-3" /> : <ArrowDownIcon className="h-3 w-3" />
         ) : (
-          <ChevronsUpDown className="h-3 w-3 opacity-40" />
+          <ArrowsDownUpIcon className="h-3 w-3 opacity-40" />
         )}
       </button>
     </TableHead>
@@ -600,8 +600,8 @@ const TransactionTaxView = ({ data, error, isLoading, isFiltered, fromDate, unti
                     </TableCell>
                     <TableCell>
                       <span className="inline-flex items-center gap-1">
-                        {item.direction === "Buy" && <ArrowUp className="h-3 w-3 text-muted-foreground" />}
-                        {item.direction === "Sell" && <ArrowDown className="h-3 w-3 text-muted-foreground" />}
+                        {item.direction === "Buy" && <ArrowUpIcon className="h-3 w-3 text-muted-foreground" />}
+                        {item.direction === "Sell" && <ArrowDownIcon className="h-3 w-3 text-muted-foreground" />}
                         {eventTypeLabels[item.event_type]}
                       </span>
                     </TableCell>

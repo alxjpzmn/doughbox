@@ -7,14 +7,14 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { BarList } from '@/components/composite/bar-list';
 import { BASE_URL, fetcher } from '@/lib/http';
 import { formatCurrency, formatRelativeAmount } from '@/lib/utils';
-import { Triangle, TriangleAlert, TriangleDashed } from 'lucide-react';
+import { ArrowUpIcon, ArrowDownIcon, MinusIcon, WarningIcon } from '@phosphor-icons/react';
 import { Badge } from '@/components/ui/badge';
 
 const Portfolio = () => {
-  const { data, isLoading, error } = useSwr<PortfolioOverview>(`${BASE_URL}/portfolio`, fetcher);
+  const { data, isLoading, error } = useSwr<PortfolioOverview>(`${BASE_URL}/portfolio`, fetcher, { refreshInterval: 60_000 });
 
   let overviewData = {
-    title: 'Current Portfolio Value',
+    title: data && (!data.valuation_complete || data.positions.some((position) => position.value == null)) ? 'Partial Portfolio Value' : 'Current Portfolio Value',
     portfolio_value: `${formatCurrency(isLoading || !data ? 0 : parseFloat(data.total_value))}`,
     absolute_return: `${formatCurrency(
       isLoading || !data ? 0 : parseFloat(data?.total_return_abs)
@@ -76,26 +76,28 @@ const Portfolio = () => {
               <CardTitle>{overviewData.title}</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="flex justify-start mb-2 truncate">
-                <p className='text-4xl font-bold'>{overviewData.portfolio_value}</p>
+              <div className="mb-2 min-w-0">
+                <p className="break-words text-2xl font-bold tabular-nums min-[400px]:text-3xl sm:text-4xl">{overviewData.portfolio_value}</p>
               </div>
-              <div className="text-muted-foreground flex gap-2 items-center leading-none text-sm truncate">
+              {data.valuation_complete ? <div className="text-muted-foreground flex flex-wrap gap-2 items-center leading-none text-sm">
                 {
-                  overviewData.unformatted_return > 0 && <Triangle size={16} className='stroke-success-foreground' />
+                  overviewData.unformatted_return > 0 && <ArrowUpIcon size={16} className='text-success-foreground' />
                 }
                 {
-                  overviewData.unformatted_return < 0 && <Triangle size={16} className='rotate-180 stroke-destructive-foreground' />
+                  overviewData.unformatted_return < 0 && <ArrowDownIcon size={16} className='text-destructive-foreground' />
                 }
                 {
-                  overviewData.unformatted_return === 0 && <TriangleDashed size={16} className='stroke-muted-foreground' />
+                  overviewData.unformatted_return === 0 && <MinusIcon size={16} className='text-muted-foreground' />
                 }
-                <p>{data.returns_incomplete ? 'Known return: ' : ''}{overviewData.absolute_return}{data.returns_incomplete ? '' : ` (${overviewData.relative_return})`}</p>
-              </div>
+                <p className="min-w-0 break-words">{data.returns_incomplete ? 'Known return: ' : ''}{overviewData.absolute_return}{data.returns_incomplete ? '' : ` (${overviewData.relative_return})`}</p>
+              </div> : <p className="text-sm text-destructive-foreground">
+                Excludes holdings without a usable price: {data.unpriced_isins.join(', ')}. Returns are unavailable until all securities are priced.
+              </p>}
               {data.unpriced_assets > 0 && (
                 <div className="text-muted-foreground mt-4 flex items-start gap-2 rounded-lg border p-3 text-sm">
-                  <TriangleAlert className="mt-0.5 size-4 shrink-0" />
+                  <WarningIcon className="mt-0.5 size-4 shrink-0" />
                   <p>
-                     {data.unpriced_assets} {data.unpriced_assets === 1 ? 'asset is' : 'assets are'} unpriced. Portfolio value and return figures include known values only.
+                    {data.unpriced_assets} custom {data.unpriced_assets === 1 ? 'asset has' : 'assets have'} incomplete valuation or cost data. Portfolio value and return figures include known values only.
                   </p>
                 </div>
               )}
@@ -107,7 +109,7 @@ const Portfolio = () => {
             <Card>
               <CardHeader>
                 <CardTitle>
-                  Portfolio
+                  Holdings
                 </CardTitle>
               </CardHeader>
               <CardContent>

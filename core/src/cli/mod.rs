@@ -2,6 +2,7 @@ pub mod housekeeping;
 pub mod import;
 pub mod performance;
 pub mod portfolio;
+pub mod prices;
 pub mod shared;
 pub mod taxation;
 
@@ -46,6 +47,11 @@ enum Command {
         notify: bool,
     },
     Performance {},
+    /// Fetch delayed instrument prices and inspect the durable refresh queue.
+    Prices {
+        #[command(subcommand)]
+        command: prices::PricesCommand,
+    },
     Taxation {
         #[arg(long)]
         from: Option<String>,
@@ -66,7 +72,7 @@ enum Command {
 pub async fn cli() -> anyhow::Result<()> {
     let args = Args::parse();
     let args = args.cmd;
-    if (args != Command::Api { silent: true }) {
+    if !matches!(args, Command::Api { silent: true } | Command::Prices { .. }) {
         // fetch new fx rates when older than 4 days
         let four_days_ago = Utc::now().naive_utc().date() - Duration::days(4);
         let most_recent_fx_rate = get_most_recent_rate().await?;
@@ -76,6 +82,7 @@ pub async fn cli() -> anyhow::Result<()> {
     };
 
     match args {
+        Command::Prices { command } => prices::run(command).await?,
         Command::Portfolio { notify } => {
             if events_exist(EventFilter::TradesOnly).await? {
                 let args = PortfolioArgs {

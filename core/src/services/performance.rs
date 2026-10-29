@@ -197,6 +197,11 @@ pub async fn compute_performance(
     for title_performance in title_performances {
         let realized = round_to_decimals(title_performance.realized);
         let unrealized = if title_performance.inventory > dec!(0.0) {
+            anyhow::ensure!(
+                **price_map.get(&title_performance.isin).unwrap() > dec!(0),
+                "No usable valuation price for {}",
+                title_performance.isin
+            );
             round_to_decimals(
                 (*price_map.get(&title_performance.isin).unwrap() * title_performance.inventory)
                     - title_performance.unit_price * title_performance.inventory,
@@ -340,6 +345,11 @@ pub async fn get_buy_ins(
         let performance = get_title_performance(&group, Utc::now(), &mut stock_split_information);
         let current_price = **price_map.get(&group.isin).unwrap_or(&&dec!(0.0));
         let units = performance.inventory;
+        anyhow::ensure!(
+            units <= dec!(0) || current_price > dec!(0),
+            "No usable valuation price for {}",
+            group.isin
+        );
         let current_value = current_price * units;
         let unrealized = if units > dec!(0.0) {
             current_value - performance.unit_price * units

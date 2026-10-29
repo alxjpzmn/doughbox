@@ -1,6 +1,7 @@
 use axum::{
+    extract::DefaultBodyLimit,
     http::StatusCode,
-    routing::{get, get_service, post},
+    routing::{get, get_service, post, put},
     Router,
 };
 use tower_cookies::cookie::time::Duration;
@@ -23,11 +24,17 @@ use super::handlers::{
     },
     auth::{auth_state, login, logout},
     check_auth,
-    market::{brokers, instrument, instruments},
+    data_imports::{get_data_imports, refresh_data_import, save_data_import_scheduler},
+    market::{
+        brokers, instrument, instruments, prices, refresh_price_feed, refresh_prices, rename,
+        reset_price_feed, save_scheduler, set_price, unpin_price,
+    },
     performance::{live_performance, past_performance, performance_overview},
     portfolio::{portfolio, positions},
+    settings::{get_settings, save_settings, save_telegram_scheduler},
+    statement_imports::{get_statement_imports, upload_statement_imports, MAX_BODY_BYTES},
     taxation::{taxation, taxation_detailed, taxation_transactions},
-    timeline::{net_inflow, timeline},
+    timeline::{investment_activity, timeline},
     trades::{buy_ins, dividends, fx_conversions, interest, trades},
 };
 use super::openapi::ApiDoc;
@@ -86,7 +93,13 @@ pub fn create_router() -> anyhow::Result<Router> {
         )
         .route("/positions", get(positions))
         .route("/timeline", get(timeline))
-        .route("/timeline/net-inflow", get(net_inflow))
+        .route("/timeline/investment-activity", get(investment_activity))
+        .route(
+            "/statement-imports",
+            get(get_statement_imports)
+                .post(upload_statement_imports)
+                .layer(DefaultBodyLimit::max(MAX_BODY_BYTES)),
+        )
         .route("/trades", get(trades))
         .route("/buy-ins", get(buy_ins))
         .route("/dividends", get(dividends))
@@ -96,7 +109,24 @@ pub fn create_router() -> anyhow::Result<Router> {
         .route("/performance_overview", get(performance_overview))
         .route("/past_performance", get(past_performance))
         .route("/instruments", get(instruments))
-        .route("/instruments/{isin}", get(instrument))
+        .route("/instruments/{isin}", get(instrument).patch(rename))
+        .route(
+            "/instruments/{isin}/price",
+            put(set_price).delete(unpin_price),
+        )
+        .route("/prices", get(prices))
+        .route("/prices/scheduler", put(save_scheduler))
+        .route("/prices/refresh", post(refresh_prices))
+        .route("/prices/feeds/{feed}/refresh", post(refresh_price_feed))
+        .route("/prices/feeds/{feed}/reset", post(reset_price_feed))
+        .route("/data-imports", get(get_data_imports))
+        .route("/data-imports/{source}/refresh", post(refresh_data_import))
+        .route(
+            "/data-imports/{source}/scheduler",
+            put(save_data_import_scheduler),
+        )
+        .route("/settings", get(get_settings).put(save_settings))
+        .route("/settings/telegram-scheduler", put(save_telegram_scheduler))
         .route("/brokers", get(brokers))
         .route("/taxation", get(taxation))
         .route("/taxation/detailed", get(taxation_detailed))

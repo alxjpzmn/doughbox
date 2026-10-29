@@ -1,19 +1,18 @@
 import { yupResolver } from "@hookform/resolvers/yup"
 import { format } from "date-fns"
 import {
-  Banknote,
-  Building2,
-  Coins,
-  History,
-  Landmark,
-  LoaderCircle,
-  Pencil,
-  Percent,
-  Plus,
-  Scale,
-  Trash2,
-  TriangleAlert,
-} from "lucide-react"
+  MoneyIcon,
+  BuildingsIcon,
+  CoinsIcon,
+  ClockCounterClockwiseIcon,
+  BankIcon,
+  CircleNotchIcon,
+  PencilIcon,
+  PercentIcon,
+  PlusIcon,
+  ArchiveIcon,
+  WarningIcon,
+} from "@phosphor-icons/react"
 import { useEffect, useState } from "react"
 import { Controller, useForm } from "react-hook-form"
 import useSWR, { useSWRConfig } from "swr"
@@ -21,7 +20,7 @@ import * as yup from "yup"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import {
   Dialog,
   DialogContent,
@@ -40,6 +39,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Disclaimer } from "@/components/composite/disclaimer"
 import { currencyOptions, isEcbCurrency } from "@/lib/currencies"
 import { BASE_URL, fetcher, sendMutateRequest } from "@/lib/http"
 import { cn, formatCurrency, formatDate, getBrowserLocale } from "@/lib/utils"
@@ -70,28 +70,28 @@ import {
   WeightedCashInterestSummary,
 } from "@/types/core"
 
-type Icon = typeof Coins
+type Icon = typeof CoinsIcon
 
 const classDetails: Record<AssetClass, { label: string; description: string; icon: Icon }> = {
   [AssetClass.PhysicalGold]: {
     label: "Physical gold",
     description: "Bullion and allocated holdings",
-    icon: Coins,
+    icon: CoinsIcon,
   },
   [AssetClass.RealEstate]: {
     label: "Real estate",
     description: "Direct property ownership",
-    icon: Building2,
+    icon: BuildingsIcon,
   },
   [AssetClass.PrivateDebt]: {
     label: "Private debt",
     description: "Loans and private credit",
-    icon: Banknote,
+    icon: MoneyIcon,
   },
   [AssetClass.CashAccount]: {
     label: "Cash account",
     description: "Cash with an independently tracked rate",
-    icon: Landmark,
+    icon: BankIcon,
   },
 }
 
@@ -122,7 +122,7 @@ const getErrorMessage = (error: unknown) => {
 }
 
 const FormMessage = ({ message }: { message?: string }) =>
-  message ? <p className="text-destructive text-xs leading-relaxed">{message}</p> : null
+  message ? <p role="alert" className="text-destructive text-xs leading-relaxed">{message}</p> : null
 
 const CurrencySelect = ({
   id,
@@ -264,7 +264,7 @@ const AssetFormDialog = ({ asset, open, onOpenChange, onMutated }: AssetFormDial
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>{asset ? "Edit asset" : "Add a custom asset"}</DialogTitle>
+          <DialogTitle>{asset ? "Edit holding" : "Add a manual holding"}</DialogTitle>
           <DialogDescription>
             {asset
               ? "Update its display details and current rate. Currency cannot change after activity is recorded."
@@ -367,7 +367,7 @@ const AssetFormDialog = ({ asset, open, onOpenChange, onMutated }: AssetFormDial
                   {...register("current_interest_rate_percent")}
                   aria-invalid={!!errors.current_interest_rate_percent}
                 />
-                <Percent className="text-muted-foreground pointer-events-none absolute right-3 top-2.5 size-4" />
+                <PercentIcon className="text-muted-foreground pointer-events-none absolute right-3 top-2.5 size-4" />
               </div>
               <FormMessage message={errors.current_interest_rate_percent?.message} />
               <p className="text-muted-foreground text-xs">Zero is a valid rate. Saving a change updates this account's rate timestamp.</p>
@@ -379,8 +379,8 @@ const AssetFormDialog = ({ asset, open, onOpenChange, onMutated }: AssetFormDial
               Cancel
             </Button>
             <Button type="submit" disabled={isSubmitting}>
-              {isSubmitting && <LoaderCircle className="animate-spin" />}
-              {asset ? "Save changes" : "Create asset"}
+              {isSubmitting && <CircleNotchIcon className="animate-spin" />}
+              {asset ? "Save changes" : "Create holding"}
             </Button>
           </DialogFooter>
         </form>
@@ -768,7 +768,7 @@ const ActivityDialog = ({
       <DialogContent className="sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>{edit ? "Edit activity" : "Record activity"}</DialogTitle>
-          <DialogDescription>
+          <DialogDescription className="break-words">
             {asset.name} · {classDetails[asset.asset_class].label}
           </DialogDescription>
         </DialogHeader>
@@ -823,14 +823,14 @@ const ActivityDialog = ({
           {isLink ? (
             <div className="space-y-4">
               <div className="text-muted-foreground rounded-lg border bg-muted/40 p-3 text-sm leading-relaxed">
-                Linking only assigns this event to the asset. Its existing tax behavior remains unchanged.
+                Linking only assigns this event to the holding. Its existing tax behavior remains unchanged.
               </div>
               {interestLoading ? (
                 <Skeleton className="h-9 w-full" />
               ) : interestError ? (
-                <p className="text-destructive text-sm">{getErrorMessage(interestError)}</p>
+                <p role="alert" className="text-destructive text-sm">{getErrorMessage(interestError)}</p>
               ) : matchingInterest.length === 0 ? (
-                <div className="bg-muted/50 rounded-lg border border-dashed p-5 text-center">
+                <div className="space-y-1 rounded-lg border p-4">
                   <p className="text-sm font-medium">No matching unlinked interest</p>
                   <p className="text-muted-foreground mt-1 text-xs">Only unlinked {asset.currency} {asset.asset_class === AssetClass.CashAccount ? "cash" : "private debt"} events can be assigned here.</p>
                 </div>
@@ -981,7 +981,7 @@ const ActivityDialog = ({
               type="submit"
               disabled={isSubmitting || (isLink && (interestLoading || matchingInterest.length === 0))}
             >
-              {isSubmitting && <LoaderCircle className="animate-spin" />}
+              {isSubmitting && <CircleNotchIcon className="animate-spin" />}
               {isLink ? "Link interest" : edit ? "Save changes" : "Record activity"}
             </Button>
           </DialogFooter>
@@ -1016,7 +1016,7 @@ const getHistoryItems = (detail: AssetDetailRecord): HistoryItem[] => {
         amount: `${formatNumber(trade.units)} ${detail.asset.unit_label}`,
         detail: [
           `${formatCurrency(Number(trade.price_per_unit), trade.currency)} per ${detail.asset.unit_label}`,
-          `${formatCurrency(Number(trade.eur_price_per_unit), "EUR")} EUR`,
+          trade.currency !== "EUR" ? `${formatCurrency(Number(trade.eur_price_per_unit))} per ${detail.asset.unit_label} (EUR)` : undefined,
           trade.broker,
           Number(trade.fees) > 0 ? `fees ${formatCurrency(Number(trade.fees), trade.currency)}` : undefined,
           trade.note,
@@ -1034,7 +1034,10 @@ const getHistoryItems = (detail: AssetDetailRecord): HistoryItem[] => {
           date: new Date(valuation.date),
           title: "Manual valuation",
           amount: formatCurrency(Number(valuation.price_per_unit), valuation.currency),
-          detail: `per ${detail.asset.unit_label} · ${formatCurrency(Number(valuation.eur_price_per_unit), "EUR")} EUR`,
+          detail: [
+            `per ${detail.asset.unit_label}`,
+            valuation.currency !== "EUR" ? `${formatCurrency(Number(valuation.eur_price_per_unit))} EUR equivalent` : undefined,
+          ].filter(Boolean).join(" · "),
           removeEndpoint: `${BASE_URL}/assets/${detail.asset.id}/valuations/${valuation.id}`,
           removeLabel: "Delete",
           edit: valuationEdit(detail.asset, valuation),
@@ -1048,7 +1051,7 @@ const getHistoryItems = (detail: AssetDetailRecord): HistoryItem[] => {
         title: transaction.kind.replace(/([a-z])([A-Z])/g, "$1 $2"),
         amount: formatCurrency(Number(transaction.amount), transaction.currency),
         detail: [
-          `${formatCurrency(Number(transaction.amount_eur), "EUR")} equivalent`,
+          transaction.currency !== "EUR" ? `${formatCurrency(Number(transaction.amount_eur))} EUR equivalent` : undefined,
           transaction.note,
         ].filter(Boolean).join(" · "),
         removeEndpoint: `${BASE_URL}/assets/${detail.asset.id}/transactions/${transaction.id}`,
@@ -1063,7 +1066,7 @@ const getHistoryItems = (detail: AssetDetailRecord): HistoryItem[] => {
         title: "Interest",
         amount: formatCurrency(Number(record.amount), record.currency),
         detail: [
-          `${formatCurrency(Number(record.amount_eur), "EUR")} equivalent`,
+          record.currency !== "EUR" ? `${formatCurrency(Number(record.amount_eur))} EUR equivalent` : undefined,
           record.broker,
           record.principal,
           record.withholding_tax && Number(record.withholding_tax) > 0
@@ -1084,7 +1087,8 @@ const getHistoryItems = (detail: AssetDetailRecord): HistoryItem[] => {
           title: `${snapshot.kind} balance`,
           amount: formatCurrency(Number(snapshot.balance), detail.asset.currency),
           detail: [
-            `${formatCurrency(Number(snapshot.balance_eur), "EUR")} equivalent · capital-neutral`,
+            "Capital-neutral",
+            detail.asset.currency !== "EUR" ? `${formatCurrency(Number(snapshot.balance_eur))} EUR equivalent` : undefined,
             snapshot.note,
           ].filter(Boolean).join(" · "),
           removeEndpoint: `${BASE_URL}/assets/${detail.asset.id}/balance-snapshots/${snapshot.id}`,
@@ -1140,7 +1144,7 @@ const HistoryDialog = ({ asset, open, onOpenChange, onMutated, onEdit, readOnly 
       <DialogContent className="sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>Activity history</DialogTitle>
-          <DialogDescription>{asset?.name}</DialogDescription>
+          <DialogDescription className="break-words">{asset?.name}</DialogDescription>
         </DialogHeader>
 
         {serverError && (
@@ -1150,7 +1154,7 @@ const HistoryDialog = ({ asset, open, onOpenChange, onMutated, onEdit, readOnly 
         )}
 
         {isLoading ? (
-          <div className="space-y-3">
+          <div role="status" aria-label="Loading activity history" className="space-y-3">
             {Array.from({ length: 4 }).map((_, index) => (
               <Skeleton key={index} className="h-16 w-full" />
             ))}
@@ -1160,24 +1164,24 @@ const HistoryDialog = ({ asset, open, onOpenChange, onMutated, onEdit, readOnly 
             {getErrorMessage(error)}
           </div>
         ) : items.length === 0 ? (
-          <div className="bg-muted/30 rounded-xl border border-dashed px-4 py-10 text-center">
-            <History className="text-muted-foreground mx-auto mb-3 size-6" />
-            <p className="font-medium">No activity yet</p>
-            <p className="text-muted-foreground mt-1 text-sm">New entries will appear here.</p>
+          <div className="space-y-1 rounded-lg border p-4">
+            <p className="text-sm font-medium">No activity yet</p>
+            <p className="text-muted-foreground text-sm">Recorded transactions and valuations will appear here.</p>
           </div>
         ) : (
           <div className="divide-y rounded-xl border">
             {items.map((item) => (
-              <div key={`${item.title}-${item.id}`} className="flex items-center justify-between gap-3 p-3">
-                <div className="min-w-0">
+              <div key={`${item.title}-${item.id}`} className="flex flex-col items-start gap-3 p-4 sm:flex-row sm:justify-between">
+                <div className="min-w-0 flex-1 space-y-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <p className="text-sm font-medium">{item.title}</p>
                     {item.taxTreatment === TaxTreatment.Excluded && (
                       <Badge variant="outline">Tax excluded</Badge>
                     )}
                   </div>
-                  <p className="mt-1 truncate text-sm font-semibold">{item.amount}</p>
-                  <p className="text-muted-foreground truncate text-xs">{formatDate(item.date)} · {item.detail}</p>
+                  <p className="break-words text-sm font-semibold tabular-nums">{item.amount}</p>
+                  <p className="text-muted-foreground text-xs">{formatDate(item.date)}</p>
+                  {item.detail && <p className="text-muted-foreground break-words text-sm">{item.detail}</p>}
                 </div>
                 {!readOnly && (
                   <div className="flex shrink-0 items-center gap-1">
@@ -1200,7 +1204,7 @@ const HistoryDialog = ({ asset, open, onOpenChange, onMutated, onEdit, readOnly 
                       disabled={!!removing}
                       onClick={() => remove(item)}
                     >
-                      {removing === item.id ? <LoaderCircle className="animate-spin" /> : item.removeLabel}
+                      {removing === item.id ? <CircleNotchIcon className="animate-spin" /> : item.removeLabel}
                     </Button>
                   </div>
                 )}
@@ -1216,74 +1220,58 @@ const HistoryDialog = ({ asset, open, onOpenChange, onMutated, onEdit, readOnly 
 const CashSummary = ({ data, isLoading }: { data?: WeightedCashInterestSummary; isLoading: boolean }) => {
   if (isLoading) {
     return (
-      <Card className="mb-6 overflow-hidden">
-        <CardContent className="space-y-4 p-5 sm:p-6">
-          <Skeleton className="h-5 w-36" />
-          <Skeleton className="h-10 w-56" />
-          <Skeleton className="h-16 w-full" />
+      <Card className="mb-6" role="status" aria-label="Loading cash interest summary">
+        <CardHeader>
+          <Skeleton className="h-4 w-28" />
+          <Skeleton className="h-4 w-3/4" />
+        </CardHeader>
+        <CardContent className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+          {Array.from({ length: 3 }).map((_, index) => (
+            <div key={index} className={cn("space-y-2", index === 0 && "col-span-2 sm:col-span-1")}>
+              <Skeleton className="h-4 w-3/4" />
+              <Skeleton className="h-8 w-3/4" />
+            </div>
+          ))}
         </CardContent>
       </Card>
     )
   }
-  if (!data) return null
+  if (!data || data.accounts.length === 0) return null
 
-  const accounts = data?.accounts ?? []
   return (
     <Card className="mb-6">
       <CardHeader>
-        <CardTitle>Cash yield</CardTitle>
+        <CardTitle>Cash interest</CardTitle>
+        <CardDescription>Current annual rates, not accrued income. Record interest when it is credited.</CardDescription>
       </CardHeader>
-      <CardContent>
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
-          <div className="col-span-2 sm:col-span-1">
-            <p className="text-muted-foreground text-xs">Total eligible EUR balance</p>
-            <p className="mt-1 text-2xl font-bold tracking-tight">{formatCurrency(Number(data?.eligible_balance_eur ?? 0))}</p>
+      <CardContent className="space-y-4">
+        <dl className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+          <div className="col-span-2 min-w-0 sm:col-span-1">
+            <dt className="text-muted-foreground text-sm">Eligible balance (EUR)</dt>
+            <dd className="mt-1 break-words text-2xl font-bold tabular-nums">{formatCurrency(Number(data.eligible_balance_eur))}</dd>
+          </div>
+          <div className="min-w-0">
+            <dt className="text-muted-foreground text-sm">Weighted annual rate</dt>
+            <dd className="mt-1 break-words text-2xl font-bold tabular-nums">
+              {data.average_interest_rate_percent == null
+                ? <span className="text-muted-foreground text-sm font-normal">Not available</span>
+                : `${formatNumber(data.average_interest_rate_percent)}%`}
+            </dd>
           </div>
           <div>
-            <p className="text-muted-foreground text-xs">Volume-weighted gross rate</p>
-            <p className="mt-1 text-xl font-bold">
-              {data?.average_interest_rate_percent == null
-                ? "Not available"
-                : `${formatNumber(data.average_interest_rate_percent)}%`}
+            <dt className="text-muted-foreground text-sm">Cash accounts</dt>
+            <dd className="mt-1 text-2xl font-bold tabular-nums">{data.accounts.length}</dd>
+          </div>
+        </dl>
+        {data.unconverted_count > 0 && (
+          <div className="text-muted-foreground flex items-start gap-2 rounded-lg border p-3 text-sm">
+            <WarningIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
+            <p>
+              {data.unconverted_count} {data.unconverted_count === 1 ? "account is" : "accounts are"} excluded from the weighted rate because EUR conversion is unavailable.
             </p>
           </div>
-          <div>
-            <p className="text-muted-foreground text-xs">Accounts</p>
-            <p className="mt-1 text-xl font-bold">{accounts.length}</p>
-          </div>
-        </div>
+        )}
       </CardContent>
-
-      {data && data.unconverted_count > 0 && (
-        <div className="text-muted-foreground flex gap-2 border-t px-6 py-3 text-sm">
-          <TriangleAlert className="mt-0.5 size-4 shrink-0" />
-          <p>
-            {data.unconverted_count} {data.unconverted_count === 1 ? "account is" : "accounts are"} excluded from the weighted rate because EUR conversion is unavailable.
-          </p>
-        </div>
-      )}
-
-      {accounts.length > 0 && (
-        <div className="grid divide-y sm:grid-cols-2 sm:divide-x sm:divide-y-0">
-          {accounts.map((account) => (
-            <div key={account.asset_id} className="p-4 first:pl-5 sm:px-6">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-medium">{account.name}</p>
-                  <p className="text-muted-foreground mt-0.5 text-xs">
-                    {formatCurrency(Number(account.current_balance), account.currency)}
-                    {account.current_balance_eur == null && account.currency !== "EUR" ? " · conversion unavailable" : ""}
-                  </p>
-                </div>
-                <p className="shrink-0 text-sm font-bold">{formatNumber(account.current_interest_rate_percent)}%</p>
-              </div>
-              <p className="text-muted-foreground mt-2 text-[11px]">
-                Rate updated {account.interest_rate_updated_at ? formatDateTime(new Date(account.interest_rate_updated_at)) : "not yet"}
-              </p>
-            </div>
-          ))}
-        </div>
-      )}
     </Card>
   )
 }
@@ -1306,70 +1294,66 @@ const AssetCard = ({ asset, holding, cashSummary, onEdit, onActivity, onHistory,
   const isUnpriced = !!holding && holding.current_value_eur == null
 
   return (
-    <Card className="flex h-full flex-col">
+    <Card>
       <CardHeader>
-        <div className="flex items-start justify-between gap-3">
-          <div className="flex min-w-0 items-center gap-3">
-            <div className="bg-muted rounded-xl p-2.5">
-              <AssetIcon className="size-5" />
-            </div>
-            <div className="min-w-0">
-              <CardTitle className="truncate text-base">{asset.name}</CardTitle>
-              <p className="text-muted-foreground mt-1 text-xs">{details.label} · {asset.currency}</p>
-            </div>
-          </div>
+        <div className="flex items-start gap-2">
+          <AssetIcon aria-hidden="true" className="mt-0.5 size-5 shrink-0 text-muted-foreground" />
+          <CardTitle className="min-w-0 break-words text-lg leading-snug">{asset.name}</CardTitle>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <CardDescription>{details.label} · {asset.currency}</CardDescription>
           {asset.tax_treatment === TaxTreatment.Excluded && (
             <Badge variant="outline">Tax excluded</Badge>
           )}
         </div>
       </CardHeader>
-      <CardContent className="flex-1 p-5 pt-2">
-        <div className="grid grid-cols-2 gap-4 rounded-lg bg-muted/40 p-3">
-          <div>
-            <p className="text-muted-foreground text-[11px] uppercase tracking-wide">Native amount</p>
-            <p className="mt-1 truncate text-sm font-semibold">{isUnavailable ? "Unavailable" : `${formatNumber(holding.units_or_balance)} ${asset.unit_label}`}</p>
+      <CardContent className="space-y-4">
+        <dl className="grid gap-4 sm:grid-cols-2">
+          <div className="min-w-0">
+            <dt className="text-muted-foreground text-sm">Quantity / balance</dt>
+            <dd className="mt-1 break-words text-xl font-semibold tabular-nums">
+              {isUnavailable ? <span className="text-muted-foreground text-sm font-normal">Unavailable</span> : `${formatNumber(holding.units_or_balance)} ${asset.unit_label}`}
+            </dd>
           </div>
-          <div className="text-right">
-            <p className="text-muted-foreground text-[11px] uppercase tracking-wide">Current value</p>
-            {isUnavailable ? (
-              <p className="mt-1 text-sm font-semibold text-muted-foreground">Unavailable</p>
-            ) : isUnpriced ? (
-              <div className="text-muted-foreground mt-1 flex items-center justify-end gap-1.5 text-sm font-semibold">
-                <TriangleAlert className="size-3.5" /> Unpriced
+          <div className="min-w-0">
+            <dt className="text-muted-foreground text-sm">Current value (EUR)</dt>
+            <dd className="mt-1 break-words text-xl font-semibold tabular-nums">
+              {isUnavailable ? (
+                <span className="text-muted-foreground text-sm font-normal">Unavailable</span>
+              ) : isUnpriced ? (
+                <Badge variant="outline"><WarningIcon aria-hidden="true" /> Unpriced</Badge>
+              ) : (
+                formatCurrency(Number(holding.current_value_eur))
+              )}
+            </dd>
+          </div>
+        </dl>
+        {(holding?.valuation_date || cashAccount) && (
+          <div className="text-muted-foreground flex flex-wrap items-start justify-between gap-2 text-xs">
+            {holding?.valuation_date && (
+              <p>{asset.asset_class === AssetClass.CashAccount ? "Last snapshot" : "Valued"} {formatDate(new Date(holding.valuation_date))}</p>
+            )}
+            {cashAccount && (
+              <div className="space-y-1">
+                <p className="font-medium text-foreground">{formatNumber(cashAccount.current_interest_rate_percent)}% gross annual rate</p>
+                <p>Rate updated {cashAccount.interest_rate_updated_at ? formatDateTime(new Date(cashAccount.interest_rate_updated_at)) : "not yet"}</p>
               </div>
-            ) : (
-              <p className="mt-1 truncate text-sm font-semibold">{formatCurrency(Number(holding?.current_value_eur))}</p>
             )}
           </div>
-        </div>
-
-        <div className="text-muted-foreground mt-3 flex min-h-4 items-center justify-between gap-3 text-xs">
-          {holding?.valuation_date ? <span>{asset.asset_class === AssetClass.CashAccount ? "Last snapshot" : "Valued"} {formatDate(new Date(holding.valuation_date))}</span> : <span />}
-          {cashAccount && (
-            <span className="font-medium text-foreground">
-              {formatNumber(cashAccount.current_interest_rate_percent)}% gross
-            </span>
-          )}
-        </div>
-        {cashAccount && (
-          <p className="text-muted-foreground mt-1 text-right text-[11px]">
-            Rate updated {cashAccount.interest_rate_updated_at ? formatDateTime(new Date(cashAccount.interest_rate_updated_at)) : "not yet"}
-          </p>
         )}
-
       </CardContent>
-      <CardFooter className="grid grid-cols-2 gap-2">
-        <Button type="button" onClick={onActivity}>
-          <Plus /> Activity
+      <CardFooter className="flex-wrap gap-2">
+        <Button type="button" variant="outline" onClick={onActivity} aria-label={`Add activity for ${asset.name}`}>
+          <PlusIcon aria-hidden="true" /> Add activity
         </Button>
-        <Button type="button" variant="outline" onClick={onHistory}>
-          <History /> History
+        <Button type="button" variant="outline" onClick={onHistory} aria-label={`History for ${asset.name}`}>
+          <ClockCounterClockwiseIcon aria-hidden="true" /> History
         </Button>
-        <Button type="button" variant="ghost" size="sm" onClick={onEdit}>
-          <Pencil /> Edit
+        <Button type="button" variant="ghost" onClick={onEdit} aria-label={`Edit ${asset.name}`}>
+          <PencilIcon aria-hidden="true" /> Edit
         </Button>
-        <Button type="button" variant="ghost" size="sm" onClick={onArchive}>
-          <Trash2 /> Archive
+        <Button type="button" variant="ghost" onClick={onArchive} aria-label={`Archive ${asset.name}`}>
+          <ArchiveIcon aria-hidden="true" /> Archive
         </Button>
       </CardFooter>
     </Card>
@@ -1403,6 +1387,7 @@ const Assets = () => {
         `${BASE_URL}/cash-accounts/summary`,
         `${BASE_URL}/portfolio`,
         `${BASE_URL}/timeline`,
+        `${BASE_URL}/timeline/investment-activity`,
         `${BASE_URL}/interest`,
         `${BASE_URL}/taxation/transactions`,
       ]
@@ -1451,23 +1436,23 @@ const Assets = () => {
   }
 
   return (
-    <div className="pb-4">
-      <div className="mb-6 flex items-start justify-between gap-4">
+    <div>
+      <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Assets</h1>
+          <h1 className="text-2xl font-bold tracking-tight">Manual holdings</h1>
           <p className="text-muted-foreground mt-1 max-w-lg text-sm">
-            Track property, bullion, private credit, and interest-bearing cash with explicit valuations and cash flows.
+            Custom assets maintained directly in Doughbox, without an ISIN. Record activity and valuations manually; no automatic price feeds.
           </p>
         </div>
         <Button
           type="button"
-          className="shrink-0"
+          className="shrink-0 self-start"
           onClick={() => {
             setEditingAsset(undefined)
             setAssetFormOpen(true)
           }}
         >
-          <Plus /> <span className="hidden sm:inline">Add asset</span><span className="sm:hidden">Add</span>
+          <PlusIcon aria-hidden="true" /> Add holding
         </Button>
       </div>
 
@@ -1475,60 +1460,49 @@ const Assets = () => {
 
       {pageError && (
         <div role="alert" className="bg-destructive/10 text-destructive mb-6 rounded-xl border border-destructive/20 p-4 text-sm">
-          <p className="font-medium">Assets could not be loaded</p>
+          <p className="font-medium">{assetsRequest.data ? "Some manual holding data could not be loaded" : "Manual holdings could not be loaded"}</p>
           <p className="mt-1">{getErrorMessage(pageError)}</p>
-          <Button type="button" variant="outline" size="sm" className="mt-3" onClick={() => revalidateAssets()}>
+          <Button type="button" variant="outline" className="mt-3" onClick={() => revalidateAssets()}>
             Try again
           </Button>
         </div>
       )}
 
-      <div className="mb-3 flex items-end justify-between">
+      <div className="mb-3 flex items-end justify-between gap-3">
         <div>
-          <h2 className="text-lg font-semibold">Your assets</h2>
+          <h2 className="text-lg font-semibold">Your holdings</h2>
           <p className="text-muted-foreground text-xs">Native balances and their current EUR value</p>
         </div>
-        {!loading && <p className="text-muted-foreground text-xs">{activeAssets.length} active</p>}
+        {!loading && assetsRequest.data && <p className="text-muted-foreground shrink-0 text-xs">{activeAssets.length} active</p>}
       </div>
 
       {loading ? (
-        <div className="grid gap-4 sm:grid-cols-2">
-          {Array.from({ length: 4 }).map((_, index) => (
+        <div role="status" aria-label="Loading manual holdings" className="space-y-6">
+          {Array.from({ length: 3 }).map((_, index) => (
             <Card key={index}>
-              <CardContent className="space-y-4 p-5">
-                <div className="flex items-center gap-3">
-                  <Skeleton className="size-10 rounded-xl" />
-                  <div className="space-y-2">
-                    <Skeleton className="h-4 w-32" />
-                    <Skeleton className="h-3 w-20" />
-                  </div>
-                </div>
-                <Skeleton className="h-16 w-full" />
-                <Skeleton className="h-20 w-full" />
+              <CardHeader>
+                <Skeleton className="h-5 w-3/4" />
+                <Skeleton className="h-4 w-1/3" />
+              </CardHeader>
+              <CardContent className="grid gap-4 sm:grid-cols-2">
+                <Skeleton className="h-12 w-3/4" />
+                <Skeleton className="h-12 w-3/4" />
               </CardContent>
+              <CardFooter className="flex-wrap gap-2">
+                <Skeleton className="h-9 w-32" />
+                <Skeleton className="h-9 w-24" />
+              </CardFooter>
             </Card>
           ))}
         </div>
-      ) : activeAssets.length === 0 ? (
-        <Card className="border-dashed shadow-none">
-          <CardContent className="px-5 py-12 text-center">
-            <div className="bg-muted mx-auto mb-4 flex size-12 items-center justify-center rounded-2xl">
-              <Scale className="text-muted-foreground size-5" />
-            </div>
-            <h3 className="font-semibold">Build your custom asset ledger</h3>
-            <p className="text-muted-foreground mx-auto mt-2 max-w-sm text-sm">
-              Add an asset, then record its opening position, transactions, or valuation.
-            </p>
-            <Button type="button" className="mt-5" onClick={() => {
-              setEditingAsset(undefined)
-              setAssetFormOpen(true)
-            }}>
-              <Plus /> Add your first asset
-            </Button>
+      ) : assetsRequest.error && !assetsRequest.data ? null : activeAssets.length === 0 ? (
+        <Card>
+          <CardContent className="space-y-3 p-6">
+            <p>No manual holdings yet. Add a holding, then record its opening position, transactions, or valuation.</p>
           </CardContent>
         </Card>
       ) : (
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="space-y-6">
           {activeAssets.map((asset) => (
             <AssetCard
               key={asset.id}
@@ -1554,24 +1528,24 @@ const Assets = () => {
       )}
 
       {archivedAssets.length > 0 && (
-        <Card className="mt-6 border-dashed shadow-none">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-sm">Archived assets</CardTitle>
+        <Card className="mt-6">
+          <CardHeader>
+            <CardTitle>Archived holdings</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-2">
+          <CardContent className="space-y-4">
             {restoreError && <p role="alert" className="text-destructive text-sm">{restoreError}</p>}
             {archivedAssets.map((asset) => (
-              <div key={asset.id} className="flex items-center justify-between gap-3 rounded-lg bg-muted/40 px-3 py-2">
+              <div key={asset.id} className="flex flex-col items-start gap-3 border-t pt-4 first:border-t-0 first:pt-0 sm:flex-row sm:justify-between">
                 <div className="min-w-0">
-                  <p className="truncate text-sm font-medium">{asset.name}</p>
+                  <p className="break-words text-sm font-medium">{asset.name}</p>
                   <p className="text-muted-foreground text-xs">{classDetails[asset.asset_class].label}</p>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
-                  <Button type="button" variant="ghost" size="sm" onClick={() => setHistoryAsset(asset)}>
+                  <Button type="button" variant="outline" onClick={() => setHistoryAsset(asset)} aria-label={`History for ${asset.name}`}>
                     History
                   </Button>
-                  <Button type="button" variant="outline" size="sm" disabled={!!restoringAsset} onClick={() => restore(asset)}>
-                    {restoringAsset === asset.id && <LoaderCircle className="animate-spin" />}
+                  <Button type="button" variant="outline" disabled={!!restoringAsset} onClick={() => restore(asset)} aria-label={`Restore ${asset.name}`}>
+                    {restoringAsset === asset.id && <CircleNotchIcon className="animate-spin" />}
                     Restore
                   </Button>
                 </div>
@@ -1580,6 +1554,7 @@ const Assets = () => {
           </CardContent>
         </Card>
       )}
+      <Disclaimer />
 
       <AssetFormDialog
         asset={editingAsset}
@@ -1619,7 +1594,7 @@ const Assets = () => {
       <Dialog open={!!archiveAsset} onOpenChange={(open) => !open && setArchiveAsset(undefined)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Archive {archiveAsset?.name}?</DialogTitle>
+            <DialogTitle className="break-words leading-snug">Archive {archiveAsset?.name}?</DialogTitle>
             <DialogDescription>
               The current balance must be zero. After archive it leaves active views; recorded history stays and can be reviewed from the archived list.
             </DialogDescription>
@@ -1634,8 +1609,8 @@ const Assets = () => {
               Cancel
             </Button>
             <Button type="button" variant="destructive" disabled={isArchiving} onClick={archive}>
-              {isArchiving ? <LoaderCircle className="animate-spin" /> : <Trash2 />}
-              Archive asset
+              {isArchiving ? <CircleNotchIcon className="animate-spin" /> : <ArchiveIcon aria-hidden="true" />}
+              Archive holding
             </Button>
           </DialogFooter>
         </DialogContent>

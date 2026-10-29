@@ -1,4 +1,4 @@
-use log::info;
+use anyhow::anyhow;
 use regex::Regex;
 use rust_decimal_macros::dec;
 use std::io;
@@ -15,6 +15,7 @@ use crate::database::queries::trade::find_similar_trade;
 use crate::services::parsers::does_match_exist;
 use crate::services::parsers::parse_timestamp;
 use crate::services::parsers::return_first_match;
+use crate::services::parsers::InteractionMode;
 use crate::services::shared::util::hash_string;
 use chrono::prelude::*;
 use rust_decimal::Decimal;
@@ -53,7 +54,8 @@ fn detect_record_type(text: &str) -> anyhow::Result<RecordType> {
 }
 
 // to avoid re-importing on trade id changes
-fn require_import_confirmation(trade: &Trade) -> anyhow::Result<bool> {
+fn require_import_confirmation(trade: &Trade, interaction: InteractionMode) -> anyhow::Result<bool> {
+    interaction.require_interactive("A similar trade with a different ID requires confirmation")?;
     let mut input = String::new();
     println!(
         "A similar trade was found with a different ID. Trade details: {:?}. Do you want to import it? (yes/no): ",
@@ -63,12 +65,16 @@ fn require_import_confirmation(trade: &Trade) -> anyhow::Result<bool> {
     Ok(matches!(input.trim().to_lowercase().as_str(), "y" | "yes"))
 }
 
-async fn add_with_import_confirmation(trade: Trade, id: String) -> anyhow::Result<()> {
+async fn add_with_import_confirmation(
+    trade: Trade,
+    id: String,
+    interaction: InteractionMode,
+) -> anyhow::Result<()> {
     let existing_trade = find_similar_trade(&trade).await?;
 
     if let Some(existing_trade) = existing_trade {
         if existing_trade.hash != hash_string(&format!("{}{}", &trade.broker, id.as_str()))
-            && require_import_confirmation(&trade)?
+            && require_import_confirmation(&trade, interaction)?
         {
             add_trade_to_db(trade, Some(id)).await?;
         }
@@ -78,7 +84,10 @@ async fn add_with_import_confirmation(trade: Trade, id: String) -> anyhow::Resul
     Ok(())
 }
 
-pub async fn extract_trade_republic_record(text: &str) -> anyhow::Result<()> {
+pub async fn extract_trade_republic_record(
+    text: &str,
+    interaction: InteractionMode,
+) -> anyhow::Result<()> {
     // TR supports decimialization of up to 6 decimals
     let units_default_regex = r"\d+(,|\.)*\d{0,6}\sStk.";
     let broker = "Trade Republic".to_string();
@@ -133,7 +142,7 @@ pub async fn extract_trade_republic_record(text: &str) -> anyhow::Result<()> {
                 withholding_tax: dec!(0.0),
                 withholding_tax_currency: "EUR".to_string(),
             };
-            add_with_import_confirmation(trade, id).await?;
+            add_with_import_confirmation(trade, id, interaction).await?;
         }
         RecordType::Liquidation => {
             let date_match = return_first_match(r"(..\...\.....)", text)?;
@@ -141,7 +150,7 @@ pub async fn extract_trade_republic_record(text: &str) -> anyhow::Result<()> {
             let date_string_to_parse = format!("{date_match} 16:00:00");
             let date = parse_timestamp(&date_string_to_parse)?;
 
-            let isin = choose_match_from_regex(r"[A-Z]{2}[A-Z0-9]{9}[0-9]", text)?;
+            let isin = choose_match_from_regex(r"[A-Z]{2}[A-Z0-9]{9}[0-9]", text, interaction)?;
 
             let is_bond_liquidation = !does_match_exist("Stk.", text);
 
@@ -192,9 +201,8 @@ pub async fn extract_trade_republic_record(text: &str) -> anyhow::Result<()> {
         RecordType::BondTrade => {
             let date_match_regex = r"(..\...\.....(?:,)? um ..:..)";
             let does_date_match_exist = does_match_exist(date_match_regex, text);
-            //skip file if it's not a valid trade confirmation
             if !does_date_match_exist {
-                return Ok(());
+                return Err(anyhow!("Trade Republic bond statement is not a valid trade confirmation"));
             }
             let date_match = return_first_match(date_match_regex, text)?
                 .replace(", um", "")
@@ -262,7 +270,7 @@ pub async fn extract_trade_republic_record(text: &str) -> anyhow::Result<()> {
                 withholding_tax: dec!(0.0),
                 withholding_tax_currency: "EUR".to_string(),
             };
-            add_with_import_confirmation(trade, id).await?;
+            add_with_import_confirmation(trade, id, interaction).await?;
         }
         RecordType::Dividend => {
             let date_match = return_first_match(r"(..\...\.....)", text)?;
@@ -303,9 +311,8 @@ pub async fn extract_trade_republic_record(text: &str) -> anyhow::Result<()> {
             let date_match_regex = r"(..\...\.....(?:,)? um ..:..)";
 
             let does_date_match_exist = does_match_exist(date_match_regex, text);
-            //skip file if it's not a valid trade confirmation
             if !does_date_match_exist {
-                return Ok(());
+                return Err(anyhow!("Trade Republic equity statement is not a valid trade confirmation"));
             }
             let date_match = return_first_match(date_match_regex, text)?
                 .replace(", um", "")
@@ -386,7 +393,7 @@ pub async fn extract_trade_republic_record(text: &str) -> anyhow::Result<()> {
                 withholding_tax: dec!(0.0),
                 withholding_tax_currency: "EUR".to_string(),
             };
-            add_with_import_confirmation(trade, id).await?;
+            add_with_import_confirmation(trade, id, interaction).await?;
         }
         RecordType::InterestPayment => {
             let date_match = return_first_match(r"zum (..\...\.....)", text)?.replace("zum ", "");
@@ -419,10 +426,10 @@ pub async fn extract_trade_republic_record(text: &str) -> anyhow::Result<()> {
             }
         }
         RecordType::PortfolioTransfer => {
-            info!("Portfolio transfer, skipping.")
+            return Err(anyhow!("Trade Republic portfolio transfer PDFs are not supported"));
         }
         RecordType::Unmatched => {
-            info!("No valid statement found, skipping.")
+            return Err(anyhow!("Unrecognized or unsupported Trade Republic PDF record"));
         }
     }
     Ok(())
@@ -431,6 +438,44 @@ pub async fn extract_trade_republic_record(text: &str) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn upload_rejects_unsupported_and_malformed_pdf_records() {
+        for text in [
+            "TRADE REPUBLIC BANK GMBH Depotubertrag",
+            "TRADE REPUBLIC BANK GMBH unrelated document",
+            "TRADE REPUBLIC BANK GMBH Market-Order without a confirmation date",
+            "TRADE REPUBLIC BANK GMBH Stuckzinsen without a confirmation date",
+            "TRADE REPUBLIC BANK GMBH Dividende without an amount or date",
+        ] {
+            assert!(extract_trade_republic_record(text, InteractionMode::NonInteractive)
+                .await
+                .is_err());
+        }
+    }
+
+    #[test]
+    fn upload_similar_trade_confirmation_returns_error_without_prompting() {
+        let trade = Trade {
+            broker: "Trade Republic".to_string(),
+            date: Utc::now(),
+            isin: "US0378331005".to_string(),
+            avg_price_per_unit: dec!(1),
+            eur_avg_price_per_unit: dec!(1),
+            units: dec!(1),
+            direction: "Buy".to_string(),
+            security_type: "Equity".to_string(),
+            currency: "EUR".to_string(),
+            date_added: Utc::now(),
+            fees: dec!(0),
+            withholding_tax: dec!(0),
+            withholding_tax_currency: "EUR".to_string(),
+        };
+        let error = require_import_confirmation(&trade, InteractionMode::NonInteractive)
+            .unwrap_err();
+        assert!(error.to_string().contains("similar trade"));
+        assert!(error.to_string().contains("interactive CLI"));
+    }
 
     #[test]
     fn detect_pdf_record_types() {

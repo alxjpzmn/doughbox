@@ -34,7 +34,10 @@ pub async fn get_symbol_from_isin(isin: &str, exch_code: Option<&str>) -> anyhow
 
     if &symbol_in_db == "Unidentified" {
         println!("Getting symbol for ISIN {} from OpenFIGI", &isin);
-        let client = Client::new();
+        let client = Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(60))
+            .build()?;
 
         let open_figi_mapping_response = client
             .post("https://api.openfigi.com/v3/mapping/")
@@ -46,6 +49,7 @@ pub async fn get_symbol_from_isin(isin: &str, exch_code: Option<&str>) -> anyhow
             }]))
             .send()
             .await?
+            .error_for_status()?
             .text()
             .await?;
 

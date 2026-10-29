@@ -1,8 +1,11 @@
 pub mod assets;
 pub mod auth;
+pub mod data_imports;
 pub mod market;
 pub mod performance;
 pub mod portfolio;
+pub mod settings;
+pub mod statement_imports;
 pub mod taxation;
 pub mod timeline;
 pub mod trades;

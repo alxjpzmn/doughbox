@@ -11,8 +11,9 @@ use crate::database::{
     models::position::PositionWithValueAndAllocation,
     queries::{
         composite::{events_exist, EventFilter},
-        instrument::{batch_get_instrument_names, batch_get_instrument_prices},
+        instrument::batch_get_instrument_names,
         position::get_positions,
+        price::quotes,
         trade::{get_realized_return, get_total_invested_value},
     },
 };
@@ -35,6 +36,8 @@ pub struct PortfolioOverview {
     #[typeshare(serialized_as = "number")]
     pub unpriced_assets: i64,
     pub positions: Vec<PositionWithValueAndAllocation>,
+    pub valuation_complete: bool,
+    pub unpriced_isins: Vec<String>,
 }
 
 pub async fn get_portfolio_overview() -> anyhow::Result<PortfolioOverview> {
@@ -52,27 +55,30 @@ pub async fn get_portfolio_overview() -> anyhow::Result<PortfolioOverview> {
         .map(|position| position.isin.clone())
         .collect();
 
-    let prices = batch_get_instrument_prices(&isins).await?;
+    let price_quotes = quotes(&crate::database::db_client().await?, &isins).await?;
+    let unpriced_isins: Vec<_> = price_quotes
+        .iter()
+        .filter(|quote| quote.price.is_none())
+        .map(|quote| quote.isin.clone())
+        .collect();
     let names = batch_get_instrument_names(&isins).await?;
 
-    let price_map: HashMap<_, _> = isins.iter().zip(prices.iter()).collect();
     let name_map: HashMap<_, _> = isins.iter().zip(names.iter()).collect();
 
     let mut positions_with_value: Vec<PositionWithValueAndAllocation> = current_positions
         .iter()
-        .map(|position| {
-            let binding = dec!(0.0);
-            let current_price = *price_map.get(&position.isin).unwrap_or(&&binding);
-            let value = current_price * position.units;
+        .zip(&price_quotes)
+        .map(|(position, quote)| {
+            let value = quote.price.map(|price| price * position.units);
             PositionWithValueAndAllocation {
                 asset_id: position.isin.clone(),
                 isin: Some(position.isin.clone()),
                 asset_class: "Security".to_string(),
                 name: name_map
                     .get(&position.isin)
-                    .unwrap_or(&&position.isin.to_string())
+                    .unwrap_or(&&position.isin)
                     .to_string(),
-                value: Some(value),
+                value,
                 units: position.units,
                 unit_label: "units".to_string(),
                 share: None,
@@ -142,13 +148,15 @@ pub async fn get_portfolio_overview() -> anyhow::Result<PortfolioOverview> {
             returns_incomplete: false,
             unpriced_assets: 0,
             positions: vec![],
+            valuation_complete: true,
+            unpriced_isins: vec![],
         });
     }
 
     Ok(PortfolioOverview {
         generated_at: Utc::now().timestamp(),
         total_value: round_to_decimals(total_position),
-        total_return_rel: if total_invested > dec!(0) {
+        total_return_rel: if total_invested != dec!(0) {
             round_to_decimals(total_return_abs / total_invested * dec!(100.0))
         } else {
             dec!(0)
@@ -158,5 +166,7 @@ pub async fn get_portfolio_overview() -> anyhow::Result<PortfolioOverview> {
         realized: round_to_decimals(realized),
         unpriced_assets: custom_summary.incomplete_asset_count,
         positions: positions_with_value,
+        valuation_complete: unpriced_isins.is_empty(),
+        unpriced_isins,
     })
 }

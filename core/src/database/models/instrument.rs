@@ -6,6 +6,8 @@ use tokio_postgres::Row;
 use typeshare::typeshare;
 use utoipa::ToSchema;
 
+use crate::services::market_data::prices::types::PriceQuote;
+
 #[typeshare]
 #[derive(Debug, Tabled, Clone, Serialize, ToSchema)]
 pub struct Instrument {
@@ -23,4 +25,15 @@ impl Instrument {
             name: row.try_get("name").unwrap(),
         }
     }
+}
+
+#[typeshare]
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct InstrumentDetails {
+    pub id: String,
+    pub last_price_update: DateTime<Utc>,
+    pub price: Decimal,
+    pub name: String,
+    /// Safe current valuation and its provenance; legacy price fields remain for compatibility.
+    pub quote: PriceQuote,
 }

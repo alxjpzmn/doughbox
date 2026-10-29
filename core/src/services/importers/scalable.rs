@@ -192,6 +192,8 @@ pub async fn extract_scalable_record(text: &str) -> anyhow::Result<()> {
                     withholding_tax_currency: "EUR".to_string(),
                 };
                 add_trade_to_db(trade, Some(id)).await?;
+            } else {
+                return Err(anyhow::anyhow!("Missing required fields in Scalable trade PDF"));
             }
         }
         RecordType::Dividend => {
@@ -209,9 +211,13 @@ pub async fn extract_scalable_record(text: &str) -> anyhow::Result<()> {
                 if add_dividend_to_db(dividend.clone(), None).await? {
                     println!("💵 Dividend added: {:?}", dividend);
                 }
+            } else {
+                return Err(anyhow::anyhow!("Missing required fields in Scalable dividend PDF"));
             }
         }
-        RecordType::Unmatched => (),
+        RecordType::Unmatched => {
+            return Err(anyhow::anyhow!("Unrecognized or unsupported Scalable PDF record"));
+        }
     }
     Ok(())
 }
