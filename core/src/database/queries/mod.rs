@@ -1,6 +1,7 @@
 pub mod application_settings;
 pub mod asset;
 pub mod background_job;
+pub mod calculation;
 pub mod composite;
 pub mod data_import;
 pub mod dividend;

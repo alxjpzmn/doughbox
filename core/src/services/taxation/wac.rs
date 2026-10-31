@@ -1,5 +1,4 @@
-use anyhow::{Context, Result};
-use log::{debug, trace};
+use anyhow::{ensure, Context, Result};
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use serde::Serialize;
@@ -16,145 +15,40 @@ pub struct FxWac {
     pub avg_rate: Decimal,
 }
 
-impl FxWac {
-    pub(crate) fn round_all(&mut self) {
-        trace!(target: "tax_report", "Rounding FX WAC values");
-
-        self.units = self.units.round_dp(4);
-        self.avg_rate = self.avg_rate.round_dp(2);
-    }
-
-    pub(crate) fn update(&mut self, new_units: Decimal, new_rate: Decimal) {
-        debug!(target: "tax_report", "Updating FX WAC with {} units at rate {}", new_units, new_rate);
-
-        let total_units = self.units + new_units;
-        self.avg_rate = (self.units * self.avg_rate + new_units * new_rate) / total_units;
-        self.units = total_units;
-    }
-}
-
 #[typeshare]
 #[derive(Debug, Clone, Tabled, Serialize, ToSchema)]
 pub struct SecWac {
     pub units: Decimal,
+    /// Fee-exclusive moving average acquisition cost in EUR (§ 27a Abs. 4 EStG).
     pub average_cost: Decimal,
-    pub weighted_avg_fx_rate: Decimal,
     pub name: String,
+    pub broker: String,
+    pub identifier: String,
+}
+
+/// JSON tuple encoding avoids collisions between broker and security identifiers.
+pub(crate) fn pool_key(broker: &str, identifier: &str) -> String {
+    serde_json::to_string(&(broker, identifier)).expect("String tuple serialization cannot fail")
+}
+
+pub(crate) fn eur_unit_price(event: &PortfolioEvent) -> Result<Decimal> {
+    ensure!(event.price_unit >= dec!(0), "Negative security price");
+    if event.currency == "EUR" || event.price_unit == dec!(0) {
+        return Ok(event.price_unit);
+    }
+    // Event rates are native currency units per EUR, not EUR per native unit.
+    let rate = event.applied_fx_rate.context("Missing historical security FX rate")?;
+    ensure!(rate > dec!(0), "Security FX rate must be positive");
+    Ok(event.price_unit / rate)
 }
 
 impl SecWac {
-    pub(crate) fn round_all(&mut self) {
-        trace!(target: "tax_report", "Rounding SecWAC values");
-
-        self.units = self.units.round_dp(4);
-        self.average_cost = self.average_cost.round_dp(2);
-        self.weighted_avg_fx_rate = self.weighted_avg_fx_rate.round_dp(2);
-    }
-
     pub(crate) fn update(&mut self, event: &PortfolioEvent) -> Result<()> {
-        debug!(target: "tax_report", "Updating security WAC for event: {:?}", event);
-
-        let new_units = event.units;
-        let new_cost = event.price_unit;
-        let fx_rate = event
-            .applied_fx_rate
-            .context("Missing FX rate for security trade")?;
-
-        let total_cost = self.units * self.average_cost + new_units * new_cost;
-
-        if total_cost != dec!(0) {
-            self.weighted_avg_fx_rate =
-                (self.weighted_avg_fx_rate * self.units * self.average_cost
-                    + new_units * new_cost * fx_rate)
-                    / total_cost;
-        } else {
-            self.weighted_avg_fx_rate = dec!(0);
-        }
-
-        self.average_cost = total_cost / (self.units + new_units);
-        self.units += new_units;
-
+        ensure!(event.units > dec!(0), "Security purchase units must be positive");
+        let cost = eur_unit_price(event)?;
+        let units = self.units + event.units;
+        self.average_cost = (self.units * self.average_cost + event.units * cost) / units;
+        self.units = units;
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::services::events::{EventType, TradeDirection};
-    use chrono::TimeZone;
-
-    fn buy(units: Decimal, price: Decimal, fx: Decimal) -> PortfolioEvent {
-        PortfolioEvent {
-            event_id: None,
-            date: chrono::Utc.with_ymd_and_hms(2024, 6, 1, 0, 0, 0).unwrap(),
-            event_type: EventType::Trade,
-            currency: "EUR".to_string(),
-            units,
-            price_unit: price,
-            identifier: Some("US0378331005".to_string()),
-            name: Some("Apple".to_string()),
-            unit_label: None,
-            direction: Some(TradeDirection::Buy),
-            applied_fx_rate: Some(fx),
-            withholding_tax_percent: None,
-            total: units * price,
-            total_currency: "EUR".to_string(),
-            broker: "Trading212".to_string(),
-            tax_supported: true,
-        }
-    }
-
-    #[test]
-    fn fx_wac_averages_weighted_rate() {
-        let mut wac = FxWac {
-            units: dec!(100),
-            avg_rate: dec!(1.10),
-        };
-        wac.update(dec!(100), dec!(1.20));
-        assert_eq!(wac.units, dec!(200));
-        assert_eq!(wac.avg_rate, dec!(1.15));
-    }
-
-    #[test]
-    fn sec_wac_averages_cost_and_fx() {
-        let mut wac = SecWac {
-            units: dec!(0),
-            average_cost: dec!(0),
-            weighted_avg_fx_rate: dec!(0),
-            name: "Apple".to_string(),
-        };
-        wac.update(&buy(dec!(10), dec!(100), dec!(1))).unwrap();
-        wac.update(&buy(dec!(10), dec!(200), dec!(1))).unwrap();
-        assert_eq!(wac.units, dec!(20));
-        assert_eq!(wac.average_cost, dec!(150));
-        assert_eq!(wac.weighted_avg_fx_rate, dec!(1));
-    }
-
-    #[test]
-    fn sec_wac_zero_cost_resets_fx() {
-        let mut wac = SecWac {
-            units: dec!(0),
-            average_cost: dec!(0),
-            weighted_avg_fx_rate: dec!(1.2),
-            name: "Apple".to_string(),
-        };
-        wac.update(&buy(dec!(10), dec!(0), dec!(1.1))).unwrap();
-        assert_eq!(wac.weighted_avg_fx_rate, dec!(0));
-        assert_eq!(wac.units, dec!(10));
-        assert_eq!(wac.average_cost, dec!(0));
-    }
-
-    #[test]
-    fn sec_wac_requires_fx_rate() {
-        let mut event = buy(dec!(1), dec!(10), dec!(1));
-        event.applied_fx_rate = None;
-        let mut wac = SecWac {
-            units: dec!(0),
-            average_cost: dec!(0),
-            weighted_avg_fx_rate: dec!(0),
-            name: "Apple".to_string(),
-        };
-        assert!(wac.update(&event).is_err());
     }
 }

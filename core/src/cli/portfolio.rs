@@ -70,7 +70,7 @@ pub async fn portfolio(args: PortfolioArgs) -> anyhow::Result<()> {
         format_currency(position_overview.total_value, true).style(total_position_cli_style)
     );
     println!(
-        "Total gain: {}, {:.2}% ROE",
+        "Tracked P&L: {}, {:.2}% on gross contributions",
         format_currency(position_overview.total_return_abs, true).style(total_position_cli_style),
         position_overview.total_return_rel
     );

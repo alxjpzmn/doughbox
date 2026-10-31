@@ -81,6 +81,19 @@ pub fn internal_error(error: &str, message: impl ToString) -> ErrorResponse {
     )
 }
 
+pub(super) fn security_accounting_error(error: anyhow::Error, fallback_code: &str) -> ErrorResponse {
+    if let Some(gap) = error.downcast_ref::<crate::services::performance::SecurityHistoryGap>() {
+        ErrorResponse::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "IncompleteSecurityHistory",
+            &gap.to_string(),
+            None,
+        )
+    } else {
+        internal_error(fallback_code, error)
+    }
+}
+
 pub async fn check_auth(
     session: Session,
     request: Request,

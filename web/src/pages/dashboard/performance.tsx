@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import useSwr from "swr";
-import PerformanceChart from "@/components/charts/portfolio-performance-chart";
+import PerformanceChart, { type HistoryMeasure } from "@/components/charts/portfolio-performance-chart";
 import PositionPerformanceChart from "@/components/charts/position-performance-chart";
-import { PortfolioPerformance, PositionPerformance } from "@/types/core";
+import { PortfolioOverview, PortfolioPerformance, PositionPerformance } from "@/types/core";
 import EmptyState, { EmptyStateVariants } from "@/components/composite/empty-state";
+import { CalculationRefresh } from "@/components/composite/calculation-refresh";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Disclaimer } from "@/components/composite/disclaimer";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -14,11 +15,7 @@ import { Label } from "@/components/ui/label";
 import { BASE_URL, fetcher } from "@/lib/http";
 import { formatCurrency, formatUnixTimestampRelative, formatRelativeAmount, colorMetric } from "@/lib/utils";
 
-interface PositionPerformanceWithKey extends PositionPerformance {
-  key: string;
-}
-
-type sortByMethods =
+type SortMethod =
   | "ascTotalReturn"
   | "descTotalReturn"
   | "ascRealized"
@@ -28,259 +25,160 @@ type sortByMethods =
   | "ascAlpha"
   | "descAlpha";
 
-
-const Performance = ({ }) => {
-  const { data, isLoading, error } = useSwr<PortfolioPerformance>(`${BASE_URL}/performance_overview`, fetcher);
-
-  const sorting = (method: sortByMethods): (a: PositionPerformance, b: PositionPerformance) => number => {
-    switch (method) {
-      case "ascTotalReturn":
-        return (a: PositionPerformance, b: PositionPerformance) => parseFloat(a.total_return) - parseFloat(b.total_return);
-      case "descTotalReturn":
-        return (a: PositionPerformance, b: PositionPerformance) => parseFloat(b.total_return) - parseFloat(a.total_return);
-      case "ascRealized":
-        return (a: PositionPerformance, b: PositionPerformance) => parseFloat(a.realized) - parseFloat(b.realized);
-      case "descRealized":
-        return (a: PositionPerformance, b: PositionPerformance) => parseFloat(b.realized) - parseFloat(a.realized);
-      case "ascUnrealized":
-        return (a: PositionPerformance, b: PositionPerformance) => parseFloat(a.unrealized) - parseFloat(b.unrealized);
-      case "descUnrealized":
-        return (a: PositionPerformance, b: PositionPerformance) => parseFloat(b.unrealized) - parseFloat(a.unrealized);
-      case "ascAlpha":
-        return (a: PositionPerformance, b: PositionPerformance) => parseFloat(a.alpha) - parseFloat(b.alpha);
-      case "descAlpha":
-        return (a: PositionPerformance, b: PositionPerformance) => parseFloat(b.alpha) - parseFloat(a.alpha);
-      default:
-        return () => 0;
-    }
+const sorting = (method: SortMethod): ((a: PositionPerformance, b: PositionPerformance) => number) => {
+  const field = method.endsWith("TotalReturn") ? "total_return"
+    : method.endsWith("Realized") ? "realized"
+      : method.endsWith("Unrealized") ? "unrealized" : "alpha";
+  const direction = method.startsWith("asc") ? 1 : -1;
+  return (a, b) => {
+    if (a[field] == null) return b[field] == null ? 0 : 1;
+    if (b[field] == null) return -1;
+    return direction * (Number(a[field]) - Number(b[field]));
   };
+};
 
-  const [sortBy, setSortBy] = useState<sortByMethods>("ascTotalReturn");
+const Performance = () => {
+  const { data, isLoading, error } = useSwr<PortfolioPerformance>(`${BASE_URL}/performance_overview`, fetcher);
+  const [sortBy, setSortBy] = useState<SortMethod>("ascTotalReturn");
   const [showOnlyActivePositions, setShowOnlyActivePositions] = useState(false);
-  const [positions, setPositions] = useState<PositionPerformanceWithKey[]>([]);
-
-  useEffect(() => {
-    if (!isLoading && data) {
-      setPositions(
-        data?.position
-          ?.filter((position) => {
-            if (showOnlyActivePositions) {
-              return position.unrealized !== "0.0";
-            } else {
-              return true;
-            }
-          })
-          .sort(sorting(sortBy))
-          .map((position) => {
-            return {
-              key: `${position.isin}-${position.total_return}`,
-              unrealized: position.unrealized,
-              realized: position.realized,
-              total_return: position.total_return,
-              alpha: position.alpha,
-              name: position.name,
-              isin: position.isin,
-              performance: position.performance,
-              invested_amount: position.invested_amount,
-              simulated: position.simulated,
-            };
-          })
-      );
-    }
-  }, [data, sortBy, isLoading, showOnlyActivePositions]);
-
+  const [historyMeasure, setHistoryMeasure] = useState<HistoryMeasure>('amount');
+  const { data: activePortfolio, error: activePositionsError, isLoading: activePositionsLoading } = useSwr<PortfolioOverview>(
+    showOnlyActivePositions ? `${BASE_URL}/portfolio` : null,
+    fetcher,
+  );
+  const activeAssetIds = new Set(
+    activePortfolio?.positions.filter((holding) => Number(holding.units) > 0).map((holding) => holding.asset_id),
+  );
+  const activeSelectionUnknown = showOnlyActivePositions && (activePositionsLoading || !activePortfolio);
+  const activeHistoryIncomplete = showOnlyActivePositions && !!activePortfolio?.security_history_gaps.length;
+  // filter creates a fresh array, so sorting never mutates SWR's cached response.
+  const positions = (data?.position ?? [])
+    .filter((position) => !showOnlyActivePositions || activeAssetIds.has(position.isin))
+    .sort(sorting(sortBy));
+  const visibleAlpha = data?.alpha == null ? null
+    : !showOnlyActivePositions ? Number(data.alpha)
+      : positions.every((position) => position.alpha != null && Number.isFinite(Number(position.alpha)))
+        ? positions.reduce((total, position) => total + Number(position.alpha), 0)
+        : null;
 
   return (
     <>
-      {error && !error.details.events_present && <EmptyState variant={EmptyStateVariants.WithCliInstructionImportTrades} docker={error.details?.in_docker} />}
-      {error && error.details.events_present && <EmptyState variant={EmptyStateVariants.WithCliInstructionPerformance} docker={error.details?.in_docker} />}
-      {isLoading ? (
+      <CalculationRefresh source="performance" />
+      <div className="mb-6 flex flex-wrap items-center gap-3">
+        <Switch id="performance-active-only" checked={showOnlyActivePositions} onCheckedChange={setShowOnlyActivePositions} />
+        <Label htmlFor="performance-active-only">Active only</Label>
+        <p className="text-sm text-muted-foreground">Applies to history, conviction, individual performance and visible alpha.</p>
+      </div>
+      {activeHistoryIncomplete ? (
+        <p role="alert" className="rounded-xl border border-destructive/20 bg-destructive/10 p-4 text-sm text-destructive">
+          Active holdings cannot be determined reliably because acquisition history is incomplete. All performance widgets are hidden. Reconcile the history gaps shown on Portfolio, or turn off Active only to view saved full-portfolio results.
+        </p>
+      ) : showOnlyActivePositions && activePositionsError ? (
+        <p role="alert" className="rounded-xl border border-destructive/20 bg-destructive/10 p-4 text-sm text-destructive">
+          Active holdings could not be loaded. All performance widgets are hidden until the active selection is available. Turn off Active only to view the full portfolio.
+        </p>
+      ) : activeSelectionUnknown ? (
+        <p role="status" className="py-8 text-sm text-muted-foreground">Loading active holdings for all performance widgets…</p>
+      ) : showOnlyActivePositions && activeAssetIds.size === 0 ? (
+        <p className="py-8 text-sm text-muted-foreground">No active holdings. There is no active-only history, conviction, individual performance or alpha to display.</p>
+      ) : error ? (
+        error.details?.events_present === false ? (
+          <EmptyState variant={EmptyStateVariants.WithCliInstructionImportTrades} docker={error.details?.in_docker} />
+        ) : (
+          <p role="alert" className="py-8 text-sm text-muted-foreground">
+            Saved performance is unavailable. Press Refresh performance above to rebuild the exports and save a fresh history snapshot. Opening this page does not calculate performance.
+          </p>
+        )
+      ) : isLoading || !data ? (
         <>
-          {/* Skeleton for Performance Card */}
-          <Card className="grid grid-cols-1 gap-2">
-            <CardHeader>
-              <Skeleton className="h-6 w-1/4" />
-              <Skeleton className="h-4 w-1/2" />
-            </CardHeader>
-            <CardContent>
-              <Skeleton className="h-64 w-full" /> {/* Placeholder for PerformanceChart */}
-            </CardContent>
-          </Card>
-
-          {/* Skeleton for Conviction vs. Result Card */}
-          <Card className="mt-6">
-            <CardHeader>
-              <Skeleton className="h-6 w-1/4" /> {/* Placeholder for "Conviction vs. Result" text */}
-            </CardHeader>
-            <CardContent>
-              <Skeleton className="h-64 w-full" /> {/* Placeholder for PositionPerformanceScatterChart */}
-            </CardContent>
-          </Card>
-
-          {/* Skeleton for Individual Performance Card */}
-          <Card className="mt-6">
-            <CardHeader>
-              <Skeleton className="h-6 w-1/4" /> {/* Placeholder for "Individual Performance" text */}
-            </CardHeader>
-            <CardContent>
-              <div className="flex flex-col md:flex flex-wrap justify-between items-baseline gap-4">
-                <div className="flex flex-col items-start gap-4">
-                  <Skeleton className="h-10 w-full" /> {/* Placeholder for Select */}
-                  <div className="flex items-center justify-center gap-2 min-w-max">
-                    <Skeleton className="h-6 w-6" /> {/* Placeholder for Switch */}
-                    <Skeleton className="h-6 w-20" /> {/* Placeholder for Label */}
-                  </div>
-                </div>
-              </div>
-              <Table className="mt-4">
-                <TableHeader>
-                  <TableRow>
-                    <TableHead><Skeleton className="h-6 w-24" /></TableHead>
-                    <TableHead><Skeleton className="h-6 w-24" /></TableHead>
-                    <TableHead><Skeleton className="h-6 w-24" /></TableHead>
-                    <TableHead><Skeleton className="h-6 w-24" /></TableHead>
-                    <TableHead><Skeleton className="h-6 w-24" /></TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {Array.from({ length: 10 }).map((_, index) => (
-                    <TableRow key={index}>
-                      <TableCell><Skeleton className="h-6 w-48" /></TableCell>
-                      <TableCell><Skeleton className="h-6 w-24" /></TableCell>
-                      <TableCell><Skeleton className="h-6 w-24" /></TableCell>
-                      <TableCell><Skeleton className="h-6 w-24" /></TableCell>
-                      <TableCell><Skeleton className="h-6 w-24" /></TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </CardContent>
-          </Card>
+          {["History", "Conviction", "Individual performance"].map((title) => (
+            <Card className="mb-6" key={title}>
+              <CardHeader><Skeleton className="h-6 w-1/4" /><Skeleton className="h-4 w-1/2" /></CardHeader>
+              <CardContent><Skeleton className="h-64 w-full" /></CardContent>
+            </Card>
+          ))}
         </>
-      ) : data && (
+      ) : (
         <>
           <Card className="grid grid-cols-1 gap-2">
             <CardHeader>
-              <CardTitle>
-                Performance
-              </CardTitle>
+              <CardTitle>{showOnlyActivePositions ? "Active holdings" : "Portfolio"} P&amp;L history</CardTitle>
               <CardDescription>
-                Total alpha: {formatCurrency(parseFloat(data?.alpha))}, last updated {formatUnixTimestampRelative(data?.generated_at)}
+                Last updated {formatUnixTimestampRelative(data.generated_at)}. P&amp;L includes trading gains after fees, recorded gross EUR security dividends and recorded cash/debt interest, before withholding tax; no projected income or deemed distributions. Percentages divide EUR P&amp;L by cumulative gross EUR purchases or contributions, including purchase fees; they are not annualized.
+                {showOnlyActivePositions ? " History sums the recorded components of today's active holdings, not historical active holdings. Unlinked interest is excluded." : " Unlinked interest is included once for the full portfolio."}
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <PerformanceChart />
+              <PerformanceChart activeOnly={showOnlyActivePositions} activeAssetIds={activeAssetIds}
+                measure={historyMeasure} onMeasureChange={setHistoryMeasure} />
             </CardContent>
           </Card>
 
           <Card className="mt-6">
             <CardHeader>
-              <CardTitle>
-                Conviction vs. Result
-              </CardTitle>
+              <CardTitle>Conviction vs. Result</CardTitle>
+              <CardDescription>
+                Securities P&amp;L includes trading gains after fees and recorded gross EUR dividends, before withholding tax.
+                {visibleAlpha == null ? " Benchmark and alpha unavailable: benchmark data is missing." : ` ${showOnlyActivePositions ? "Visible" : "Total"} alpha: ${formatCurrency(visibleAlpha)}.`}
+                {" "}The benchmark is a nominal price index with no reinvested benchmark dividends and no simulated fees, tax or FX.
+              </CardDescription>
             </CardHeader>
             <CardContent>
-              <PositionPerformanceChart />
+              <PositionPerformanceChart positions={positions} />
             </CardContent>
           </Card>
 
           <Card className="mt-6">
             <CardHeader>
-              <CardTitle>
-                Individual Performance
-              </CardTitle>
+              <CardTitle>Individual performance including recorded income</CardTitle>
+              <CardDescription>Return includes realized trading P&amp;L, unrealized P&amp;L and recorded gross dividends. Realized remains trading-only; income is shown separately before withholding tax.</CardDescription>
             </CardHeader>
             <CardContent>
-              <div className="flex flex-col md:flex flex-wrap justify-between items-baseline gap-4">
-                <div className="flex flex-col items-start gap-4">
-                  <Select
-                    value={undefined}
-                    defaultValue={sortBy}
-                    //@ts-ignore
-                    onValueChange={setSortBy}
-                    placeholder="Sort by..."
-                    className="w-full"
-                  >
-                    <SelectTrigger className="w-xs">
-                      <SelectValue placeholder="Sort by..." />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="ascTotalReturn">Return Ascending</SelectItem>
-                      <SelectItem value="descTotalReturn">Return Descending</SelectItem>
-                      <SelectItem value="ascRealized">Realized Ascending</SelectItem>
-                      <SelectItem value="descRealized">Realized Descending</SelectItem>
-                      <SelectItem value="ascUnrealized">Unrealized Ascending</SelectItem>
-                      <SelectItem value="descUnrealized">Unrealized Descending</SelectItem>
-                      <SelectItem value="ascAlpha">Alpha Ascending</SelectItem>
-                      <SelectItem value="descAlpha">Alpha Descending</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  <div className="flex items-center justify-center gap-2 min-w-max">
-                    <Switch id="r1" checked={showOnlyActivePositions} onCheckedChange={() => setShowOnlyActivePositions(!showOnlyActivePositions)} />
-                    <Label htmlFor="r1">Active only</Label>
-                  </div>
-                </div>
-              </div>
-              <Table className="mt-4">
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Name</TableHead>
-                    <TableHead>Return</TableHead>
-                    <TableHead>Realized</TableHead>
-                    <TableHead>Unrealized</TableHead>
-                    <TableHead>Alpha</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {positions?.map((item) => (
-                    <TableRow key={item.key}>
-                      <TableCell className="truncate overflow-hidden whitespace-nowrap max-w-48">
-                        <a
-                          href={`https://duckduckgo.com/?q=${item.isin}`}
-                          target="_blank"
-                        >
-                          {item.name}
-                        </a>
-                      </TableCell>
-                      <TableCell>
-                        <p
-                          className={colorMetric(item.total_return)
-                          }
-                        >
-                          {formatRelativeAmount(parseFloat(item.total_return))}
-                        </p>
-                      </TableCell>
-                      <TableCell>
-                        <p
-                          className={colorMetric(item.realized)
-                          }
-                        >
-                          {formatCurrency(parseFloat(item.realized))}
-                        </p>
-                      </TableCell>
-                      <TableCell>
-                        <p
-                          className={colorMetric(item.unrealized)
-                          }
-                        >
-                          {formatCurrency(parseFloat(item.unrealized))}
-                        </p>
-                      </TableCell>
-                      <TableCell>
-                        <p
-                          className={colorMetric(item.alpha)
-                          }
-                        >
-                          {formatCurrency(parseFloat(item.alpha))}
-                        </p>
-                      </TableCell>
+              <Select value={sortBy} onValueChange={(value) => setSortBy(value as SortMethod)}>
+                <SelectTrigger className="w-full sm:w-72"><SelectValue placeholder="Sort by..." /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="ascTotalReturn">Total Return Ascending</SelectItem>
+                  <SelectItem value="descTotalReturn">Total Return Descending</SelectItem>
+                  <SelectItem value="ascRealized">Realized Ascending</SelectItem>
+                  <SelectItem value="descRealized">Realized Descending</SelectItem>
+                  <SelectItem value="ascUnrealized">Unrealized Ascending</SelectItem>
+                  <SelectItem value="descUnrealized">Unrealized Descending</SelectItem>
+                  <SelectItem value="ascAlpha">Alpha Ascending</SelectItem>
+                  <SelectItem value="descAlpha">Alpha Descending</SelectItem>
+                </SelectContent>
+              </Select>
+              {positions.length === 0 ? (
+                <p className="py-8 text-sm text-muted-foreground">No securities performance for {showOnlyActivePositions ? "the active holdings" : "this portfolio"}. Manual holdings appear in P&amp;L history only.</p>
+              ) : (
+                <Table className="mt-4">
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Name</TableHead>
+                      <TableHead>Return incl. income</TableHead>
+                      <TableHead>Realized trading</TableHead>
+                      <TableHead>Unrealized</TableHead>
+                      <TableHead>Income</TableHead>
+                      <TableHead>Alpha</TableHead>
                     </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+                  </TableHeader>
+                  <TableBody>
+                    {positions.map((item) => (
+                      <TableRow key={item.isin}>
+                        <TableCell className="truncate overflow-hidden whitespace-nowrap max-w-48">
+                          <a href={`https://duckduckgo.com/?q=${item.isin}`} target="_blank" rel="noreferrer">{item.name}</a>
+                        </TableCell>
+                        <TableCell><p className={Number(item.invested_amount) > 0 ? colorMetric(item.total_return) : "text-muted-foreground"} title={Number(item.invested_amount) > 0 ? undefined : "No recorded positive gross purchase baseline"}>{Number(item.invested_amount) > 0 ? formatRelativeAmount(Number(item.total_return)) : "Unavailable"}</p></TableCell>
+                        <TableCell><p className={colorMetric(item.realized)}>{formatCurrency(Number(item.realized))}</p></TableCell>
+                        <TableCell><p className={colorMetric(item.unrealized)}>{formatCurrency(Number(item.unrealized))}</p></TableCell>
+                        <TableCell><p className={colorMetric(item.income)}>{formatCurrency(Number(item.income))}</p></TableCell>
+                        <TableCell><p className={item.alpha == null ? "text-muted-foreground" : colorMetric(item.alpha)}>{item.alpha == null ? "Unavailable" : formatCurrency(Number(item.alpha))}</p></TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
             </CardContent>
           </Card>
-
           <Disclaimer />
         </>
       )}

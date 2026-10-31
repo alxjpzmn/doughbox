@@ -10,6 +10,18 @@ use crate::{
     services::shared::util::hash_string,
 };
 
+/// Linked income is already included by its custom holding's cash/debt calculation.
+pub(crate) async fn unlinked_interest_total(
+    client: &tokio_postgres::Client,
+    as_of: chrono::DateTime<chrono::Utc>,
+) -> anyhow::Result<rust_decimal::Decimal> {
+    let row = client.query_one(
+        "SELECT COALESCE(SUM(amount_eur), 0) FROM interest WHERE asset_id IS NULL AND date <= $1",
+        &[&as_of],
+    ).await?;
+    Ok(row.get(0))
+}
+
 /// Check if an interest payment with the given hash already exists
 pub async fn interest_exists_by_hash(hash: &str) -> anyhow::Result<bool> {
     let client = db_client().await?;
@@ -103,4 +115,38 @@ pub async fn get_interest(filter: QueryFilter) -> anyhow::Result<Vec<InterestRec
             },
         })
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{TimeZone, Utc};
+    use rust_decimal_macros::dec;
+
+    #[tokio::test]
+    #[ignore = "Requires an isolated TEST_POSTGRES_URL"]
+    async fn income_database_counts_only_unlinked_credited_interest_once() {
+        let url = std::env::var("TEST_POSTGRES_URL").expect("Set an isolated TEST_POSTGRES_URL");
+        let (mut client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap(); });
+        let schema = format!("income_test_{}_{}", std::process::id(), Utc::now().timestamp_nanos_opt().unwrap());
+        client.batch_execute(&format!("CREATE SCHEMA {schema}; SET search_path TO {schema}")).await.unwrap();
+        refinery::embed_migrations!("migrations");
+        migrations::runner().run_async(&mut client).await.unwrap();
+        client.batch_execute(
+            "INSERT INTO asset(id,name,asset_class,currency,unit_label,current_interest_rate_percent)
+             VALUES ('cash','Cash','CashAccount','EUR','EUR',2);
+             INSERT INTO interest(id,asset_id,date,amount,amount_eur,currency,principal,origin,tax_treatment)
+             VALUES ('unlinked',NULL,'2025-01-01',10,10,'EUR','Cash','Imported','Included'),
+                    ('manual',NULL,'2025-01-01',3,3,'EUR','Cash','Manual','Excluded'),
+                    ('correction',NULL,'2025-01-01',-2,-2,'EUR','Cash','Imported','Included'),
+                    ('linked','cash','2025-01-01',20,20,'EUR','Cash','Imported','Included'),
+                    ('future',NULL,'2025-02-01',50,50,'EUR','Cash','Imported','Included')"
+        ).await.unwrap();
+        let cutoff = Utc.with_ymd_and_hms(2025, 1, 2, 0, 0, 0).unwrap();
+        assert_eq!(unlinked_interest_total(&client, cutoff).await.unwrap(), dec!(11));
+        client.execute("UPDATE interest SET asset_id = NULL WHERE id = 'linked'", &[]).await.unwrap();
+        assert_eq!(unlinked_interest_total(&client, cutoff).await.unwrap(), dec!(31));
+        client.batch_execute(&format!("SET search_path TO public; DROP SCHEMA {schema} CASCADE")).await.unwrap();
+    }
 }

@@ -45,7 +45,7 @@ const MobileMenu = () => {
   const [location] = useLocation();
 
   return (
-    <nav aria-label="Dashboard" className="z-10 grid w-full shrink-0 grid-cols-5 gap-1 border-t bg-background px-2 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+    <nav aria-label="Dashboard" className="z-10 grid w-full shrink-0 grid-cols-5 gap-1 border-t bg-background px-2 pt-2 pb-[calc(1rem+env(safe-area-inset-bottom))]">
       {menuItems.map((menuItem) => (
         <Link
           href={menuItem.route}

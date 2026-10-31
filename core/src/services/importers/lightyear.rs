@@ -175,7 +175,13 @@ pub async fn extract_lightyear_record(file_content: &[u8]) -> anyhow::Result<()>
                     security_type: "Equity".to_string(),
                     currency: record.currency.to_string(),
                     date_added: Utc::now(),
-                    fees: record.fee.parse::<Decimal>()?,
+                    fees: convert_amount(
+                        record.fee.parse::<Decimal>()?,
+                        &date.date_naive(),
+                        &record.currency,
+                        "EUR",
+                    )
+                    .await?,
                     withholding_tax: record.tax_amount.parse::<Decimal>().unwrap_or(dec!(0.0)),
                     withholding_tax_currency: record.currency.to_string(),
                 };

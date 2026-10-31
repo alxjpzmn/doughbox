@@ -1,8 +1,9 @@
 import useSwr from "swr";
-import { useState, useMemo } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { format } from "date-fns";
-import { AnnualTaxableAmounts, SecWac, TaxationReport, FxWac, TransactionTaxImpact, EventType } from "@/types/core";
+import { AnnualTaxableAmounts, SecWac, TaxationReport, TransactionTaxImpact, EventType } from "@/types/core";
 import EmptyState, { EmptyStateVariants } from "@/components/composite/empty-state";
+import { CalculationRefresh } from "@/components/composite/calculation-refresh";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Disclaimer } from "@/components/composite/disclaimer";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -29,10 +30,10 @@ const labelMap: Record<keyof AnnualTaxableAmounts, string> = {
   net_capital_gains: "Net Capital Gains (after loss offset)",
   dividends: "Dividends",
   dividend_equivalents: "Dividend Equivalents",
-  fx_appreciation: "FX Appreciation",
-  withheld_tax_capital_gains: "Withheld Tax (Capital Gains)",
-  withheld_tax_dividends: "Withheld Tax (Dividends)",
-  withheld_tax_interest: "Withheld Tax (Interest)",
+  fx_appreciation: "Separate Cash FX Appreciation",
+  withheld_tax_capital_gains: "Recorded Withholding (Capital Gains)",
+  withheld_tax_dividends: "Estimated Tax Credit (Dividends)",
+  withheld_tax_interest: "Estimated Tax Credit (Interest)",
   tax_optimization_adjustment: "Tax Optimization",
   tax_owed_dividends: "Tax Owed (Dividends)",
   tax_owed_dividend_equivalents: "Tax Owed (Dividend Equivalents)",
@@ -45,7 +46,7 @@ const formFields: { key: keyof AnnualTaxableAmounts; kz: string }[] = [
   { key: "capital_losses", kz: "KZ 732" },
   { key: "dividends", kz: "KZ 897/898" },
   { key: "dividend_equivalents", kz: "KZ 936/937" },
-  { key: "fx_appreciation", kz: "KZ 731" },
+  { key: "fx_appreciation", kz: "" },
   { key: "withheld_tax_dividends", kz: "KZ 984/998" },
 ];
 
@@ -93,10 +94,22 @@ const eventTypeLabels: Record<EventType, string> = {
   [EventType.Valuation]: "Valuation",
 };
 
+const TaxationCacheError = ({ error }: { error: { status?: number; details?: { events_present?: boolean; in_docker?: boolean } } }) => (
+  <div className="mb-6 space-y-3">
+    <p role="alert" className="text-sm text-muted-foreground">
+      {error.status === 404 ? "No saved taxation results exist for this exact date range." : "Saved taxation results could not be loaded for this date range."}
+      {" "}Press Recalculate taxation above to save the selected range, then view its summary, transactions and detailed export. Changing dates never calculates automatically.
+    </p>
+    {error.details?.events_present === false && <EmptyState variant={EmptyStateVariants.WithCliInstructionImport} docker={error.details?.in_docker} />}
+  </div>
+);
+
 const Taxation = () => {
   const [fromDate, setFromDate] = useState<Date | undefined>(undefined);
   const [untilDate, setUntilDate] = useState<Date | undefined>(undefined);
   const [activeTab, setActiveTab] = useState<"summary" | "transactions">("summary");
+  const [downloading, setDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState<{ query: string; message: string } | null>(null);
 
   const queryParams = new URLSearchParams();
   if (fromDate) queryParams.set("from_date", format(fromDate, "yyyy-LL-dd"));
@@ -113,27 +126,40 @@ const Taxation = () => {
     isLoading: txIsLoading,
   } = useSwr<TransactionTaxImpact[]>(transactionsUrl, fetcher);
 
+  useEffect(() => {
+    setDownloadError(null);
+  }, [queryString, data?.created_at]);
+
   const isFiltered = fromDate !== undefined || untilDate !== undefined;
 
   const downloadDetailed = async () => {
-    const qp = new URLSearchParams();
-    if (fromDate) qp.set("from_date", format(fromDate, "yyyy-LL-dd"));
-    if (untilDate) qp.set("until_date", format(untilDate, "yyyy-LL-dd"));
-    const qs = qp.toString();
-    const response = await fetch(`${BASE_URL}/taxation/detailed${qs ? `?${qs}` : ""}`);
-    if (!response.ok) {
-      console.error("Failed to download detailed report", response.statusText);
-      return;
+    setDownloading(true);
+    setDownloadError(null);
+    try {
+      const response = await fetch(`${BASE_URL}/taxation/detailed${queryString ? `?${queryString}` : ""}`);
+      if (!response.ok) {
+        setDownloadError({
+          query: queryString,
+          message: response.status === 404
+            ? "No saved detailed export exists for this exact range. Press Recalculate taxation above, wait for it to finish, then export again."
+            : "The saved detailed export could not be downloaded. Check your connection and sign-in, then try again. Downloading never recalculates taxation.",
+        });
+        return;
+      }
+      const blob = await response.blob();
+      const downloadUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = downloadUrl;
+      a.download = `taxation_detailed${fromDate ? `_from_${format(fromDate, "yyyy-LL-dd")}` : ""}${untilDate ? `_until_${format(untilDate, "yyyy-LL-dd")}` : ""}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(downloadUrl);
+    } catch {
+      setDownloadError({ query: queryString, message: "The saved detailed export could not be downloaded. Check your connection and try again. Use Recalculate taxation above if this range has not been saved." });
+    } finally {
+      setDownloading(false);
     }
-    const blob = await response.blob();
-    const downloadUrl = window.URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = downloadUrl;
-    a.download = `taxation_detailed${fromDate ? `_from_${format(fromDate, "yyyy-LL-dd")}` : ""}${untilDate ? `_until_${format(untilDate, "yyyy-LL-dd")}` : ""}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    window.URL.revokeObjectURL(downloadUrl);
   };
 
   return (
@@ -211,13 +237,31 @@ const Taxation = () => {
                 Clear
               </Button>
             )}
-            <Button variant="outline" size="sm" onClick={downloadDetailed}>
+            <Button variant="outline" size="sm" disabled={downloading} onClick={() => void downloadDetailed()}>
               <DownloadSimpleIcon className="h-4 w-4 mr-1" />
               Export Detailed
             </Button>
           </div>
+          {downloadError?.query === queryString && <p role="alert" className="mt-3 text-sm text-red-700 dark:text-red-300">{downloadError.message}</p>}
         </CardContent>
       </Card>
+      <CalculationRefresh
+        source="taxation"
+        fromDate={queryParams.get("from_date") ?? undefined}
+        untilDate={queryParams.get("until_date") ?? undefined}
+      />
+      {!!data?.limitations?.length && (
+        <Card className="mb-6 border-amber-500/40" role="alert">
+          <CardHeader>
+            <CardTitle>Tax calculation limitations</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ul className="list-disc space-y-2 pl-5 text-sm text-muted-foreground">
+              {data.limitations.map((limitation) => <li key={limitation}>{limitation}</li>)}
+            </ul>
+          </CardContent>
+        </Card>
+      )}
 
       <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "summary" | "transactions")}>
         <TabsList className="mb-6">
@@ -226,8 +270,7 @@ const Taxation = () => {
         </TabsList>
 
         <TabsContent value="summary">
-          {error && !error.details.events_present && <EmptyState variant={EmptyStateVariants.WithCliInstructionImport} docker={error.details?.in_docker} />}
-          {error && error.details.events_present && <EmptyState variant={EmptyStateVariants.WithCliInstructionTaxation} docker={error.details?.in_docker} />}
+          {error && <TaxationCacheError error={error} />}
           {isLoading ? (
             <div className="grid grid-cols-1 gap-4">
               <Skeleton className="h-6 w-1/4 mb-4" />
@@ -286,7 +329,7 @@ const Taxation = () => {
                 </CardContent>
               </Card>
             </div>
-          ) : (
+          ) : data ? (
             <div>
               {isFiltered && (
                 <p className="text-sm text-muted-foreground mb-4">
@@ -315,7 +358,7 @@ const Taxation = () => {
                           <TableRow key={key}>
                             <TableCell>{labelMap[key]}</TableCell>
                             <TableCell className="font-mono text-xs text-muted-foreground">{kz}</TableCell>
-                            <TableCell className="text-right">{formatCurrency(parseFloat((amounts as AnnualTaxableAmounts)[key] as string))}</TableCell>
+                            <TableCell className="text-right">{(amounts as AnnualTaxableAmounts)[key] == null ? "Unavailable" : formatCurrency(Number((amounts as AnnualTaxableAmounts)[key]))}</TableCell>
                           </TableRow>
                         ))}
                         <TableRow className="border-t-2">
@@ -336,7 +379,7 @@ const Taxation = () => {
 
               <Card className="mb-4">
                 <CardHeader>
-                  <CardTitle>Instrument WAC</CardTitle>
+                  <CardTitle>Instrument WAC by brokerage portfolio</CardTitle>
                 </CardHeader>
                 <CardContent>
                   <Table>
@@ -344,19 +387,19 @@ const Taxation = () => {
                       <TableRow>
                         <TableHead>Name</TableHead>
                         <TableHead>Units</TableHead>
-                        <TableHead>WAC</TableHead>
-                        <TableHead>WAC FX</TableHead>
+                        <TableHead>WAC (EUR)</TableHead>
+                        <TableHead>Brokerage portfolio</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {Object.entries(data?.securities_wacs as SecWac[])?.map(([key, value]) => (
+                      {Object.entries((data.securities_wacs ?? []) as SecWac[]).map(([key, value]) => (
                         <TableRow key={key}>
                           <TableCell className="truncate overflow-hidden whitespace-nowrap max-w-48">
-                            {value.name}
+                            {value.name} <span className="text-xs text-muted-foreground">{value.identifier}</span>
                           </TableCell>
                           <TableCell>{value.units}</TableCell>
                           <TableCell>{formatCurrency(parseFloat(value.average_cost))}</TableCell>
-                          <TableCell>{formatCurrency(parseFloat(value.weighted_avg_fx_rate))}</TableCell>
+                          <TableCell>{value.broker}</TableCell>
                         </TableRow>
                       ))}
                     </TableBody>
@@ -369,29 +412,12 @@ const Taxation = () => {
                   <CardTitle>Currency WAC</CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Name</TableHead>
-                        <TableHead>Units</TableHead>
-                        <TableHead>WAC</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {Object.entries(data?.currency_wacs as FxWac[])?.map(([key, value]) => (
-                        <TableRow key={key}>
-                          <TableCell>{key}</TableCell>
-                          <TableCell>{value.units}</TableCell>
-                          <TableCell>{value.avg_rate}</TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
+                  <p className="text-sm text-muted-foreground">Unavailable: broker statements do not provide a complete foreign-currency cash acquisition and disposal ledger. Security FX movement remains part of EUR security gains.</p>
                 </CardContent>
               </Card>
               <Disclaimer />
             </div>
-          )}
+          ) : null}
         </TabsContent>
 
         <TabsContent value="transactions">
@@ -511,12 +537,7 @@ const TransactionTaxView = ({ data, error, isLoading, isFiltered, fromDate, unti
   }, [data, sortBy, sortDir, taxRelevantOnly]);
 
   if (error) {
-    return (
-      <EmptyState
-        variant={EmptyStateVariants.WithCliInstructionTaxation}
-        docker={error.details?.in_docker}
-      />
-    );
+    return <TaxationCacheError error={error} />;
   }
 
   return (
@@ -579,7 +600,7 @@ const TransactionTaxView = ({ data, error, isLoading, isFiltered, fromDate, unti
                 <SortableHead column="impact_type" label="Impact" sortBy={sortBy} sortDir={sortDir} onSort={handleSort} />
                 <SortableHead column="source_country" label="Src" sortBy={sortBy} sortDir={sortDir} onSort={handleSort} />
                 <SortableHead column="taxable_amount" label="Taxable" align="right" sortBy={sortBy} sortDir={sortDir} onSort={handleSort} />
-                <SortableHead column="withheld_tax" label="WHT" align="right" sortBy={sortBy} sortDir={sortDir} onSort={handleSort} />
+                <SortableHead column="withheld_tax" label="Est. credit" align="right" sortBy={sortBy} sortDir={sortDir} onSort={handleSort} />
                 <SortableHead column="tax_liability" label="Tax left" align="right" sortBy={sortBy} sortDir={sortDir} onSort={handleSort} />
                 <SortableHead column="tax_rate_percent" label="Rate" align="right" sortBy={sortBy} sortDir={sortDir} onSort={handleSort} />
                 <TableHead>Notes</TableHead>
@@ -640,7 +661,7 @@ const TransactionTaxView = ({ data, error, isLoading, isFiltered, fromDate, unti
                     <TableCell className={cn("text-right font-medium", colorMetric(item.taxable_amount))}>
                       {taxable !== 0 ? formatCurrency(taxable) : "-"}
                     </TableCell>
-                    <TableCell className="text-right text-muted-foreground">
+                    <TableCell className="text-right text-muted-foreground" title={item.recorded_withholding_tax == null ? "Recorded withholding unavailable" : `Recorded withholding: ${formatCurrency(Number(item.recorded_withholding_tax))}`}>
                       {withheldTax > 0 ? formatCurrency(withheldTax) : "-"}
                     </TableCell>
                     <TableCell className="text-right">
