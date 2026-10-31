@@ -311,6 +311,8 @@ You need [Rust](https://www.rust-lang.org/tools/install) (see `rust-toolchain.to
 5. `pnpm test` runs `cargo test`. `pnpm typecheck` runs `tsc --noEmit`. `pnpm core lint` runs clippy.
    To match CI's Rust lint coverage, run `cargo clippy --all-targets` from `core`; this checks test code as well as the application.
 
+[Agentation](https://www.agentation.com/install) is available in the web app during local development. Open the floating toolbar to annotate UI elements and copy feedback into your coding agent. It runs locally without an MCP server or external endpoint and is excluded from production builds.
+
 UI icons use [Phosphor](https://phosphoricons.com/) through `@phosphor-icons/react`, including shared controls. Use canonical `*Icon` exports with the default regular weight and Tailwind `text-*` colors (`currentColor`), not `stroke-*` colors. `web/components.json` selects Phosphor for generated components.
 
 Frontend tooling uses platform-specific optional dependencies. The workspace retains macOS and Linux bindings for ARM64 and x64 so installing inside Linux does not prune macOS bindings from a shared checkout. If Vite reports a missing Rolldown native binding, run these commands in a **shell**, not a Python cell:
