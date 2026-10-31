@@ -25,7 +25,7 @@ pub async fn calculate_taxes(
 
     println!("Taxable amounts:");
     println!("{}", taxable_amounts_table);
-    println!("Securities EUR WAC (broker/depot proxy):");
+    println!("Securities EUR WAC by brokerage portfolio:");
     println!("{}", securities_wac_table);
     println!("Foreign-currency cash gains / WAC: unavailable; not zero (see limitations).");
     println!();

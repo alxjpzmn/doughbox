@@ -379,7 +379,7 @@ const Taxation = () => {
 
               <Card className="mb-4">
                 <CardHeader>
-                  <CardTitle>Instrument WAC by depot</CardTitle>
+                  <CardTitle>Instrument WAC by brokerage portfolio</CardTitle>
                 </CardHeader>
                 <CardContent>
                   <Table>
@@ -388,7 +388,7 @@ const Taxation = () => {
                         <TableHead>Name</TableHead>
                         <TableHead>Units</TableHead>
                         <TableHead>WAC (EUR)</TableHead>
-                        <TableHead>Depot</TableHead>
+                        <TableHead>Brokerage portfolio</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>

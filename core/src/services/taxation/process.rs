@@ -19,7 +19,7 @@ pub(crate) fn tax_rates() -> TaxRates {
 
 fn limitations() -> Vec<String> {
     [
-        "Security WAC is fee-exclusive EUR cost per broker and ISIN. Broker is only a depot proxy: multiple depots at the same broker cannot be distinguished; complete acquisition history is required.",
+        "Security WAC is fee-exclusive EUR cost per brokerage portfolio and ISIN. Broker identifies the brokerage portfolio; multiple brokerage portfolios at the same broker cannot be distinguished; complete acquisition history is required.",
         "Foreign-currency cash realization is unavailable (fx_appreciation=null, currency_wacs empty). Imports do not identify a complete cash ledger, opening EUR basis, automatic FX versus held cash, or interest-bearing account status. Security EUR gains already include their own FX movement; no second FX gain is added. Spending held FX on securities can separately realize cash gains and requires manual calculation.",
         "Income amounts are treated as gross, never grossed up by creditable withholding. Some legacy imports contain net amounts or inferred taxes (notably Wise/Revolut); reconcile source statements and historical FX before filing.",
         "Treaty credits are estimates using the supported country table and ISIN/broker source inference, which cannot establish issuer residence, beneficial ownership or treaty eligibility. Unknown source credits are not assumed; Austrian versus foreign withholding is not distinguished by stored data.",
@@ -122,8 +122,8 @@ impl TaxEngine {
             }
             TradeDirection::Sell => {
                 let price = eur_unit_price(event)?;
-                let wac = self.securities.get_mut(&key).context("Missing acquisition history for this broker/depot and security")?;
-                ensure!(event.units <= wac.units, "Sale exceeds known units for this broker/depot and security");
+                let wac = self.securities.get_mut(&key).context("Missing acquisition history for this brokerage portfolio and security")?;
+                ensure!(event.units <= wac.units, "Sale exceeds known units for this brokerage portfolio and security");
                 impact.taxable_amount = event.units * (price - wac.average_cost);
                 impact.recorded_withholding_tax = event.withholding_tax_percent.map(|p| p.max(dec!(0)) * event.units * price);
                 impact.tax_rate_percent = self.rates.capital_gains * dec!(100);
