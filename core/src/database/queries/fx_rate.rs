@@ -55,12 +55,12 @@ pub async fn get_exchange_rate(
 
     let query = if currency_from != "EUR" {
         format!(
-            "SELECT rate FROM fx_rate WHERE currency_to = '{}' AND date < $1 ORDER BY date desc LIMIT 1",
+            "SELECT rate FROM fx_rate WHERE currency_to = '{}' AND date <= $1 ORDER BY date desc LIMIT 1",
             currency_from
         )
     } else {
         format!(
-            "SELECT rate FROM fx_rate WHERE currency_to = '{}' AND date < $1 ORDER BY date desc LIMIT 1",
+            "SELECT rate FROM fx_rate WHERE currency_to = '{}' AND date <= $1 ORDER BY date desc LIMIT 1",
             currency_to
         )
     };

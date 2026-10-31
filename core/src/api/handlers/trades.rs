@@ -8,7 +8,7 @@ use crate::database::queries::{
 };
 use crate::services::performance::get_buy_ins;
 
-use super::{internal_error, json_response, parse_optional_ymd_end, parse_optional_ymd_start};
+use super::{internal_error, json_response, parse_optional_ymd_end, parse_optional_ymd_start, security_accounting_error};
 use crate::api::errors::ErrorResponse;
 
 #[derive(Debug, Deserialize, IntoParams)]
@@ -93,6 +93,7 @@ pub async fn trades(Query(query): Query<TradeQuery>) -> Result<impl IntoResponse
     responses(
         (status = 200, description = "WAC cost basis per instrument and broker", body = [crate::services::performance::BuyIn]),
         (status = 401, description = "Unauthorized"),
+        (status = 422, description = "Incomplete acquisition history; cost basis cannot be fabricated", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     ),
     security(("api_token" = []))
@@ -100,7 +101,7 @@ pub async fn trades(Query(query): Query<TradeQuery>) -> Result<impl IntoResponse
 pub async fn buy_ins(Query(query): Query<BuyInQuery>) -> Result<impl IntoResponse, ErrorResponse> {
     let buy_ins = get_buy_ins(query.isin.as_deref(), query.broker.as_deref())
         .await
-        .map_err(|e| internal_error("BuyInRetrievalError", e))?;
+        .map_err(|error| security_accounting_error(error, "BuyInRetrievalError"))?;
     json_response(&buy_ins).map_err(|status| internal_error("SerializationError", status))
 }
 

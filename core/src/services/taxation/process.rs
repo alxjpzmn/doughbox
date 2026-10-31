@@ -1,945 +1,456 @@
-use anyhow::{Context, Result};
-use chrono::TimeZone;
-use chrono::{DateTime, Utc};
-use log::{debug, info};
+use anyhow::{ensure, Context, Result};
+use chrono::{DateTime, Datelike, TimeZone, Utc};
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use std::collections::BTreeMap;
 
-use crate::database::queries::tax_optimization::get_tax_optimizations_by_date_range;
-use crate::database::queries::{
-    composite::get_active_years, fund_report::get_oekb_fund_report_by_id,
-    fx_rate::get_exchange_rate,
-};
+use crate::database::models::fund_report::FundTaxReport;
+use crate::database::queries::{composite::get_active_years, fund_report::get_oekb_fund_report_by_id, fx_rate::get_exchange_rate, tax_optimization::get_tax_optimizations_by_date_range};
 use crate::services::dtt::{determine_source_country, treaty_rate, DttIncomeType};
 use crate::services::events::{get_events, EventType, PortfolioEvent, TradeDirection};
-use crate::services::files::export_json;
-use crate::services::market_data::fx_rates::convert_amount;
+use crate::database::queries::{listing_change::get_listing_changes, stock_split::get_stock_splits};
+use crate::services::instruments::{identifiers::get_changed_identifier, stock_splits::get_split_adjusted_units};
+use super::types::{AnnualTaxableAmounts, TaxRates, TaxationReport, TransactionTaxImpact};
+use super::wac::{eur_unit_price, pool_key, SecWac};
 
-use super::types::{AnnualTaxableAmounts, TaxRates, TaxationReport};
-use super::wac::{FxWac, SecWac};
-
-pub(crate) struct ProcessingContext<'a> {
-    taxable_amounts: &'a mut BTreeMap<i32, AnnualTaxableAmounts>,
-    currency_wacs: &'a mut BTreeMap<String, FxWac>,
-    securities_wacs: &'a mut BTreeMap<String, SecWac>,
-    tax_rates: &'a TaxRates,
-    year: i32,
-    from_date: Option<DateTime<Utc>>,
-    until_date: Option<DateTime<Utc>>,
+pub(crate) fn tax_rates() -> TaxRates {
+    TaxRates { interest: dec!(0.25), capital_gains: dec!(0.275), dividends: dec!(0.275) }
 }
 
-impl ProcessingContext<'_> {
-    pub(crate) fn get_year_entry(&mut self) -> &mut AnnualTaxableAmounts {
-        self.taxable_amounts
-            .entry(self.year)
-            .or_insert_with(|| AnnualTaxableAmounts {
-                cash_interest: dec!(0.0),
-                share_lending_interest: dec!(0.0),
-                capital_gains: dec!(0.0),
-                net_capital_gains: dec!(0.0),
-                dividends: dec!(0.0),
-                fx_appreciation: dec!(0.0),
-                dividend_equivalents: dec!(0.0),
-                capital_losses: dec!(0.0),
-                withheld_tax_capital_gains: dec!(0.0),
-                withheld_tax_dividends: dec!(0.0),
-                withheld_tax_interest: dec!(0.0),
-                tax_optimization_adjustment: dec!(0.0),
-                tax_owed_dividends: dec!(0.0),
-                tax_owed_dividend_equivalents: dec!(0.0),
-            })
-    }
-
-    pub(crate) fn should_count_taxable(&self, event_date: DateTime<Utc>) -> bool {
-        if let Some(from) = self.from_date {
-            if event_date < from {
-                return false;
-            }
-        }
-        if let Some(until) = self.until_date {
-            if event_date > until {
-                return false;
-            }
-        }
-        true
-    }
+fn limitations() -> Vec<String> {
+    [
+        "Security WAC is fee-exclusive EUR cost per broker and ISIN. Broker is only a depot proxy: multiple depots at the same broker cannot be distinguished; complete acquisition history is required.",
+        "Foreign-currency cash realization is unavailable (fx_appreciation=null, currency_wacs empty). Imports do not identify a complete cash ledger, opening EUR basis, automatic FX versus held cash, or interest-bearing account status. Security EUR gains already include their own FX movement; no second FX gain is added. Spending held FX on securities can separately realize cash gains and requires manual calculation.",
+        "Income amounts are treated as gross, never grossed up by creditable withholding. Some legacy imports contain net amounts or inferred taxes (notably Wise/Revolut); reconcile source statements and historical FX before filing.",
+        "Treaty credits are estimates using the supported country table and ISIN/broker source inference, which cannot establish issuer residence, beneficial ownership or treaty eligibility. Unknown source credits are not assumed; Austrian versus foreign withholding is not distinguished by stored data.",
+        "Cash interest uses the 25% bank-deposit rate only as an estimate; broker cash, money-market funds and lending income require legal classification. Share-lending income uses 27.5% as an estimate, not an established classification.",
+        "OeKB: only stored reporting-fund data is processed at the report inflow date. Field 10287 is dividend-equivalent income, 10289 adjusts EUR basis; 10595 is a warning, not income. Distribution dates, corrections/replacements, private-investor option column and complete report coverage require review. Broker distributions are not automatically reconciled to OeKB distribution fields.",
+        "Tax liabilities are provisional before annual cross-category loss offset, assessment options and country-specific credit allocation; not final Austrian tax payable. Manual tax adjustments are annual information only and excluded from transaction income totals. Form labels are indicative and must be checked for the filing year.",
+    ].into_iter().map(str::to_owned).collect()
 }
 
-pub(crate) async fn process_event(
-    event: PortfolioEvent,
-    ctx: &mut ProcessingContext<'_>,
-) -> Result<()> {
-    if !event.tax_supported {
-        return Ok(());
-    }
-    info!(target: "tax_report", "Processing event: {:?} ({:?}) on {:?}", event.identifier.clone().unwrap_or("No identifier".to_string()), event.event_type, event.date);
-
-    match event.event_type {
-        EventType::CashInterest | EventType::ShareInterest | EventType::Dividend => {
-            process_interest_or_dividend(event, ctx).await
-        }
-        EventType::Trade => process_trade(event, ctx).await,
-        EventType::FxConversion => process_fx_conversion(event, ctx).await,
-        EventType::DividendAequivalent => process_dividend_aequivalent(event, ctx).await,
-        EventType::Deposit
-        | EventType::Withdrawal
-        | EventType::PrincipalAdvance
-        | EventType::PrincipalRepayment
-        | EventType::OpeningBalance
-        | EventType::BalanceReconciliation
-        | EventType::PrivateDebtInterest
-        | EventType::Valuation => Ok(()),
-    }
+pub(crate) fn in_range(date: DateTime<Utc>, from: Option<DateTime<Utc>>, until: Option<DateTime<Utc>>) -> bool {
+    from.is_none_or(|d| date >= d) && until.is_none_or(|d| date <= d)
 }
 
-async fn process_interest_or_dividend(
-    event: PortfolioEvent,
-    ctx: &mut ProcessingContext<'_>,
-) -> Result<()> {
-    debug!(target: "tax_report",
-        "Processing {:?} event for {} {}",
-        event.event_type,
-        event.units,
-        event.currency
-    );
-
-    let currency = &event.currency;
-
-    // Use applied_fx_rate if available, otherwise fetch from database
-    let fx_rate = match event.applied_fx_rate {
-        Some(rate) => rate,
-        None => {
-            if currency == "EUR" {
-                dec!(1.0)
-            } else {
-                // Fetch FX rate from database
-                let naive_date = event.date.date_naive();
-                get_exchange_rate(currency, "EUR", &naive_date)
-                    .await
-                    .unwrap_or(dec!(1.0))
-            }
-        }
+pub(crate) async fn load_events(until: Option<DateTime<Utc>>) -> Result<Vec<PortfolioEvent>> {
+    let years = get_active_years().await?;
+    let Some(first) = years.iter().min().copied() else { return Ok(Vec::new()); };
+    let last = years.iter().max().copied().unwrap();
+    let start = Utc.with_ymd_and_hms(first, 1, 1, 0, 0, 0).unwrap();
+    // Include subsecond events at year end, without overlapping adjacent years.
+    let end = match until {
+        Some(until) => until.checked_add_signed(chrono::Duration::nanoseconds(1))
+            .context("Tax report end date is out of range")?,
+        None => Utc.with_ymd_and_hms(last + 1, 1, 1, 0, 0, 0).unwrap(),
     };
+    if end <= start { return Ok(Vec::new()); }
+    get_events(start, end).await
+}
 
-    if currency != "EUR" {
-        ctx.currency_wacs
-            .entry(currency.clone())
-            .and_modify(|wac| wac.update(event.units, fx_rate))
-            .or_insert(FxWac {
-                units: event.units,
-                avg_rate: fx_rate,
-            });
+pub(crate) struct TaxEngine {
+    pub(crate) amounts: BTreeMap<i32, AnnualTaxableAmounts>,
+    pub(crate) securities: BTreeMap<String, SecWac>,
+    rates: TaxRates,
+}
+
+impl TaxEngine {
+    pub(crate) fn new() -> Self {
+        Self { amounts: BTreeMap::new(), securities: BTreeMap::new(), rates: tax_rates() }
     }
 
-    let (taxed_amount, withheld_tax) = calculate_taxable_values(&event, ctx, fx_rate)?;
-    let tax_type = match event.event_type {
-        EventType::CashInterest => "interest",
-        EventType::ShareInterest => "capital_gains",
-        EventType::Dividend => "dividends",
-        _ => unreachable!(),
-    };
+    pub(crate) async fn process(&mut self, event: &PortfolioEvent, count: bool) -> Result<TransactionTaxImpact> {
+        let mut impact = base_impact(event);
+        if !event.tax_supported {
+            impact.impact_type = "Excluded activity".into();
+            impact.notes = "Activity is excluded from automated Austrian taxation; manual review required".into();
+            return Ok(impact);
+        }
+        match event.event_type {
+            EventType::Trade => self.trade(event, &mut impact)?,
+            EventType::CashInterest | EventType::ShareInterest | EventType::Dividend => {
+                let rate = if event.currency == "EUR" { dec!(1) } else if let Some(rate) = event.applied_fx_rate {
+                    rate
+                } else {
+                    // Database conversion rates are EUR per native unit; event rates are the inverse.
+                    let eur_per_native = get_exchange_rate(&event.currency, "EUR", &event.date.date_naive()).await?;
+                    ensure!(eur_per_native > dec!(0), "Income FX rate must be positive");
+                    dec!(1) / eur_per_native
+                };
+                self.income(event, rate, &mut impact)?;
+            }
+            EventType::DividendAequivalent => {
+                let id = event.identifier.as_deref().context("Missing OeKB report ID")?.parse::<i32>()?;
+                let mut report = get_oekb_fund_report_by_id(id).await?;
+                // Trade events use globally split-adjusted units, so historical per-share
+                // report values must be on that same share scale before touching basis.
+                let mut splits = get_stock_splits().await?;
+                let factor = get_split_adjusted_units(&report.isin, dec!(1), report.date, &mut splits);
+                normalize_fund_shares(&mut report, factor)?;
+                report.isin = get_changed_identifier(&report.isin, get_listing_changes().await?);
+                let eur_per_native = if report.currency == "EUR" { dec!(1) } else {
+                    get_exchange_rate(&report.currency, "EUR", &report.date.date_naive()).await?
+                };
+                self.fund(&report, eur_per_native, &mut impact)?;
+            }
+            EventType::FxConversion => {
+                impact.impact_type = "FX cash: unavailable".into();
+                impact.notes = "No cash-FX tax amount computed: complete cash balances, historical EUR basis, account classification and automatic-conversion identification are unavailable. Not a zero taxable gain.".into();
+            }
+            _ => {
+                impact.impact_type = "Manual review".into();
+                impact.notes = "No supported automated tax classification".into();
+            }
+        }
+        if count { self.record(event, &impact); }
+        Ok(impact)
+    }
 
-    if ctx.should_count_taxable(event.date) {
-        apply_taxation(ctx, tax_type, taxed_amount, withheld_tax)
-    } else {
+    fn trade(&mut self, event: &PortfolioEvent, impact: &mut TransactionTaxImpact) -> Result<()> {
+        ensure!(event.units > dec!(0), "Trade units must be positive");
+        let id = event.identifier.as_deref().context("Missing security identifier")?;
+        let key = pool_key(&event.broker, id);
+        match event.direction.as_ref().context("Missing trade direction")? {
+            TradeDirection::Buy => {
+                let wac = self.securities.entry(key).or_insert_with(|| SecWac {
+                    units: dec!(0), average_cost: dec!(0), name: event.name.clone().unwrap_or_else(|| id.to_owned()),
+                    broker: event.broker.clone(), identifier: id.to_owned(),
+                });
+                wac.update(event)?;
+                impact.impact_type = "Security purchase".into();
+                impact.notes = format!("Fee-exclusive EUR WAC: {}. Any disposal of previously held foreign cash is separate and unavailable.", wac.average_cost);
+            }
+            TradeDirection::Sell => {
+                let price = eur_unit_price(event)?;
+                let wac = self.securities.get_mut(&key).context("Missing acquisition history for this broker/depot and security")?;
+                ensure!(event.units <= wac.units, "Sale exceeds known units for this broker/depot and security");
+                impact.taxable_amount = event.units * (price - wac.average_cost);
+                impact.recorded_withholding_tax = event.withholding_tax_percent.map(|p| p.max(dec!(0)) * event.units * price);
+                impact.tax_rate_percent = self.rates.capital_gains * dec!(100);
+                impact.tax_liability = impact.taxable_amount.max(dec!(0)) * self.rates.capital_gains;
+                impact.impact_type = "Security disposal".into();
+                impact.is_tax_relevant = true;
+                impact.notes = format!("EUR proceeds {} minus historical EUR WAC basis {}. Fees excluded; embedded security FX included, not cash FX. Tax estimate before annual loss offset. Sale withholding is information only: stored data does not distinguish Austrian KESt from foreign tax.", event.units * price, event.units * wac.average_cost);
+                wac.units -= event.units;
+                if wac.units == dec!(0) { self.securities.remove(&key); }
+            }
+        }
         Ok(())
     }
-}
 
-pub(crate) fn calculate_taxable_values(
-    event: &PortfolioEvent,
-    ctx: &mut ProcessingContext<'_>,
-    fx_rate: Decimal,
-) -> Result<(Decimal, Decimal)> {
-    let taxable_remainder = event.units * event.price_unit;
-
-    let withheld_tax_percent = event.withholding_tax_percent.unwrap_or(dec!(0.0));
-
-    let (income_type, austrian_rate) = match event.event_type {
-        EventType::CashInterest => (DttIncomeType::Interest, ctx.tax_rates.interest),
-        EventType::ShareInterest => (DttIncomeType::CapitalGains, ctx.tax_rates.capital_gains),
-        EventType::Dividend => (DttIncomeType::Dividends, ctx.tax_rates.dividends),
-        _ => unreachable!(),
-    };
-
-    let source_country = determine_source_country(event.identifier.as_deref(), &event.broker);
-
-    let cap = match source_country {
-        Some(country) => treaty_rate(country, income_type).unwrap_or(austrian_rate),
-        None => austrian_rate,
-    };
-
-    let remaining_withholding_tax_percent = withheld_tax_percent.min(cap);
-
-    let (taxed_amount, withheld_tax) = if event.currency == "EUR" {
-        (
-            taxable_remainder,
-            remaining_withholding_tax_percent * taxable_remainder,
-        )
-    } else {
-        (
-            taxable_remainder / fx_rate,
-            (remaining_withholding_tax_percent * taxable_remainder) / fx_rate,
-        )
-    };
-
-    Ok((taxed_amount, withheld_tax))
-}
-
-pub(crate) fn apply_taxation(
-    ctx: &mut ProcessingContext<'_>,
-    tax_type: &str,
-    taxed_amount: Decimal,
-    withheld_tax: Decimal,
-) -> Result<()> {
-    let year_entry = ctx.get_year_entry();
-
-    match tax_type {
-        "interest" => {
-            year_entry.cash_interest += taxed_amount + withheld_tax;
-            year_entry.withheld_tax_interest += withheld_tax;
-        }
-        "capital_gains" => {
-            year_entry.share_lending_interest += taxed_amount + withheld_tax;
-        }
-        "dividends" => {
-            year_entry.dividends += taxed_amount + withheld_tax;
-            year_entry.withheld_tax_dividends += withheld_tax;
-        }
-        _ => return Err(anyhow::anyhow!("Invalid tax type")),
-    }
-
-    Ok(())
-}
-
-async fn process_trade(event: PortfolioEvent, ctx: &mut ProcessingContext<'_>) -> Result<()> {
-    debug!(target: "tax_report", "Processing trade of {} units", event.units);
-
-    let direction = event.clone().direction.context("Missing trade direction")?;
-
-    match direction {
-        TradeDirection::Buy => process_buy(event, ctx).await,
-        TradeDirection::Sell => process_sell(event, ctx).await,
-    }
-}
-
-async fn process_buy(event: PortfolioEvent, ctx: &mut ProcessingContext<'_>) -> Result<()> {
-    info!(target: "tax_report", "Processing BUY transaction for {:?}", event.identifier);
-
-    ctx.securities_wacs
-        .entry(
-            event
-                .identifier
-                .clone()
-                .context("Missing security identifier")?,
-        )
-        .and_modify(|sec_wac| {
-            sec_wac
-                .update(&event)
-                .expect("Failed to update security WAC")
-        })
-        .or_insert({
-            let mut sec_wac = SecWac {
-                units: dec!(0.0),
-                average_cost: dec!(0.0),
-                weighted_avg_fx_rate: dec!(0.0),
-                name: event
-                    .name
-                    .clone()
-                    .unwrap_or(event.identifier.clone().unwrap()),
-            };
-            sec_wac.update(&event)?;
-            sec_wac
-        });
-
-    if event.currency != "EUR" {
-        process_fx_buy(event, ctx).await?;
-    }
-
-    Ok(())
-}
-
-async fn process_sell(event: PortfolioEvent, ctx: &mut ProcessingContext<'_>) -> Result<()> {
-    info!(target: "tax_report", "Processing SELL transaction for {:?}", event.identifier);
-
-    let identifier = event
-        .identifier
-        .clone()
-        .context("Missing security identifier")?;
-    let units = event.units;
-
-    if let Some(sec_wac) = ctx.securities_wacs.get_mut(&identifier) {
-        sec_wac.units -= units;
-    }
-
-    if ctx.should_count_taxable(event.date) {
-        if let Some(wht_percent) = event.withholding_tax_percent {
-            let source_country = determine_source_country(Some(&identifier), &event.broker);
-            let cap = match source_country {
-                Some(country) => treaty_rate(country, DttIncomeType::CapitalGains)
-                    .unwrap_or(ctx.tax_rates.capital_gains),
-                None => ctx.tax_rates.capital_gains,
-            };
-            let wht_percent_to_consider = wht_percent.min(cap);
-            let wht_currency_agnostic = wht_percent_to_consider * (event.price_unit * event.units);
-
-            let withheld_tax = if event.currency == "EUR" {
-                wht_currency_agnostic
-            } else {
-                wht_currency_agnostic / event.applied_fx_rate.unwrap()
-            };
-            ctx.get_year_entry().withheld_tax_capital_gains += withheld_tax;
-        }
-
-        if event.currency == "EUR" {
-            process_eur_sell(event, ctx, &identifier)?;
-        } else {
-            process_fx_sell(event, ctx, &identifier).await?;
-        }
-    }
-
-    Ok(())
-}
-
-pub(crate) fn process_eur_sell(
-    event: PortfolioEvent,
-    ctx: &mut ProcessingContext<'_>,
-    identifier: &str,
-) -> Result<()> {
-    let sec_wac = ctx
-        .securities_wacs
-        .get(identifier)
-        .context("Security WAC not found for sell transaction")?;
-
-    let taxable_amount = (event.price_unit - sec_wac.average_cost) * event.units;
-    let year_entry = ctx.get_year_entry();
-
-    if taxable_amount > dec!(0.0) {
-        year_entry.capital_gains += taxable_amount;
-    } else {
-        year_entry.capital_losses -= taxable_amount;
-    }
-
-    Ok(())
-}
-
-async fn process_fx_sell(
-    event: PortfolioEvent,
-    ctx: &mut ProcessingContext<'_>,
-    identifier: &str,
-) -> Result<()> {
-    let sec_wac = ctx
-        .securities_wacs
-        .get(identifier)
-        .context("Security WAC not found for FX sell")?;
-
-    let gain_foreign = (event.price_unit - sec_wac.average_cost) * event.units;
-    let eur_rate =
-        convert_amount(dec!(1.0), &event.date.date_naive(), "EUR", &event.currency).await?;
-    let gain_eur = gain_foreign / eur_rate;
-
-    let fx_wac = ctx
-        .currency_wacs
-        .entry(event.currency.clone())
-        .or_insert(FxWac {
-            units: dec!(0.0),
-            avg_rate: dec!(0.0),
-        });
-
-    let fx_rate_for_buy = if fx_wac.units > event.units * event.price_unit {
-        fx_wac.avg_rate
-    } else {
-        sec_wac.weighted_avg_fx_rate
-    };
-
-    let original_eur_cost = (sec_wac.average_cost / fx_rate_for_buy) * event.units;
-    let eur_sell = (event.price_unit / eur_rate) * event.units;
-    let total_taxable = eur_sell - original_eur_cost;
-    let fx_portion = total_taxable - gain_eur;
-
-    let year_entry = ctx.get_year_entry();
-    if gain_eur > dec!(0.0) {
-        year_entry.capital_gains += gain_eur;
-    } else {
-        year_entry.capital_losses -= gain_eur;
-    }
-    year_entry.fx_appreciation += fx_portion;
-
-    Ok(())
-}
-
-async fn process_fx_conversion(
-    event: PortfolioEvent,
-    ctx: &mut ProcessingContext<'_>,
-) -> Result<()> {
-    let direction = event
-        .direction
-        .as_ref()
-        .context("Missing FX conversion direction")?;
-
-    match direction {
-        TradeDirection::Buy => process_fx_buy(event, ctx).await,
-        TradeDirection::Sell => process_fx_sell_conversion(event, ctx).await,
-    }
-}
-
-async fn process_fx_buy(event: PortfolioEvent, ctx: &mut ProcessingContext<'_>) -> Result<()> {
-    let identifier = event.identifier.context("Missing FX identifier")?;
-
-    let currency = if event.event_type == EventType::Trade {
-        event.currency.clone()
-    } else {
-        identifier[identifier.len() - 3..].to_string()
-    };
-
-    if currency == "EUR" {
-        return Ok(());
-    }
-
-    let fx_rate = event.applied_fx_rate.context("Missing FX rate")?;
-
-    ctx.currency_wacs
-        .entry(currency)
-        .and_modify(|wac| wac.update(event.units, fx_rate))
-        .or_insert(FxWac {
-            units: event.units,
-            avg_rate: fx_rate,
-        });
-
-    Ok(())
-}
-
-async fn process_fx_sell_conversion(
-    event: PortfolioEvent,
-    ctx: &mut ProcessingContext<'_>,
-) -> Result<()> {
-    let identifier = event.identifier.context("Missing FX identifier")?;
-    let origin_currency = if event.event_type == EventType::Trade {
-        event.currency.clone()
-    } else {
-        identifier[..3].to_string()
-    };
-
-    let eur_rate =
-        convert_amount(dec!(1.0), &event.date.date_naive(), "EUR", &origin_currency).await?;
-
-    let taxed_amount = {
-        let fx_wac = ctx
-            .currency_wacs
-            .get_mut(&origin_currency)
-            .context("Currency WAC not found for conversion")?;
-
-        let fx_delta = fx_wac.avg_rate - eur_rate;
-        let taxed_amount = ((fx_delta / eur_rate) * event.units) / eur_rate;
-
-        fx_wac.units -= event.units;
-        if fx_wac.units < dec!(0.0) {
-            fx_wac.units = dec!(0.0);
-        }
-
-        taxed_amount
-    };
-
-    if ctx.should_count_taxable(event.date) {
-        ctx.get_year_entry().fx_appreciation += taxed_amount;
-    }
-
-    Ok(())
-}
-
-async fn process_dividend_aequivalent(
-    event: PortfolioEvent,
-    ctx: &mut ProcessingContext<'_>,
-) -> Result<()> {
-    let report_id = event
-        .identifier
-        .clone()
-        .context("Missing fund report ID")?
-        .parse::<i32>()?;
-    let full_report = get_oekb_fund_report_by_id(report_id).await?;
-
-    let units_held = {
-        let wacs = ctx
-            .securities_wacs
-            .entry(full_report.isin.clone())
-            .or_insert(SecWac {
-                units: dec!(0.0),
-                average_cost: dec!(0.0),
-                weighted_avg_fx_rate: dec!(1.0),
-                name: full_report.isin.clone(),
-            });
-        wacs.units
-    };
-
-    let cost_adjustment = convert_amount(
-        full_report.wac_adjustment,
-        &full_report.date.date_naive(),
-        &full_report.currency,
-        "EUR",
-    )
-    .await?;
-
-    if let Some(sec_wac) = ctx.securities_wacs.get_mut(&full_report.isin) {
-        sec_wac.average_cost += cost_adjustment;
-    }
-
-    if ctx.should_count_taxable(event.date) {
-        let income_per_share = full_report.dividend_aequivalent
-            + full_report.intermittent_dividends
-            + full_report.inlaendische_dividenden;
-        let income_amount = income_per_share * units_held;
-
-        let income_eur = convert_amount(
-            income_amount,
-            &full_report.date.date_naive(),
-            &full_report.currency,
-            "EUR",
-        )
-        .await?;
-
-        let kest_amount = full_report.kest_per_share * units_held;
-        let kest_eur = convert_amount(
-            kest_amount,
-            &full_report.date.date_naive(),
-            &full_report.currency,
-            "EUR",
-        )
-        .await?;
-
-        let year_entry = ctx.get_year_entry();
-        year_entry.dividend_equivalents += income_eur;
-        year_entry.tax_owed_dividend_equivalents += kest_eur;
-    }
-
-    Ok(())
-}
-
-pub async fn get_capital_gains_tax_report(
-    from_date: Option<DateTime<Utc>>,
-    until_date: Option<DateTime<Utc>>,
-) -> Result<TaxationReport> {
-    info!(target: "tax_report", "Starting capital gains tax report generation (from={:?}, until={:?})", from_date, until_date);
-
-    let tax_rates = TaxRates {
-        interest: dec!(0.25),
-        capital_gains: dec!(0.275),
-        dividends: dec!(0.275),
-    };
-
-    info!(target: "tax_report", "Using tax rates: Interest {}%, Capital Gains {}%, Dividends {}%",
-        tax_rates.interest * dec!(100),
-        tax_rates.capital_gains * dec!(100),
-        tax_rates.dividends * dec!(100)
-    );
-
-    let tax_relevant_years = get_active_years().await?;
-    let mut taxable_amounts = BTreeMap::new();
-    let mut currency_wacs = BTreeMap::new();
-    let mut securities_wacs = BTreeMap::new();
-
-    for year in tax_relevant_years {
-        let mut ctx = ProcessingContext {
-            taxable_amounts: &mut taxable_amounts,
-            currency_wacs: &mut currency_wacs,
-            securities_wacs: &mut securities_wacs,
-            tax_rates: &tax_rates,
-            year,
-            from_date,
-            until_date,
+    fn income(&self, event: &PortfolioEvent, native_per_eur: Decimal, impact: &mut TransactionTaxImpact) -> Result<()> {
+        ensure!(native_per_eur > dec!(0), "Income FX rate must be positive");
+        let (kind, rate, label) = match event.event_type {
+            EventType::CashInterest => (DttIncomeType::Interest, self.rates.interest, "Cash interest (classification estimate)"),
+            EventType::ShareInterest => (DttIncomeType::CapitalGains, self.rates.capital_gains, "Share lending (classification estimate)"),
+            EventType::Dividend => (DttIncomeType::Dividends, self.rates.dividends, "Dividend"),
+            _ => unreachable!(),
         };
-
-        let start_date = Utc.with_ymd_and_hms(year, 1, 1, 0, 0, 0).unwrap();
-        let end_date = Utc.with_ymd_and_hms(year, 12, 31, 23, 59, 59).unwrap();
-        let events = get_events(start_date, end_date)
-            .await
-            .with_context(|| format!("Failed to load events for year {}", year))?;
-        for event in events {
-            let event_desc = format!(
-                "Failed to process event {:?} ({:?}) on {}",
-                event.identifier.as_deref().unwrap_or("No identifier"),
-                event.event_type,
-                event.date
-            );
-            process_event(event, &mut ctx)
-                .await
-                .with_context(|| event_desc)?;
-        }
-
-        // Apply tax optimizations for this year
-        let tax_optimizations = get_tax_optimizations_by_date_range(start_date, end_date).await?;
-        for opt in tax_optimizations {
-            if let Some(from) = from_date {
-                if opt.date < from {
-                    continue;
-                }
-            }
-            if let Some(until) = until_date {
-                if opt.date > until {
-                    continue;
-                }
-            }
-
-            // Skip zero-amount tax optimizations — they are no-ops but create log noise
-            if opt.amount == dec!(0) {
-                continue;
-            }
-
-            let year_entry = ctx.get_year_entry();
-            // Tax optimization: negative amount = additional tax paid (increase withheld)
-            // positive amount = tax refund (decrease withheld)
-            match opt.tax_type.as_str() {
-                "CapitalGains" => {
-                    year_entry.withheld_tax_capital_gains -= opt.amount;
-                    year_entry.tax_optimization_adjustment -= opt.amount;
-                }
-                "Dividend" => {
-                    year_entry.tax_owed_dividend_equivalents += opt.amount;
-                    year_entry.tax_optimization_adjustment -= opt.amount;
-                }
-                "Interest" => {
-                    year_entry.withheld_tax_interest -= opt.amount;
-                    year_entry.tax_optimization_adjustment -= opt.amount;
-                }
-                _ => {
-                    // Default to capital gains if type is unknown
-                    year_entry.withheld_tax_capital_gains -= opt.amount;
-                    year_entry.tax_optimization_adjustment -= opt.amount;
-                }
-            }
-            info!(target: "tax_report",
-                "Applied tax optimization for {}: {} EUR (type: {})",
-                year, opt.amount, opt.tax_type
-            );
-        }
+        let gross = event.units * event.price_unit / native_per_eur;
+        let source = determine_source_country(event.identifier.as_deref(), &event.broker);
+        // Unknown treaty/source must not silently permit an Austrian-rate foreign credit.
+        let cap = source.and_then(|country| treaty_rate(country, kind)).unwrap_or(dec!(0)).min(rate);
+        let actual_percent = event.withholding_tax_percent.unwrap_or(dec!(0)).max(dec!(0));
+        let credit = gross * actual_percent.min(cap);
+        impact.impact_type = label.into();
+        impact.taxable_amount = gross;
+        impact.recorded_withholding_tax = event.withholding_tax_percent.map(|_| gross * actual_percent);
+        impact.withheld_tax = credit;
+        // Corrections reverse prior income and tax; floor only the annual liability.
+        impact.tax_liability = gross * rate - credit;
+        impact.tax_rate_percent = rate * dec!(100);
+        impact.source_country = source.map(str::to_owned);
+        impact.dtt_rate_percent = source.and_then(|country| treaty_rate(country, kind)).map(|r| r * dec!(100));
+        impact.is_tax_relevant = true;
+        impact.notes = format!("Gross income EUR {}; actual recorded withholding EUR {}; estimated credit EUR {}. Gross is not increased by withholding. Source/treaty eligibility and gross-versus-net import convention require review; liability before annual loss offset.", gross, gross * actual_percent, credit);
+        Ok(())
     }
 
-    post_process(
-        &mut taxable_amounts,
-        &mut currency_wacs,
-        &mut securities_wacs,
-    );
+    fn fund(&mut self, report: &FundTaxReport, eur_per_native: Decimal, impact: &mut TransactionTaxImpact) -> Result<()> {
+        ensure!(eur_per_native > dec!(0), "OeKB FX rate must be positive");
+        let units: Decimal = self.securities.values().filter(|w| w.identifier == report.isin).map(|w| w.units).sum();
+        if units == dec!(0) {
+            impact.impact_type = "OeKB: no holdings".into();
+            impact.notes = "No known units held at report inflow date".into();
+            return Ok(());
+        }
+        ensure!(report.dividend_aequivalent >= dec!(0), "Negative OeKB dividend-equivalent income requires proof of holding at the earlier unreported distribution; manual review required");
+        let adjustment = report.wac_adjustment * eur_per_native;
+        for wac in self.securities.values_mut().filter(|w| w.identifier == report.isin) {
+            ensure!(wac.average_cost + adjustment >= dec!(0), "OeKB correction would make acquisition basis negative");
+            wac.average_cost += adjustment;
+        }
+        impact.identifier = Some(report.isin.clone());
+        impact.units = units;
+        impact.price_unit = report.dividend_aequivalent;
+        impact.total = units * report.dividend_aequivalent;
+        impact.total_currency = report.currency.clone();
+        impact.taxable_amount = report.dividend_aequivalent * units * eur_per_native;
+        // Field 10288 is the published assessment credit; never infer a treaty from fund domicile.
+        // A distribution report may include credits on distributions: do not assign those to AGE.
+        let credit = if report.dividend == dec!(0) && report.intermittent_dividends == dec!(0) {
+            (report.withheld_dividend * units * eur_per_native).max(dec!(0)).min(impact.taxable_amount * self.rates.dividends)
+        } else { dec!(0) };
+        impact.withheld_tax = credit;
+        impact.tax_rate_percent = self.rates.dividends * dec!(100);
+        impact.tax_liability = (impact.taxable_amount * self.rates.dividends - credit).max(dec!(0));
+        impact.impact_type = "Dividend equivalent (OeKB)".into();
+        impact.is_tax_relevant = true;
+        impact.notes = format!("{} units at report inflow date; field 10287 income only, EUR basis adjustment/share {} from 10289. Field 10595 is an unreported-distribution warning, and 10759 is loss-offset information, neither is added to AGE. Distribution dates/credits and report corrections require reconciliation; imported investor-option column requires review. Report KESt field 10105 is not substituted for assessment liability.", units, adjustment);
+        Ok(())
+    }
 
+    fn record(&mut self, event: &PortfolioEvent, impact: &TransactionTaxImpact) {
+        if !impact.is_tax_relevant { return; }
+        let annual = self.amounts.entry(event.date.year()).or_default();
+        match event.event_type {
+            EventType::Trade => {
+                annual.capital_gains += impact.taxable_amount.max(dec!(0));
+                annual.capital_losses += (-impact.taxable_amount).max(dec!(0));
+                annual.withheld_tax_capital_gains += impact.recorded_withholding_tax.unwrap_or(dec!(0));
+            }
+            EventType::Dividend => {
+                annual.dividends += impact.taxable_amount;
+                annual.withheld_tax_dividends += impact.withheld_tax;
+                annual.tax_owed_dividends += impact.tax_liability;
+            }
+            EventType::CashInterest => {
+                annual.cash_interest += impact.taxable_amount;
+                annual.withheld_tax_interest += impact.withheld_tax;
+            }
+            EventType::ShareInterest => annual.share_lending_interest += impact.taxable_amount,
+            EventType::DividendAequivalent => {
+                annual.dividend_equivalents += impact.taxable_amount;
+                annual.tax_owed_dividend_equivalents += impact.tax_liability;
+            }
+            _ => {}
+        }
+    }
+}
+
+fn normalize_fund_shares(report: &mut FundTaxReport, split_factor: Decimal) -> Result<()> {
+    ensure!(split_factor > dec!(0), "OeKB split adjustment factor must be positive");
+    report.dividend_aequivalent /= split_factor;
+    report.wac_adjustment /= split_factor;
+    report.withheld_dividend /= split_factor;
+    Ok(())
+}
+
+fn base_impact(event: &PortfolioEvent) -> TransactionTaxImpact {
+    TransactionTaxImpact {
+        date: event.date, event_type: event.event_type.clone(), identifier: event.identifier.clone(), name: event.name.clone(),
+        direction: event.direction.clone(), currency: event.currency.clone(), units: event.units, price_unit: event.price_unit,
+        total: event.total, total_currency: event.total_currency.clone(), broker: event.broker.clone(), impact_type: String::new(),
+        taxable_amount: dec!(0), withheld_tax: dec!(0), tax_liability: dec!(0), tax_rate_percent: dec!(0),
+        recorded_withholding_tax: None,
+        source_country: None, dtt_rate_percent: None, notes: String::new(), is_tax_relevant: false,
+    }
+}
+
+pub(crate) async fn calculate_report(from: Option<DateTime<Utc>>, until: Option<DateTime<Utc>>) -> Result<(TaxationReport, Vec<PortfolioEvent>, Vec<TransactionTaxImpact>)> {
+    ensure!(from.zip(until).is_none_or(|(f, u)| f <= u), "Tax report start must not exceed end");
+    let events = load_events(until).await?;
+    let mut engine = TaxEngine::new();
+    let mut impacts = Vec::new();
+    for event in &events {
+        let count = in_range(event.date, from, until);
+        let impact = engine.process(event, count).await.with_context(|| format!("Tax event {:?} on {}", event.event_id, event.date))?;
+        if count { impacts.push(impact); }
+    }
+    for year in get_active_years().await? {
+        let start = Utc.with_ymd_and_hms(year, 1, 1, 0, 0, 0).unwrap();
+        if until.is_some_and(|u| start > u) { continue; }
+        let end = Utc.with_ymd_and_hms(year + 1, 1, 1, 0, 0, 0).unwrap() - chrono::Duration::nanoseconds(1);
+        for opt in get_tax_optimizations_by_date_range(start, end).await? {
+            if !in_range(opt.date, from, until) || opt.amount == dec!(0) { continue; }
+            let annual = engine.amounts.entry(opt.date.year()).or_default();
+            // Signed manual tax cash-flow information; not inferred taxable income or treaty credit.
+            annual.tax_optimization_adjustment -= opt.amount;
+        }
+    }
+    for annual in engine.amounts.values_mut() {
+        annual.net_capital_gains = annual.capital_gains - annual.capital_losses;
+        annual.tax_owed_dividends = annual.tax_owed_dividends.max(dec!(0));
+        annual.round_all(2);
+    }
     let report = TaxationReport {
-        created_at: Utc::now(),
-        from_date,
-        until_date,
-        taxable_amounts,
-        securities_wacs,
-        currency_wacs,
+        created_at: Utc::now(), from_date: from, until_date: until, taxable_amounts: engine.amounts,
+        securities_wacs: engine.securities, currency_wacs: BTreeMap::new(), limitations: limitations(),
     };
-
-    if from_date.is_none() && until_date.is_none() {
-        info!(target: "tax_report", "Exporting taxation report to JSON");
-        export_json(&report, "taxation")?;
-    }
-    info!(target: "tax_report", "Tax report generated successfully");
-
-    Ok(report)
+    Ok((report, events, impacts))
 }
 
-pub(crate) fn post_process(
-    taxable_amounts: &mut BTreeMap<i32, AnnualTaxableAmounts>,
-    currency_wacs: &mut BTreeMap<String, FxWac>,
-    securities_wacs: &mut BTreeMap<String, SecWac>,
-) {
-    for amounts in taxable_amounts.values_mut() {
-        amounts.net_capital_gains = (amounts.capital_gains - amounts.capital_losses).max(dec!(0.0));
-        amounts.tax_owed_dividends =
-            (amounts.dividends * dec!(0.275) - amounts.withheld_tax_dividends).max(dec!(0.0));
-        amounts.tax_owed_dividend_equivalents =
-            amounts.tax_owed_dividend_equivalents.max(dec!(0.0));
-        amounts.round_all(2);
-    }
-
-    currency_wacs.retain(|_, wac| wac.units > dec!(0));
-    securities_wacs.retain(|_, sec_wac| sec_wac.units > dec!(0));
-
-    for wac in currency_wacs.values_mut() {
-        wac.round_all();
-    }
-    for sec_wac in securities_wacs.values_mut() {
-        sec_wac.round_all();
-    }
-    info!(target: "tax_report", "Post-processing report data");
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
-
-    fn rates() -> TaxRates {
-        TaxRates {
-            interest: dec!(0.25),
-            capital_gains: dec!(0.275),
-            dividends: dec!(0.275),
-        }
-    }
-
-    fn date(year: i32, month: u32, day: u32) -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(year, month, day, 12, 0, 0).unwrap()
-    }
-
-    fn trade(
-        direction: TradeDirection,
-        units: Decimal,
-        price: Decimal,
-        when: DateTime<Utc>,
-    ) -> PortfolioEvent {
+    fn event(direction: TradeDirection, units: Decimal, price: Decimal, fx: Decimal, broker: &str) -> PortfolioEvent {
         PortfolioEvent {
-            event_id: None,
-            date: when,
-            event_type: EventType::Trade,
-            currency: "EUR".to_string(),
-            units,
-            price_unit: price,
-            identifier: Some("US0378331005".to_string()),
-            name: Some("Apple".to_string()),
-            unit_label: None,
-            direction: Some(direction),
-            applied_fx_rate: Some(dec!(1)),
-            withholding_tax_percent: None,
-            total: units * price,
-            total_currency: "EUR".to_string(),
-            broker: "Trading212".to_string(),
-            tax_supported: true,
+            event_id: None, date: Utc.with_ymd_and_hms(2024, 6, 1, 12, 0, 0).unwrap(), event_type: EventType::Trade,
+            identifier: Some("US0378331005".into()), name: Some("Apple".into()), unit_label: None, currency: "USD".into(),
+            units, price_unit: price, direction: Some(direction), applied_fx_rate: Some(fx), withholding_tax_percent: None,
+            total: units * price, total_currency: "USD".into(), broker: broker.into(), tax_supported: true,
         }
-    }
-
-    fn dividend(amount: Decimal, wht: Decimal, isin: &str, broker: &str) -> PortfolioEvent {
-        PortfolioEvent {
-            event_id: None,
-            date: date(2024, 6, 1),
-            event_type: EventType::Dividend,
-            currency: "EUR".to_string(),
-            units: dec!(1),
-            price_unit: amount,
-            identifier: Some(isin.to_string()),
-            name: Some("Fund".to_string()),
-            unit_label: None,
-            direction: None,
-            applied_fx_rate: Some(dec!(1)),
-            withholding_tax_percent: Some(wht),
-            total: amount,
-            total_currency: "EUR".to_string(),
-            broker: broker.to_string(),
-            tax_supported: true,
-        }
-    }
-
-    #[test]
-    fn date_window_filters_taxable_events() {
-        let mut taxable_amounts = BTreeMap::new();
-        let mut currency_wacs = BTreeMap::new();
-        let mut securities_wacs = BTreeMap::new();
-        let tax_rates = rates();
-        let ctx = ProcessingContext {
-            taxable_amounts: &mut taxable_amounts,
-            currency_wacs: &mut currency_wacs,
-            securities_wacs: &mut securities_wacs,
-            tax_rates: &tax_rates,
-            year: 2024,
-            from_date: Some(date(2024, 3, 1)),
-            until_date: Some(date(2024, 9, 1)),
-        };
-        assert!(ctx.should_count_taxable(date(2024, 6, 1)));
-        assert!(!ctx.should_count_taxable(date(2024, 1, 1)));
-        assert!(!ctx.should_count_taxable(date(2024, 12, 1)));
-    }
-
-    #[test]
-    fn apply_taxation_splits_interest_and_dividends() {
-        let mut taxable_amounts = BTreeMap::new();
-        let mut currency_wacs = BTreeMap::new();
-        let mut securities_wacs = BTreeMap::new();
-        let tax_rates = rates();
-        let mut ctx = ProcessingContext {
-            taxable_amounts: &mut taxable_amounts,
-            currency_wacs: &mut currency_wacs,
-            securities_wacs: &mut securities_wacs,
-            tax_rates: &tax_rates,
-            year: 2024,
-            from_date: None,
-            until_date: None,
-        };
-        apply_taxation(&mut ctx, "interest", dec!(100), dec!(10)).unwrap();
-        apply_taxation(&mut ctx, "dividends", dec!(80), dec!(12)).unwrap();
-        let year = ctx.get_year_entry();
-        assert_eq!(year.cash_interest, dec!(110));
-        assert_eq!(year.withheld_tax_interest, dec!(10));
-        assert_eq!(year.dividends, dec!(92));
-        assert_eq!(year.withheld_tax_dividends, dec!(12));
-    }
-
-    #[test]
-    fn eur_sell_records_gain_and_loss() {
-        let mut taxable_amounts = BTreeMap::new();
-        let mut currency_wacs = BTreeMap::new();
-        let mut securities_wacs = BTreeMap::new();
-        securities_wacs.insert(
-            "US0378331005".to_string(),
-            SecWac {
-                units: dec!(10),
-                average_cost: dec!(100),
-                weighted_avg_fx_rate: dec!(1),
-                name: "Apple".to_string(),
-            },
-        );
-        let tax_rates = rates();
-        let mut ctx = ProcessingContext {
-            taxable_amounts: &mut taxable_amounts,
-            currency_wacs: &mut currency_wacs,
-            securities_wacs: &mut securities_wacs,
-            tax_rates: &tax_rates,
-            year: 2024,
-            from_date: None,
-            until_date: None,
-        };
-        process_eur_sell(
-            trade(TradeDirection::Sell, dec!(4), dec!(150), date(2024, 6, 1)),
-            &mut ctx,
-            "US0378331005",
-        )
-        .unwrap();
-        process_eur_sell(
-            trade(TradeDirection::Sell, dec!(4), dec!(50), date(2024, 7, 1)),
-            &mut ctx,
-            "US0378331005",
-        )
-        .unwrap();
-        let year = ctx.get_year_entry();
-        assert_eq!(year.capital_gains, dec!(200));
-        assert_eq!(year.capital_losses, dec!(200));
-    }
-
-    #[test]
-    fn dtt_caps_us_dividend_withholding() {
-        let mut taxable_amounts = BTreeMap::new();
-        let mut currency_wacs = BTreeMap::new();
-        let mut securities_wacs = BTreeMap::new();
-        let tax_rates = rates();
-        let mut ctx = ProcessingContext {
-            taxable_amounts: &mut taxable_amounts,
-            currency_wacs: &mut currency_wacs,
-            securities_wacs: &mut securities_wacs,
-            tax_rates: &tax_rates,
-            year: 2024,
-            from_date: None,
-            until_date: None,
-        };
-        let event = dividend(dec!(100), dec!(0.30), "US0378331005", "Trading212");
-        let (taxed, withheld) = calculate_taxable_values(&event, &mut ctx, dec!(1)).unwrap();
-        assert_eq!(taxed, dec!(100));
-        assert_eq!(withheld, dec!(15));
-    }
-
-    #[test]
-    fn foreign_withholding_uses_native_units_per_eur_rate() {
-        let mut taxable_amounts = BTreeMap::new();
-        let mut currency_wacs = BTreeMap::new();
-        let mut securities_wacs = BTreeMap::new();
-        let tax_rates = rates();
-        let mut ctx = ProcessingContext {
-            taxable_amounts: &mut taxable_amounts,
-            currency_wacs: &mut currency_wacs,
-            securities_wacs: &mut securities_wacs,
-            tax_rates: &tax_rates,
-            year: 2024,
-            from_date: None,
-            until_date: None,
-        };
-        let mut event = dividend(dec!(100), dec!(0.15), "US0378331005", "Trading212");
-        event.currency = "USD".to_string();
-
-        let (taxed, withheld) =
-            calculate_taxable_values(&event, &mut ctx, dec!(10) / dec!(9)).unwrap();
-
-        assert_eq!(taxed, dec!(90));
-        assert_eq!(withheld, dec!(13.5));
-    }
-
-    #[test]
-    fn post_process_nets_gains_and_drops_empty_wacs() {
-        let mut amounts = BTreeMap::new();
-        amounts.insert(2024, {
-            let mut a = AnnualTaxableAmounts::zero();
-            a.capital_gains = dec!(500);
-            a.capital_losses = dec!(200);
-            a.dividends = dec!(100);
-            a.withheld_tax_dividends = dec!(10);
-            a
-        });
-        let mut currency_wacs = BTreeMap::from([(
-            "USD".to_string(),
-            FxWac {
-                units: dec!(0),
-                avg_rate: dec!(1.1),
-            },
-        )]);
-        let mut securities_wacs = BTreeMap::from([(
-            "US0378331005".to_string(),
-            SecWac {
-                units: dec!(2),
-                average_cost: dec!(10.126),
-                weighted_avg_fx_rate: dec!(1.119),
-                name: "Apple".to_string(),
-            },
-        )]);
-        post_process(&mut amounts, &mut currency_wacs, &mut securities_wacs);
-        let year = amounts.get(&2024).unwrap();
-        assert_eq!(year.net_capital_gains, dec!(300));
-        assert_eq!(year.tax_owed_dividends, dec!(17.50));
-        assert!(currency_wacs.is_empty());
-        assert_eq!(securities_wacs["US0378331005"].average_cost, dec!(10.13));
     }
 
     #[tokio::test]
-    async fn buy_then_sell_produces_kz_capital_gain() {
-        let mut taxable_amounts = BTreeMap::new();
-        let mut currency_wacs = BTreeMap::new();
-        let mut securities_wacs = BTreeMap::new();
-        let tax_rates = rates();
-        let mut ctx = ProcessingContext {
-            taxable_amounts: &mut taxable_amounts,
-            currency_wacs: &mut currency_wacs,
-            securities_wacs: &mut securities_wacs,
-            tax_rates: &tax_rates,
-            year: 2024,
-            from_date: None,
-            until_date: None,
+    async fn historical_eur_wac_includes_security_fx_and_excludes_cash_overlap() {
+        let mut engine = TaxEngine::new();
+        engine.process(&event(TradeDirection::Buy, dec!(10), dec!(100), dec!(2), "A"), false).await.unwrap();
+        engine.process(&event(TradeDirection::Buy, dec!(10), dec!(100), dec!(1), "A"), false).await.unwrap();
+        assert_eq!(engine.securities[&pool_key("A", "US0378331005")].average_cost, dec!(75));
+        let sale = engine.process(&event(TradeDirection::Sell, dec!(10), dec!(100), dec!(1), "A"), true).await.unwrap();
+        assert_eq!(sale.taxable_amount, dec!(250));
+        assert_eq!(engine.amounts[&2024].capital_gains, sale.taxable_amount);
+        assert_eq!(engine.amounts[&2024].fx_appreciation, None);
+        assert_eq!(engine.securities[&pool_key("A", "US0378331005")].units, dec!(10));
+    }
+
+    #[tokio::test]
+    async fn brokers_are_separate_and_oversells_fail() {
+        let mut engine = TaxEngine::new();
+        engine.process(&event(TradeDirection::Buy, dec!(10), dec!(100), dec!(1), "A"), false).await.unwrap();
+        engine.process(&event(TradeDirection::Buy, dec!(10), dec!(200), dec!(1), "B"), false).await.unwrap();
+        let sale = engine.process(&event(TradeDirection::Sell, dec!(10), dec!(150), dec!(1), "A"), true).await.unwrap();
+        assert_eq!(sale.taxable_amount, dec!(500));
+        assert!(engine.process(&event(TradeDirection::Sell, dec!(11), dec!(150), dec!(1), "B"), true).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn dated_sales_reduce_basis_even_outside_income_window() {
+        let mut engine = TaxEngine::new();
+        engine.process(&event(TradeDirection::Buy, dec!(10), dec!(100), dec!(1), "A"), false).await.unwrap();
+        engine.process(&event(TradeDirection::Sell, dec!(10), dec!(120), dec!(1), "A"), false).await.unwrap();
+        engine.process(&event(TradeDirection::Buy, dec!(2), dec!(300), dec!(1), "A"), false).await.unwrap();
+        let sale = engine.process(&event(TradeDirection::Sell, dec!(1), dec!(350), dec!(1), "A"), true).await.unwrap();
+        assert_eq!(sale.taxable_amount, dec!(50));
+        assert_eq!(engine.amounts[&2024].capital_gains, dec!(50));
+    }
+
+    #[tokio::test]
+    async fn gross_dividend_is_not_grossed_up_by_treaty_credit() {
+        let mut engine = TaxEngine::new();
+        let mut dividend = event(TradeDirection::Buy, dec!(100), dec!(1), dec!(2), "A");
+        dividend.event_type = EventType::Dividend;
+        dividend.direction = None;
+        dividend.withholding_tax_percent = Some(dec!(0.30));
+        let impact = engine.process(&dividend, true).await.unwrap();
+        assert_eq!(impact.taxable_amount, dec!(50));
+        assert_eq!(impact.withheld_tax, dec!(7.5));
+        assert_eq!(impact.tax_liability, dec!(6.25));
+        assert_eq!(engine.amounts[&2024].dividends, impact.taxable_amount);
+        assert_eq!(engine.amounts[&2024].withheld_tax_dividends, impact.withheld_tax);
+        assert_eq!(engine.amounts[&2024].tax_owed_dividends, impact.tax_liability);
+    }
+
+    #[tokio::test]
+    async fn dividend_reversals_cancel_income_credits_and_tax() {
+        for withholding_percent in [dec!(0), dec!(0.30)] {
+            let mut engine = TaxEngine::new();
+            let mut dividend = event(TradeDirection::Buy, dec!(100), dec!(1), dec!(1), "A");
+            dividend.event_type = EventType::Dividend;
+            dividend.direction = None;
+            dividend.currency = "EUR".into();
+            dividend.withholding_tax_percent = Some(withholding_percent);
+            let original = engine.process(&dividend, true).await.unwrap();
+            dividend.units = dec!(-100);
+            dividend.total = dec!(-100);
+            let reversal = engine.process(&dividend, true).await.unwrap();
+            assert_eq!(reversal.taxable_amount, -original.taxable_amount);
+            assert_eq!(reversal.recorded_withholding_tax, original.recorded_withholding_tax.map(|tax| -tax));
+            assert_eq!(reversal.withheld_tax, -original.withheld_tax);
+            assert_eq!(reversal.tax_liability, -original.tax_liability);
+            let annual = &engine.amounts[&2024];
+            assert_eq!(annual.dividends, dec!(0));
+            assert_eq!(annual.withheld_tax_dividends, dec!(0));
+            assert_eq!(annual.tax_owed_dividends, dec!(0));
+
+            // A corrected replacement must be taxed once, after cancelling the original.
+            dividend.units = dec!(80);
+            dividend.total = dec!(80);
+            let replacement = engine.process(&dividend, true).await.unwrap();
+            let annual = &engine.amounts[&2024];
+            assert_eq!(annual.dividends, dec!(80));
+            assert_eq!(annual.withheld_tax_dividends, replacement.withheld_tax);
+            assert_eq!(annual.tax_owed_dividends, replacement.tax_liability);
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_fx_is_not_treated_as_parity() {
+        let mut engine = TaxEngine::new();
+        let mut buy = event(TradeDirection::Buy, dec!(1), dec!(100), dec!(1), "A");
+        buy.applied_fx_rate = None;
+        assert!(engine.process(&buy, false).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn fund_adjustment_is_eur_and_warning_fields_are_not_income() {
+        let mut engine = TaxEngine::new();
+        let buy = event(TradeDirection::Buy, dec!(10), dec!(100), dec!(2), "A");
+        engine.process(&buy, false).await.unwrap();
+        let report = FundTaxReport {
+            id: 1, date: buy.date, isin: buy.identifier.clone().unwrap(), currency: "USD".into(),
+            dividend: dec!(0), dividend_aequivalent: dec!(4), intermittent_dividends: dec!(1),
+            withheld_dividend: dec!(0), wac_adjustment: dec!(6), inlaendische_dividenden: dec!(9),
+            kest_inlaendische_dividenden: dec!(2), kest_per_share: dec!(999),
         };
+        let mut impact = base_impact(&buy);
+        engine.fund(&report, dec!(0.5), &mut impact).unwrap();
+        assert_eq!(impact.taxable_amount, dec!(20));
+        assert_eq!(impact.tax_liability, dec!(5.5));
+        assert_eq!(engine.securities[&pool_key("A", "US0378331005")].average_cost, dec!(53));
+        let sale = engine.process(&event(TradeDirection::Sell, dec!(10), dec!(120), dec!(2), "A"), true).await.unwrap();
+        assert_eq!(sale.taxable_amount, dec!(70));
+    }
 
-        process_event(
-            trade(TradeDirection::Buy, dec!(10), dec!(100), date(2024, 1, 10)),
-            &mut ctx,
-        )
-        .await
-        .unwrap();
-        process_event(
-            trade(TradeDirection::Sell, dec!(10), dec!(150), date(2024, 8, 10)),
-            &mut ctx,
-        )
-        .await
-        .unwrap();
-        process_event(
-            dividend(dec!(40), dec!(0.15), "US0378331005", "Trading212"),
-            &mut ctx,
-        )
-        .await
-        .unwrap();
+    #[tokio::test]
+    async fn fund_historical_per_share_values_match_split_adjusted_holdings() {
+        let mut engine = TaxEngine::new();
+        let buy = event(TradeDirection::Buy, dec!(20), dec!(50), dec!(1), "A");
+        engine.process(&buy, false).await.unwrap();
+        let mut report = FundTaxReport {
+            id: 1, date: buy.date, isin: buy.identifier.clone().unwrap(), currency: "EUR".into(),
+            dividend: dec!(0), dividend_aequivalent: dec!(4), intermittent_dividends: dec!(0),
+            withheld_dividend: dec!(1), wac_adjustment: dec!(6), inlaendische_dividenden: dec!(0),
+            kest_inlaendische_dividenden: dec!(0), kest_per_share: dec!(0),
+        };
+        normalize_fund_shares(&mut report, dec!(2)).unwrap();
+        let mut impact = base_impact(&buy);
+        engine.fund(&report, dec!(1), &mut impact).unwrap();
+        assert_eq!(impact.taxable_amount, dec!(40));
+        assert_eq!(impact.withheld_tax, dec!(10));
+        assert_eq!(engine.securities[&pool_key("A", "US0378331005")].average_cost, dec!(53));
+    }
 
-        post_process(
-            &mut taxable_amounts,
-            &mut currency_wacs,
-            &mut securities_wacs,
-        );
-        let year = taxable_amounts.get(&2024).unwrap();
-        assert_eq!(year.capital_gains, dec!(500));
-        assert_eq!(year.capital_losses, dec!(0));
-        assert_eq!(year.net_capital_gains, dec!(500));
-        assert_eq!(year.dividends, dec!(46));
-        assert_eq!(year.withheld_tax_dividends, dec!(6));
-        assert!(securities_wacs.is_empty());
+    #[tokio::test]
+    async fn fees_in_cash_total_do_not_enter_security_tax_basis_or_proceeds() {
+        let mut engine = TaxEngine::new();
+        let mut buy = event(TradeDirection::Buy, dec!(1), dec!(100), dec!(1), "A");
+        buy.total = dec!(110);
+        engine.process(&buy, false).await.unwrap();
+        let mut sell = event(TradeDirection::Sell, dec!(1), dec!(120), dec!(1), "A");
+        sell.total = dec!(110);
+        let impact = engine.process(&sell, true).await.unwrap();
+        assert_eq!(impact.taxable_amount, dec!(20));
+    }
+
+    #[tokio::test]
+    async fn unknown_treaty_source_does_not_receive_assumed_credit() {
+        let mut engine = TaxEngine::new();
+        let mut dividend = event(TradeDirection::Buy, dec!(100), dec!(1), dec!(1), "A");
+        dividend.event_type = EventType::Dividend;
+        dividend.identifier = Some("CH0000000000".into());
+        dividend.withholding_tax_percent = Some(dec!(0.35));
+        let impact = engine.process(&dividend, true).await.unwrap();
+        assert_eq!(impact.withheld_tax, dec!(0));
+        assert_eq!(impact.taxable_amount, dec!(100));
+    }
+
+    #[test]
+    fn inclusive_range_preserves_subsecond_year_end() {
+        let date = Utc.with_ymd_and_hms(2024, 12, 31, 23, 59, 59).unwrap() + chrono::Duration::milliseconds(999);
+        assert!(in_range(date, Some(date), Some(date)));
+        assert!(!in_range(date, None, Some(date - chrono::Duration::nanoseconds(1))));
     }
 }

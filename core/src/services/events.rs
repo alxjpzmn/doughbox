@@ -263,6 +263,37 @@ fn try_get_col<T: for<'a> tokio_postgres::types::FromSql<'a>>(
     })
 }
 
+/// Income native amounts are gross. Never infer FX from a potentially net/account-
+/// currency `amount_eur` total or gross up by only the treaty-creditable tax.
+async fn income_tax_values(
+    gross: Decimal,
+    withholding: Decimal,
+    currency: &str,
+    withholding_currency: &str,
+    date: DateTime<Utc>,
+) -> anyhow::Result<(Option<Decimal>, Option<Decimal>)> {
+    let eur_per_native = if currency == "EUR" {
+        dec!(1)
+    } else {
+        get_exchange_rate(currency, "EUR", &date.date_naive()).await?
+    };
+    anyhow::ensure!(eur_per_native > dec!(0), "Income FX rate must be positive");
+    let withholding_native = if withholding == dec!(0) || withholding_currency == currency {
+        withholding.abs()
+    } else {
+        let eur_per_withholding = if withholding_currency == "EUR" {
+            dec!(1)
+        } else {
+            get_exchange_rate(withholding_currency, "EUR", &date.date_naive()).await?
+        };
+        anyhow::ensure!(eur_per_withholding > dec!(0), "Withholding FX rate must be positive");
+        withholding.abs() * eur_per_withholding / eur_per_native
+    };
+    anyhow::ensure!(gross != dec!(0) || withholding_native == dec!(0), "Withholding with zero gross income requires manual correction on {}", date);
+    let percent = if gross != dec!(0) { withholding_native / gross.abs() } else { dec!(0) };
+    Ok((Some(dec!(1) / eur_per_native), Some(percent)))
+}
+
 async fn process_interest_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent>> {
     let mut events = Vec::new();
     for (idx, row) in rows.iter().enumerate() {
@@ -288,77 +319,10 @@ async fn process_interest_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEv
         let withholding_tax_currency =
             withholding_tax_currency.unwrap_or_else(|| event_currency.clone());
 
-        // Calculate withholding tax percent
-        let withholding_tax_percent = if !tax_supported {
-            None
-        } else if withholding_tax == dec!(0.0) {
-            Some(dec!(0.0))
-        } else if amount == dec!(0.0) || amount_eur == dec!(0.0) {
-            // Can't calculate percentage with zero amount — skip withholding tax
-            log::warn!(
-                "Skipping withholding tax percent for zero-amount interest on {}. Amount: {}, Amount EUR: {}",
-                date, amount, amount_eur
-            );
-            None
-        } else if withholding_tax_currency == event_currency {
-            // Same currency - simple division
-            Some(withholding_tax / amount)
-        } else if withholding_tax_currency == "EUR" {
-            // Withholding tax already in EUR - use amount_eur
-            Some(withholding_tax / amount_eur)
-        } else if event_currency == "EUR" {
-            // Event is in EUR but withholding tax is in different currency - convert tax to EUR
-            let naive_date = date.date_naive();
-            match get_exchange_rate(&withholding_tax_currency, "EUR", &naive_date).await {
-                Ok(fx_rate) => {
-                    let withholding_tax_eur = withholding_tax * fx_rate;
-                    Some(withholding_tax_eur / amount_eur)
-                }
-                Err(e) => {
-                    return Err(anyhow::anyhow!(
-                        "Cannot calculate withholding tax percent for interest on {}: \
-                         cannot convert withholding tax from {} to EUR. \
-                         Event currency: EUR, Withholding tax: {} {}, Amount EUR: {}. \
-                         Please ensure FX rates are available. Error: {}",
-                        date,
-                        withholding_tax_currency,
-                        withholding_tax,
-                        withholding_tax_currency,
-                        amount_eur,
-                        e
-                    ));
-                }
-            }
+        let (applied_fx_rate, withholding_tax_percent) = if tax_supported {
+            income_tax_values(amount, withholding_tax, &event_currency, &withholding_tax_currency, date).await?
         } else {
-            // Neither is EUR - convert withholding tax to EUR and calculate
-            let naive_date = date.date_naive();
-            match get_exchange_rate(&withholding_tax_currency, "EUR", &naive_date).await {
-                Ok(fx_rate) => {
-                    let withholding_tax_eur = withholding_tax * fx_rate;
-                    Some(withholding_tax_eur / amount_eur)
-                }
-                Err(e) => {
-                    return Err(anyhow::anyhow!(
-                        "Cannot calculate withholding tax percent for interest on {}: \
-                         cannot convert withholding tax from {} to EUR. \
-                         Event currency: {}, Withholding tax: {} {}, Amount EUR: {}. \
-                         Please ensure FX rates are available. Error: {}",
-                        date,
-                        withholding_tax_currency,
-                        event_currency,
-                        withholding_tax,
-                        withholding_tax_currency,
-                        amount_eur,
-                        e
-                    ));
-                }
-            }
-        };
-
-        let applied_fx_rate = if amount_eur != dec!(0.0) {
-            Some(amount / amount_eur)
-        } else {
-            None
+            (None, None)
         };
 
         let event = PortfolioEvent {
@@ -458,88 +422,15 @@ async fn process_dividend_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEv
         let withholding_tax_currency =
             withholding_tax_currency.unwrap_or_else(|| event_currency.clone());
 
-        // Calculate withholding tax percent
-        let withholding_tax_percent = if withholding_tax == dec!(0.0) {
-            Some(dec!(0.0))
-        } else if amount == dec!(0.0) || amount_eur == dec!(0.0) {
-            log::warn!(
-                "Skipping withholding tax percent for zero-amount dividend on {} (ISIN: {}). Amount: {}, Amount EUR: {}",
-                date,
-                isin,
-                amount,
-                amount_eur
-            );
-            None
-        } else if withholding_tax_currency == event_currency {
-            // Same currency - simple division
-            Some(withholding_tax / amount)
-        } else if withholding_tax_currency == "EUR" {
-            // Withholding tax already in EUR - use amount_eur
-            Some(withholding_tax / amount_eur)
-        } else if event_currency == "EUR" {
-            // Event is in EUR but withholding tax is in different currency - convert tax to EUR
-            let naive_date = date.date_naive();
-            match get_exchange_rate(&withholding_tax_currency, "EUR", &naive_date).await {
-                Ok(fx_rate) => {
-                    let withholding_tax_eur = withholding_tax * fx_rate;
-                    Some(withholding_tax_eur / amount_eur)
-                }
-                Err(e) => {
-                    return Err(anyhow::anyhow!(
-                        "Cannot calculate withholding tax percent for dividend on {} (ISIN: {}): \
-                         cannot convert withholding tax from {} to EUR. \
-                         Event currency: EUR, Withholding tax: {} {}, Amount EUR: {}. \
-                         Please ensure FX rates are available. Error: {}",
-                        date,
-                        isin,
-                        withholding_tax_currency,
-                        withholding_tax,
-                        withholding_tax_currency,
-                        amount_eur,
-                        e
-                    ));
-                }
-            }
-        } else {
-            // Neither is EUR - convert withholding tax to EUR and calculate
-            let naive_date = date.date_naive();
-            match get_exchange_rate(&withholding_tax_currency, "EUR", &naive_date).await {
-                Ok(fx_rate) => {
-                    let withholding_tax_eur = withholding_tax * fx_rate;
-                    Some(withholding_tax_eur / amount_eur)
-                }
-                Err(e) => {
-                    return Err(anyhow::anyhow!(
-                        "Cannot calculate withholding tax percent for dividend on {} (ISIN: {}): \
-                         cannot convert withholding tax from {} to EUR. \
-                         Event currency: {}, Withholding tax: {} {}, Amount EUR: {}. \
-                         Please ensure FX rates are available. Error: {}",
-                        date,
-                        isin,
-                        withholding_tax_currency,
-                        event_currency,
-                        withholding_tax,
-                        withholding_tax_currency,
-                        amount_eur,
-                        e
-                    ));
-                }
-            }
-        };
-
-        // Calculate FX rate only if amount_eur is not zero
-        let applied_fx_rate = if amount_eur != dec!(0.0) {
-            Some(amount / amount_eur)
-        } else {
-            None
-        };
+        let (applied_fx_rate, withholding_tax_percent) =
+            income_tax_values(amount, withholding_tax, &event_currency, &withholding_tax_currency, date).await?;
 
         let event = PortfolioEvent {
             event_id: Some(try_get_col(row, 8, "id", &ctx)?),
             date,
             event_type: EventType::Dividend,
-            identifier: Some(name_map.get(&isin).unwrap_or(&&isin).to_string()),
-            name: None,
+            identifier: Some(get_changed_identifier(&isin, listing_changes.clone())),
+            name: Some(name_map.get(&get_changed_identifier(&isin, listing_changes.clone())).unwrap_or(&&isin).to_string()),
             unit_label: None,
             units: amount,
             price_unit: dec!(1.00),
@@ -596,19 +487,9 @@ async fn process_trade_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent
         let withholding_tax_currency =
             withholding_tax_currency.unwrap_or_else(|| event_currency.clone());
 
-        // Calculate trade amounts
-        let trade_amount = units
-            * if price_per_unit == dec!(0.0) {
-                dec!(1)
-            } else {
-                price_per_unit
-            };
-        let trade_amount_eur = units
-            * if eur_price_per_unit == dec!(0.0) {
-                dec!(1)
-            } else {
-                eur_price_per_unit
-            };
+        // Prices are gross and fee-exclusive. A zero-value disposal is not a one-unit-price sale.
+        let trade_amount = units * price_per_unit;
+        let trade_amount_eur = units * eur_price_per_unit;
 
         // Calculate withholding tax percent
         let withholding_tax_percent = if withholding_tax == dec!(0.0) {
@@ -686,14 +567,12 @@ async fn process_trade_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent
         );
         let isin = get_changed_identifier(&isin_raw, listing_changes.clone());
 
-        let applied_fx_rate = if price_per_unit == dec!(0.0) {
-            dec!(1)
+        let applied_fx_rate = if event_currency == "EUR" || price_per_unit == dec!(0) {
+            Some(dec!(1))
+        } else if eur_price_per_unit > dec!(0) {
+            Some(price_per_unit / eur_price_per_unit)
         } else {
-            price_per_unit
-        } / if eur_price_per_unit == dec!(0.0) {
-            dec!(1.0)
-        } else {
-            eur_price_per_unit
+            None
         };
 
         let event = PortfolioEvent {
@@ -711,7 +590,7 @@ async fn process_trade_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent
             } else {
                 TradeDirection::Sell
             }),
-            applied_fx_rate: Some(applied_fx_rate),
+            applied_fx_rate,
             withholding_tax_percent,
             total: split_adjusted_units * split_adjusted_price_per_unit,
             total_currency: event_currency.clone(),
@@ -736,6 +615,7 @@ fn process_fx_conversion_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEve
         let to_currency: String = try_get_col(row, 4, "to_currency", &ctx)?;
         let broker: String = try_get_col(row, 5, "broker", &ctx)?;
 
+        anyhow::ensure!(from_amount > dec!(0) && to_amount > dec!(0), "FX conversion amounts must be positive on {}", date);
         let event = PortfolioEvent {
             event_id: Some(try_get_col(row, 6, "id", &ctx)?),
             date,
@@ -905,4 +785,32 @@ fn process_asset_valuation_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioE
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tax_event_tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    #[tokio::test]
+    async fn income_preserves_gross_and_actual_withholding_before_treaty_cap() {
+        let date = Utc.with_ymd_and_hms(2024, 6, 1, 0, 0, 0).unwrap();
+        let (rate, percent) = income_tax_values(dec!(100), dec!(30), "EUR", "EUR", date).await.unwrap();
+        assert_eq!(rate, Some(dec!(1)));
+        assert_eq!(percent, Some(dec!(0.30)));
+    }
+
+    #[tokio::test]
+    async fn income_reversal_preserves_the_refunded_withholding_rate() {
+        let date = Utc.with_ymd_and_hms(2024, 6, 1, 0, 0, 0).unwrap();
+        let (rate, percent) = income_tax_values(dec!(-100), dec!(-30), "EUR", "EUR", date).await.unwrap();
+        assert_eq!(rate, Some(dec!(1)));
+        assert_eq!(percent, Some(dec!(0.30)));
+    }
+
+    #[tokio::test]
+    async fn withholding_on_zero_income_is_an_error_not_silent_zero_tax() {
+        let date = Utc.with_ymd_and_hms(2024, 6, 1, 0, 0, 0).unwrap();
+        assert!(income_tax_values(dec!(0), dec!(10), "EUR", "EUR", date).await.is_err());
+    }
 }

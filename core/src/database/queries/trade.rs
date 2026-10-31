@@ -10,18 +10,6 @@ use crate::{
     services::instruments::identifiers::get_changed_identifier,
 };
 
-pub async fn get_realized_return() -> anyhow::Result<Decimal> {
-    let client = db_client().await?;
-
-    let result = client
-        .query_one(
-            "select SUM(t.eur_avg_price_per_unit * t.units) from trade t where direction = 'Sell'",
-            &[],
-        )
-        .await?;
-
-    Ok(result.try_get::<usize, Decimal>(0).unwrap_or(dec!(0.0)))
-}
 
 pub async fn find_similar_trade(trade: &Trade) -> anyhow::Result<Option<TradeWithHash>> {
     let client = db_client().await?;
@@ -124,15 +112,3 @@ pub async fn get_trades(filter: QueryFilter) -> anyhow::Result<Vec<Trade>> {
     Ok(trades)
 }
 
-pub async fn get_total_invested_value() -> anyhow::Result<Decimal> {
-    let client = db_client().await?;
-
-    let result = client
-        .query_one(
-            "select SUM(t.eur_avg_price_per_unit * t.units) from trade t where direction = 'Buy'",
-            &[],
-        )
-        .await?;
-
-    Ok(result.try_get::<usize, Decimal>(0).unwrap_or(dec!(0.0)))
-}

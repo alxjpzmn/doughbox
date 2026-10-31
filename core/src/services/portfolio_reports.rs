@@ -13,6 +13,9 @@ use super::{notifications::Notification, portfolio::PortfolioOverview};
 /// Validate before either publishing a report or persisting a performance
 /// snapshot, so missing valuations never become authoritative totals.
 pub fn complete_snapshot(overview: &PortfolioOverview) -> anyhow::Result<PerformanceSignal> {
+    if let Some(gap) = overview.security_history_gaps.first() {
+        return Err(gap.clone().into());
+    }
     anyhow::ensure!(overview.valuation_complete,
         "Portfolio valuation is incomplete (missing prices: {}); not saving a snapshot or sending notifications",
         overview.unpriced_isins.join(", "));
@@ -23,6 +26,8 @@ pub fn complete_snapshot(overview: &PortfolioOverview) -> anyhow::Result<Perform
         date: Utc::now(),
         total_value: overview.total_value,
         total_invested: overview.total_value - overview.total_return_abs,
+        gross_invested: Some(overview.total_invested),
+        components: Some(overview.performance_components.clone()),
     })
 }
 
@@ -115,16 +120,57 @@ mod tests {
         let mut overview = PortfolioOverview {
             generated_at: 0, total_value: dec!(1200), realized: dec!(0),
             total_return_abs: dec!(200), total_return_rel: dec!(20),
+            total_invested: dec!(1500),
+            income: dec!(0), performance_components: vec![],
             returns_incomplete: false, unpriced_assets: 0, positions: vec![],
             valuation_complete: true, unpriced_isins: vec![],
+            security_history_gaps: vec![],
         };
         let complete = complete_snapshot(&overview).unwrap();
         assert_eq!(complete.total_invested, dec!(1000));
+        assert_eq!(complete.gross_invested, Some(dec!(1500)));
         overview.valuation_complete = false;
         assert!(complete_snapshot(&overview).is_err());
         overview.valuation_complete = true;
         overview.returns_incomplete = true;
         overview.unpriced_assets = 1;
         assert!(complete_snapshot(&overview).is_err());
+        overview.returns_incomplete = false;
+        overview.unpriced_assets = 0;
+        overview.security_history_gaps.push(super::super::performance::SecurityHistoryGap {
+            isin: "missing".into(), broker: "Test".into(), date: Utc::now(),
+            available_units: dec!(2), sold_units: dec!(3),
+        });
+        let error = complete_snapshot(&overview).unwrap_err();
+        let gap = error.downcast_ref::<super::super::performance::SecurityHistoryGap>().unwrap();
+        assert_eq!(gap.available_units, dec!(2));
+        assert_eq!(gap.sold_units, dec!(3));
+    }
+
+    #[test]
+    fn snapshots_preserve_sub_cent_returns_and_contributions() {
+        for (cost, value) in [(dec!(0.03), dec!(0.034)), (dec!(0.003), dec!(0.0034))] {
+            let overview = PortfolioOverview {
+                generated_at: 0, total_value: value, realized: dec!(0),
+                total_return_abs: value - cost, total_return_rel: dec!(13.33),
+                total_invested: cost,
+                income: dec!(0), performance_components: vec![],
+                returns_incomplete: false, unpriced_assets: 0, positions: vec![],
+                valuation_complete: true, unpriced_isins: vec![],
+                security_history_gaps: vec![],
+            };
+            let snapshot = complete_snapshot(&overview).unwrap();
+            assert_eq!(snapshot.total_value, value);
+            assert_eq!(snapshot.total_invested, cost);
+            assert_eq!(snapshot.gross_invested, Some(cost));
+            let history_return = (snapshot.total_value - snapshot.total_invested)
+                / snapshot.gross_invested.unwrap() * dec!(100);
+            assert_eq!(history_return.round_dp(2), dec!(13.33));
+
+            let response = serde_json::to_value(&overview).unwrap();
+            assert_eq!(response["total_value"], value.round_dp(2).to_string());
+            assert_eq!(response["total_return_abs"], (value - cost).round_dp(2).to_string());
+            assert_eq!(response["total_invested"], cost.round_dp(2).to_string());
+        }
     }
 }

@@ -14,7 +14,7 @@ const Portfolio = () => {
   const { data, isLoading, error } = useSwr<PortfolioOverview>(`${BASE_URL}/portfolio`, fetcher, { refreshInterval: 60_000 });
 
   let overviewData = {
-    title: data && (!data.valuation_complete || data.positions.some((position) => position.value == null)) ? 'Partial Portfolio Value' : 'Current Portfolio Value',
+    title: data && (data.security_history_gaps.length > 0 || !data.valuation_complete || data.positions.some((position) => position.value == null)) ? 'Partial Portfolio Value' : 'Current Portfolio Value',
     portfolio_value: `${formatCurrency(isLoading || !data ? 0 : parseFloat(data.total_value))}`,
     absolute_return: `${formatCurrency(
       isLoading || !data ? 0 : parseFloat(data?.total_return_abs)
@@ -89,10 +89,25 @@ const Portfolio = () => {
                 {
                   overviewData.unformatted_return === 0 && <MinusIcon size={16} className='text-muted-foreground' />
                 }
-                <p className="min-w-0 break-words">{data.returns_incomplete ? 'Known return: ' : ''}{overviewData.absolute_return}{data.returns_incomplete ? '' : ` (${overviewData.relative_return})`}</p>
+                <p className="min-w-0 break-words">{data.returns_incomplete ? 'Known P&L: ' : 'P&L: '}{overviewData.absolute_return}{data.returns_incomplete ? '' : ` (${overviewData.relative_return})`}</p>
               </div> : <p className="text-sm text-destructive-foreground">
                 Excludes holdings without a usable price: {data.unpriced_isins.join(', ')}. Returns are unavailable until all securities are priced.
               </p>}
+              <p className="mt-3 text-xs text-muted-foreground">P&amp;L includes trading gains after fees, recorded gross EUR security dividends, and recorded cash/debt interest, including unlinked interest once for the full portfolio. Recorded income: {formatCurrency(Number(data.income))}, before withholding tax; no projected income or deemed distributions. Percentage uses cumulative gross EUR purchase spend or contributions, not current cost basis.</p>
+              {data.security_history_gaps.length > 0 && (
+                <div role="alert" className="text-muted-foreground mt-4 space-y-2 rounded-lg border p-3 text-sm">
+                  <p className="font-medium">Incomplete security acquisition history</p>
+                  <p>Trading P&amp;L for the affected instruments is unavailable and excluded from Known P&amp;L; recorded income remains included. Holdings reflect recorded trades and may also be incomplete. Import or reconcile the missing acquisitions or transfers. Performance snapshots remain blocked until the history is complete.</p>
+                  <ul className="space-y-2">
+                    {data.security_history_gaps.map((gap) => (
+                      <li key={`${gap.broker}/${gap.isin}/${gap.date}`}>
+                        <span className="font-medium">{gap.isin} · {gap.broker}</span>
+                        <span className="block text-muted-foreground">{new Date(gap.date).toLocaleString()}: sold {gap.sold_units} split-adjusted shares; recorded inventory {gap.available_units}.</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               {data.unpriced_assets > 0 && (
                 <div className="text-muted-foreground mt-4 flex items-start gap-2 rounded-lg border p-3 text-sm">
                   <WarningIcon className="mt-0.5 size-4 shrink-0" />

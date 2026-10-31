@@ -814,6 +814,7 @@ fn fold_cash_events(
                     folded.net_contributions_eur = snapshot.balance_eur;
                     folded.invested_eur = snapshot.balance_eur;
                     folded.income_eur = Decimal::ZERO;
+                    folded.realized_fx_eur = Decimal::ZERO;
                 } else {
                     // Only the unexplained native balance delta is capital. Revaluing the existing
                     // balance at the snapshot's FX rate must not erase accumulated FX return.
@@ -1282,6 +1283,24 @@ mod tests {
         assert_eq!(folded.balance, dec!(0));
         assert_eq!(folded.net_contributions_eur, dec!(-5));
         assert_eq!(folded.realized_fx_eur, dec!(5));
+    }
+
+    #[test]
+    fn opening_snapshot_discards_earlier_realized_fx() {
+        let mut deposit = transaction("old-deposit", 1, AssetTransactionKind::Deposit, dec!(100));
+        deposit.amount_eur = dec!(90);
+        let mut withdrawal =
+            transaction("old-withdrawal", 2, AssetTransactionKind::Withdrawal, dec!(100));
+        withdrawal.amount_eur = dec!(95);
+        let opening = snapshot("opening", 3, AssetBalanceSnapshotKind::Opening, dec!(50));
+
+        let folded = fold_cash_events(&[deposit, withdrawal], &[opening], &[], date(10));
+
+        assert_eq!(folded.balance, dec!(50));
+        assert_eq!(folded.net_contributions_eur, dec!(50));
+        assert_eq!(folded.invested_eur, dec!(50));
+        assert_eq!(folded.realized_fx_eur, dec!(0));
+        assert_eq!(folded.income_eur, dec!(0));
     }
 
     #[tokio::test]

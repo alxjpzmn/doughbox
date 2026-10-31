@@ -11,7 +11,7 @@ use super::wac::{FxWac, SecWac};
 use crate::services::events::{EventType, PortfolioEvent, TradeDirection};
 
 #[typeshare]
-#[derive(Debug, Serialize, Tabled, ToSchema)]
+#[derive(Debug, Clone, Default, Serialize, Tabled, ToSchema)]
 pub struct AnnualTaxableAmounts {
     #[tabled(rename = "Cash Interest [KZ 465]")]
     pub(crate) cash_interest: Decimal,
@@ -27,42 +27,23 @@ pub struct AnnualTaxableAmounts {
     pub(crate) dividends: Decimal,
     #[tabled(rename = "Dividend Equivalents [KZ 936/937]")]
     pub(crate) dividend_equivalents: Decimal,
-    #[tabled(rename = "FX Appreciation [KZ 731]")]
-    pub(crate) fx_appreciation: Decimal,
-    #[tabled(rename = "WHT Capital Gains [info]")]
+    #[tabled(skip)]
+    pub(crate) fx_appreciation: Option<Decimal>,
+    #[tabled(rename = "Recorded Sale WHT [info]")]
     pub(crate) withheld_tax_capital_gains: Decimal,
-    #[tabled(rename = "WHT Dividends [KZ 984/998]")]
+    #[tabled(rename = "Estimated Dividend Credit [KZ 984/998]")]
     pub(crate) withheld_tax_dividends: Decimal,
-    #[tabled(rename = "WHT Interest [info]")]
+    #[tabled(rename = "Estimated Interest Credit [info]")]
     pub(crate) withheld_tax_interest: Decimal,
     #[tabled(rename = "Tax Optimization Adj. [info]")]
     pub(crate) tax_optimization_adjustment: Decimal,
-    #[tabled(rename = "Tax Owed Dividends [info]")]
+    #[tabled(rename = "Provisional Dividend Tax [info]")]
     pub(crate) tax_owed_dividends: Decimal,
-    #[tabled(rename = "Tax Owed Div. Equivalents [info]")]
+    #[tabled(rename = "Provisional AGE Tax [info]")]
     pub(crate) tax_owed_dividend_equivalents: Decimal,
 }
 
 impl AnnualTaxableAmounts {
-    #[cfg(test)]
-    pub(crate) fn zero() -> Self {
-        Self {
-            cash_interest: rust_decimal_macros::dec!(0),
-            share_lending_interest: rust_decimal_macros::dec!(0),
-            capital_gains: rust_decimal_macros::dec!(0),
-            capital_losses: rust_decimal_macros::dec!(0),
-            net_capital_gains: rust_decimal_macros::dec!(0),
-            dividends: rust_decimal_macros::dec!(0),
-            dividend_equivalents: rust_decimal_macros::dec!(0),
-            fx_appreciation: rust_decimal_macros::dec!(0),
-            withheld_tax_capital_gains: rust_decimal_macros::dec!(0),
-            withheld_tax_dividends: rust_decimal_macros::dec!(0),
-            withheld_tax_interest: rust_decimal_macros::dec!(0),
-            tax_optimization_adjustment: rust_decimal_macros::dec!(0),
-            tax_owed_dividends: rust_decimal_macros::dec!(0),
-            tax_owed_dividend_equivalents: rust_decimal_macros::dec!(0),
-        }
-    }
 
     pub(crate) fn round_all(&mut self, dp: u32) {
         trace!(target: "tax_report", "Rounding AnnualTaxableAmounts to {} decimal places", dp);
@@ -72,7 +53,6 @@ impl AnnualTaxableAmounts {
             &mut self.capital_gains,
             &mut self.net_capital_gains,
             &mut self.dividends,
-            &mut self.fx_appreciation,
             &mut self.dividend_equivalents,
             &mut self.capital_losses,
             &mut self.withheld_tax_capital_gains,
@@ -97,6 +77,7 @@ pub struct TaxationReport {
     pub taxable_amounts: BTreeMap<i32, AnnualTaxableAmounts>,
     pub securities_wacs: BTreeMap<String, SecWac>,
     pub currency_wacs: BTreeMap<String, FxWac>,
+    pub limitations: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -140,6 +121,9 @@ pub struct TransactionTaxImpact {
     pub broker: String,
     pub impact_type: String,
     pub taxable_amount: Decimal,
+    /// Actual recorded withholding in EUR, where known; distinct from estimated treaty credit.
+    pub recorded_withholding_tax: Option<Decimal>,
+    /// Estimated creditable tax, not total tax withheld.
     pub withheld_tax: Decimal,
     pub tax_liability: Decimal,
     pub tax_rate_percent: Decimal,

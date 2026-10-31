@@ -1,4 +1,4 @@
-use chrono::{Duration as ChronoDuration, NaiveDate, Utc};
+use chrono::NaiveDate;
 use reqwest::Client;
 use rust_decimal::Decimal;
 use serde::Deserialize;
@@ -34,56 +34,60 @@ pub async fn get_fred_value_for_date(
     fred_data_set: &FREDResponse,
     date: NaiveDate,
 ) -> anyhow::Result<Decimal> {
-    let mut fetch_latest_value = false;
+    fred_data_set
+        .observations
+        .iter()
+        .filter_map(|item| {
+            let observation_date = NaiveDate::parse_from_str(&item.date, "%Y-%m-%d").ok()?;
+            let value = item.value.parse::<Decimal>().ok()?;
+            (observation_date <= date).then_some((observation_date, value))
+        })
+        .max_by_key(|(observation_date, _)| *observation_date)
+        .map(|(_, value)| value)
+        .ok_or_else(|| anyhow::anyhow!("No valid FRED observation on or before {date}"))
+}
 
-    if Utc::now().date_naive() == date {
-        fetch_latest_value = true
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rust_decimal_macros::dec;
+
+    fn dataset(items: &[(&str, &str)]) -> FREDResponse {
+        FREDResponse {
+            observations: items
+                .iter()
+                .map(|(date, value)| FREDResponseItem {
+                    date: (*date).to_string(),
+                    value: (*value).to_string(),
+                })
+                .collect(),
+        }
     }
 
-    Ok(if fetch_latest_value {
-        fred_data_set
-            .observations
-            .iter()
-            .last()
-            .unwrap()
-            .value
-            .parse::<Decimal>()?
-    } else {
-        let mut date_found = 0;
-        let mut date_to_look_for = date;
-        if fred_data_set
-            .observations
-            .iter()
-            .any(|item| item.date == date.format("%Y-%m-%d").to_string())
-            && fred_data_set
-                .observations
-                .iter()
-                .find(|item| item.date == date.format("%Y-%m-%d").to_string())
-                .unwrap()
-                .value
-                != "."
-        {
-        } else {
-            while date_found == 0 {
-                date_to_look_for -= ChronoDuration::days(1);
-                if !fred_data_set
-                    .observations
-                    .iter()
-                    .any(|item| item.date == date_to_look_for.format("%Y-%m-%d").to_string())
-                {
-                    date_found = 0;
-                } else {
-                    date_found = 1;
-                }
-            }
-        }
+    #[tokio::test]
+    async fn uses_latest_valid_observation_without_looking_ahead() {
+        let data = dataset(&[
+            ("2025-01-07", "110"),
+            ("2025-01-03", "100"),
+            ("2025-01-06", "."),
+            ("2025-01-02", "90"),
+            ("invalid-date", "999"),
+        ]);
+        let requested = NaiveDate::from_ymd_opt(2025, 1, 6).unwrap();
+        assert_eq!(get_fred_value_for_date(&data, requested).await.unwrap(), dec!(100));
+        let requested = NaiveDate::from_ymd_opt(2025, 1, 7).unwrap();
+        assert_eq!(get_fred_value_for_date(&data, requested).await.unwrap(), dec!(110));
+    }
 
-        fred_data_set
-            .observations
-            .iter()
-            .find(|item| item.date == date_to_look_for.format("%Y-%m-%d").to_string())
-            .unwrap()
-            .value
-            .parse::<Decimal>()?
-    })
+    #[tokio::test]
+    async fn errors_when_no_valid_prior_observation_exists() {
+        let requested = NaiveDate::from_ymd_opt(2025, 1, 1).unwrap();
+        for data in [
+            dataset(&[]),
+            dataset(&[("2025-01-02", "100")]),
+            dataset(&[("2024-12-31", ".")]),
+        ] {
+            assert!(get_fred_value_for_date(&data, requested).await.is_err());
+        }
+    }
 }

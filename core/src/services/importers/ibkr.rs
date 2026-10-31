@@ -7,7 +7,7 @@ use crate::{
         models::{fx_conversion::FxConversion, trade::Trade},
         queries::{composite::add_trade_to_db, fx_conversion::add_fx_conversion_to_db},
     },
-    services::parsers::parse_timestamp,
+    services::{market_data::fx_rates::convert_amount, parsers::parse_timestamp},
 };
 use chrono::prelude::*;
 use itertools::Itertools;
@@ -126,9 +126,10 @@ pub async fn extract_ibkr_record(file_content: &[u8]) -> anyhow::Result<()> {
 
         match record_type {
             RecordType::EquityTrade => {
+                let date = parse_timestamp(&record.date_time)?;
                 let trade = Trade {
                     broker: broker.clone(),
-                    date: parse_timestamp(&record.date_time)?,
+                    date,
                     isin: record.isin,
                     avg_price_per_unit: record.trade_price.parse::<Decimal>()?,
                     eur_avg_price_per_unit: record.trade_price.parse::<Decimal>()?
@@ -143,9 +144,13 @@ pub async fn extract_ibkr_record(file_content: &[u8]) -> anyhow::Result<()> {
                     security_type: "Equity".to_string(),
                     currency: record.currency_primary.to_string(),
                     date_added: Utc::now(),
-                    fees: record.ib_commission.parse::<Decimal>()?
-                        * dec!(-1.0)
-                        * record.fx_rate_to_base.parse::<Decimal>()?,
+                    fees: convert_amount(
+                        -record.ib_commission.parse::<Decimal>()?,
+                        &date.date_naive(),
+                        &record._ib_commission_currency,
+                        "EUR",
+                    )
+                    .await?,
                     withholding_tax: record.taxes.parse::<Decimal>()?,
                     withholding_tax_currency: record.currency_primary,
                 };

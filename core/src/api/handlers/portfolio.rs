@@ -19,7 +19,7 @@ use crate::api::errors::{ErrorDetails, ErrorResponse};
     path = "/api/portfolio",
     tag = "portfolio",
     responses(
-        (status = 200, description = "Current allocations and total return. If valuation_complete is false, security totals are partial and returns must not be used; see unpriced_isins. If returns_incomplete is true, custom assets lack valuation or cost data and only known returns are included; see unpriced_assets.", body = crate::services::portfolio::PortfolioOverview),
+        (status = 200, description = "Current recorded allocations and economic return including gross EUR dividends and interest, before withholding. Missing quotes set valuation_complete=false and unpriced_isins. Incomplete security acquisition history is listed in security_history_gaps and sets returns_incomplete=true; affected instruments' trading P&L is excluded while recorded income remains included. Recorded holdings may also be incomplete. Custom assets lacking valuation or cost data increment unpriced_assets and set returns_incomplete. Partial returns are known amounts only: do not use their percentage or persist a snapshot. Linked custom income is counted once.", body = crate::services::portfolio::PortfolioOverview),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Empty portfolio", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
@@ -31,7 +31,7 @@ pub async fn portfolio() -> Result<impl IntoResponse, ErrorResponse> {
         Ok(portfolio_overview) => {
             if portfolio_overview.positions.is_empty() {
                 let events_check_result =
-                    events_exist(EventFilter::TradesOnly).await.map_err(|e| {
+                    events_exist(EventFilter::All).await.map_err(|e| {
                         internal_error(
                             "EventsExistError",
                             format!("Error while checking if events exist: {e}"),

@@ -132,6 +132,8 @@ pub async fn extract_trading212_record(file_content: &[u8]) -> anyhow::Result<()
         find_column_index(&headers, "Currency (Price / share)", true)?.unwrap();
     let timestamp_idx = find_column_index_any(&headers, &["Time", "Time (UTC)"])?;
     let fees_idx = find_column_index(&headers, "Currency conversion fee", true)?.unwrap();
+    let fees_currency_idx =
+        find_column_index(&headers, "Currency (Currency conversion fee)", false)?;
     let fx_rate_idx = find_column_index(&headers, "Exchange rate", true)?.unwrap();
 
     let withholding_tax_idx = find_column_index(&headers, "Withholding tax", false)?;
@@ -157,14 +159,22 @@ pub async fn extract_trading212_record(file_content: &[u8]) -> anyhow::Result<()
         let record_type = detect_record_type(action);
         match record_type {
             RecordType::Dividend => {
+                let date = parse_timestamp(&record[timestamp_idx])?;
+                let amount = record[share_count_idx].parse::<Decimal>()?
+                    * record[price_per_share_idx].parse::<Decimal>()?;
                 let dividend = Dividend {
                     isin: record[isin_idx].to_string(),
-                    date: parse_timestamp(&record[timestamp_idx])?,
-                    amount: record[share_count_idx].parse::<Decimal>()?
-                        * record[price_per_share_idx].parse::<Decimal>()?,
+                    date,
+                    amount,
                     broker: broker.clone(),
                     currency: record[currency_price_idx].to_string(),
-                    amount_eur: record[amount_idx].parse::<Decimal>()?,
+                    amount_eur: convert_amount(
+                        amount,
+                        &date.date_naive(),
+                        &record[currency_price_idx],
+                        "EUR",
+                    )
+                    .await?,
                     withholding_tax: field_decimal_or_zero(&record, withholding_tax_idx),
                     withholding_tax_currency: field_string_or(
                         &record,
@@ -209,13 +219,20 @@ pub async fn extract_trading212_record(file_content: &[u8]) -> anyhow::Result<()
                 add_fx_conversion_to_db(fx_conversion).await?;
             }
             RecordType::EquityTrade => {
+                let date = parse_timestamp(&record[timestamp_idx])?;
                 let trade = Trade {
                     broker: broker.clone(),
-                    date: parse_timestamp(&record[timestamp_idx])?,
+                    date,
                     isin: record[isin_idx].to_string(),
                     avg_price_per_unit: record[price_per_share_idx].parse::<Decimal>()?,
-                    eur_avg_price_per_unit: record[price_per_share_idx].parse::<Decimal>()?
-                        / record[fx_rate_idx].parse::<Decimal>()?,
+                    eur_avg_price_per_unit: convert_amount(
+                        record[price_per_share_idx].parse::<Decimal>()?
+                            / record[fx_rate_idx].parse::<Decimal>()?,
+                        &date.date_naive(),
+                        &record[currency_total_idx],
+                        "EUR",
+                    )
+                    .await?,
                     units: if record[price_per_share_idx].is_empty() {
                         dec!(0.0)
                     } else {
@@ -229,7 +246,14 @@ pub async fn extract_trading212_record(file_content: &[u8]) -> anyhow::Result<()
                     security_type: "Equity".to_string(),
                     currency: record[currency_price_idx].to_string(),
                     date_added: Utc::now(),
-                    fees: record[fees_idx].parse::<Decimal>().unwrap_or(dec!(0.0)),
+                    fees: convert_amount(
+                        record[fees_idx].parse::<Decimal>().unwrap_or(dec!(0.0)),
+                        &date.date_naive(),
+                        optional_field(&record, fees_currency_idx)
+                            .unwrap_or(&record[currency_total_idx]),
+                        "EUR",
+                    )
+                    .await?,
                     withholding_tax: field_decimal_or_zero(&record, withholding_tax_idx),
                     withholding_tax_currency: field_string_or(
                         &record,

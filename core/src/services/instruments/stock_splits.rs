@@ -3,7 +3,6 @@ use std::println;
 use chrono::{DateTime, Utc};
 use itertools::Itertools;
 use rust_decimal::Decimal;
-use rust_decimal_macros::dec;
 
 use crate::{
     database::queries::{
@@ -63,19 +62,12 @@ pub fn get_split_adjusted_units(
     date: DateTime<Utc>,
     split_information: &mut [StockSplit],
 ) -> Decimal {
-    let relevant_splits = split_information
+    split_information
         .iter()
-        .find(|item| isin == item.isin && date.timestamp() < item.ex_date.timestamp());
-
-    if relevant_splits.is_none() {
-        return no_unadjusted_units;
-    }
-    let mut no_adjusted_units = dec!(0.0);
-    relevant_splits.into_iter().for_each(|relevant_split| {
-        no_adjusted_units +=
-            no_unadjusted_units * (relevant_split.to_factor / relevant_split.from_factor)
-    });
-    no_adjusted_units
+        .filter(|item| isin == item.isin && date < item.ex_date)
+        .fold(no_unadjusted_units, |units, split| {
+            units * split.to_factor / split.from_factor
+        })
 }
 
 pub fn get_split_adjusted_price_per_unit(
@@ -84,24 +76,19 @@ pub fn get_split_adjusted_price_per_unit(
     date: DateTime<Utc>,
     split_information: &mut [StockSplit],
 ) -> Decimal {
-    let relevant_splits = split_information
+    split_information
         .iter()
-        .find(|item| isin == item.isin && date.timestamp() < item.ex_date.timestamp());
-    if relevant_splits.is_none() {
-        return unadjusted_price_per_unit;
-    }
-    let mut adjusted_price = dec!(0.0);
-    relevant_splits.into_iter().for_each(|relevant_split| {
-        adjusted_price +=
-            unadjusted_price_per_unit / (relevant_split.to_factor / relevant_split.from_factor)
-    });
-    adjusted_price
+        .filter(|item| isin == item.isin && date < item.ex_date)
+        .fold(unadjusted_price_per_unit, |price, split| {
+            price * split.from_factor / split.to_factor
+        })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use chrono::TimeZone;
+    use rust_decimal_macros::dec;
 
     fn split(isin: &str, ex_date: DateTime<Utc>, from: Decimal, to: Decimal) -> StockSplit {
         StockSplit {
@@ -144,6 +131,29 @@ mod tests {
         assert_eq!(
             get_split_adjusted_price_per_unit("US0378331005", dec!(10), before, &mut splits),
             dec!(100)
+        );
+    }
+
+    #[test]
+    fn all_applicable_splits_compound_without_changing_cost() {
+        let mut splits = [
+            split("US0378331005", date(2020, 8, 31), dec!(1), dec!(4)),
+            split("US0378331005", date(2014, 6, 9), dec!(1), dec!(7)),
+            split("US0378331005", date(2022, 1, 1), dec!(2), dec!(1)),
+            split("OTHER", date(2021, 1, 1), dec!(1), dec!(100)),
+        ];
+        let before = date(2010, 1, 1);
+        let units = get_split_adjusted_units("US0378331005", dec!(10), before, &mut splits);
+        let price =
+            get_split_adjusted_price_per_unit("US0378331005", dec!(280), before, &mut splits);
+        assert_eq!(units, dec!(140));
+        assert_eq!(price, dec!(20));
+        assert_eq!(units * price, dec!(2800));
+
+        let between = date(2020, 8, 31);
+        assert_eq!(
+            get_split_adjusted_units("US0378331005", dec!(10), between, &mut splits),
+            dec!(5)
         );
     }
 

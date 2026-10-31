@@ -29,11 +29,11 @@ use super::handlers::{
         brokers, instrument, instruments, prices, refresh_price_feed, refresh_prices, rename,
         reset_price_feed, save_scheduler, set_price, unpin_price,
     },
-    performance::{live_performance, past_performance, performance_overview},
+    performance::{get_performance_status, live_performance, past_performance, performance_overview, refresh_performance, save_performance_scheduler},
     portfolio::{portfolio, positions},
     settings::{get_settings, save_settings, save_telegram_scheduler},
     statement_imports::{get_statement_imports, upload_statement_imports, MAX_BODY_BYTES},
-    taxation::{taxation, taxation_detailed, taxation_transactions},
+    taxation::{get_taxation_status, refresh_taxation, save_taxation_scheduler, taxation, taxation_detailed, taxation_transactions},
     timeline::{investment_activity, timeline},
     trades::{buy_ins, dividends, fx_conversions, interest, trades},
 };
@@ -106,6 +106,9 @@ pub fn create_router() -> anyhow::Result<Router> {
         .route("/interest", get(interest))
         .route("/fx-conversions", get(fx_conversions))
         .route("/performance", get(live_performance))
+        .route("/performance/status", get(get_performance_status))
+        .route("/performance/refresh", post(refresh_performance))
+        .route("/performance/scheduler", put(save_performance_scheduler))
         .route("/performance_overview", get(performance_overview))
         .route("/past_performance", get(past_performance))
         .route("/instruments", get(instruments))
@@ -128,6 +131,9 @@ pub fn create_router() -> anyhow::Result<Router> {
         .route("/settings", get(get_settings).put(save_settings))
         .route("/settings/telegram-scheduler", put(save_telegram_scheduler))
         .route("/brokers", get(brokers))
+        .route("/taxation/status", get(get_taxation_status))
+        .route("/taxation/refresh", post(refresh_taxation))
+        .route("/taxation/scheduler", put(save_taxation_scheduler))
         .route("/taxation", get(taxation))
         .route("/taxation/detailed", get(taxation_detailed))
         .route("/taxation/transactions", get(taxation_transactions))

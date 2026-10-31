@@ -2,7 +2,8 @@ use chrono::{NaiveDate, TimeZone, Utc};
 use tabled::Table;
 
 use crate::services::taxation::{
-    export_detailed_capital_gains_tax_report, get_capital_gains_tax_report,
+    detailed_taxation_filename, export_detailed_capital_gains_tax_report,
+    get_detailed_capital_gains_tax_report, publish_taxation_report,
 };
 
 pub async fn calculate_taxes(
@@ -10,30 +11,36 @@ pub async fn calculate_taxes(
     until_date: Option<NaiveDate>,
 ) -> anyhow::Result<()> {
     let from = from_date.map(|d| Utc.from_utc_datetime(&d.and_hms_opt(0, 0, 0).unwrap()));
-    let until = until_date.map(|d| Utc.from_utc_datetime(&d.and_hms_opt(23, 59, 59).unwrap()));
+    let until = until_date.map(|d| Utc.from_utc_datetime(&d.and_hms_nano_opt(23, 59, 59, 999_999_999).unwrap()));
 
-    let taxation_report = get_capital_gains_tax_report(from, until).await?;
+    let detailed_report = get_detailed_capital_gains_tax_report(from, until).await?;
+    publish_taxation_report(&detailed_report)?;
+    let taxation_report = &detailed_report.report;
 
     let taxable_amounts_table = Table::new(&taxation_report.taxable_amounts).to_string();
     let securities_wac_table = Table::new(&taxation_report.securities_wacs).to_string();
-    let currency_wac_table = Table::new(&taxation_report.currency_wacs).to_string();
+    for limitation in &taxation_report.limitations {
+        println!("LIMITATION: {}", limitation);
+    }
 
     println!("Taxable amounts:");
     println!("{}", taxable_amounts_table);
-    println!("Securities WAC:");
+    println!("Securities EUR WAC (broker/depot proxy):");
     println!("{}", securities_wac_table);
-    println!("Currency WAC:");
-    println!("{}", currency_wac_table);
+    println!("Foreign-currency cash gains / WAC: unavailable; not zero (see limitations).");
     println!();
-    println!("E1VK Kennzahlen: [KZ 465] interest, [KZ 731/732] capital gains/losses, [KZ 897/898] dividends,");
+    println!("E1kv indicative labels: [KZ 465] interest, [KZ 731/732] capital gains/losses, [KZ 897/898] dividends,");
     println!("  [KZ 936/937] dividend equivalents, [KZ 984/998] foreign WHT credits.");
     println!("  [info] fields are for reconciliation only — not entered on the form.");
     println!("  The form expects income amounts (brutto), not calculated tax.");
     println!("  KESt already withheld is reported by the broker via Steuerbescheinigung.");
     println!();
-    println!("DTT: WHT capped at treaty rates for US, IE, BE, DE, FR, GB; fallback to Austrian rate for others.");
-    println!("     Per-transaction DTT details: use `doughbox taxation --with-events` (detailed JSON export).");
-
+    println!("Treaty credits are estimates for supported sources; unknown source receives no assumed credit.");
+    println!("     Per-transaction DTT details are included in the detailed JSON export.");
+    println!(
+        "Detailed taxation report with events exported to output/{}.json",
+        detailed_taxation_filename(from_date, until_date)
+    );
     Ok(())
 }
 
@@ -42,11 +49,14 @@ pub async fn calculate_taxes_detailed(
     until_date: Option<NaiveDate>,
 ) -> anyhow::Result<()> {
     let from = from_date.map(|d| Utc.from_utc_datetime(&d.and_hms_opt(0, 0, 0).unwrap()));
-    let until = until_date.map(|d| Utc.from_utc_datetime(&d.and_hms_opt(23, 59, 59).unwrap()));
+    let until = until_date.map(|d| Utc.from_utc_datetime(&d.and_hms_nano_opt(23, 59, 59, 999_999_999).unwrap()));
 
     export_detailed_capital_gains_tax_report(from, until).await?;
 
-    println!("Detailed taxation report with events exported to output/taxation_detailed.json");
+    println!(
+        "Detailed taxation report with events exported to output/{}.json",
+        detailed_taxation_filename(from_date, until_date)
+    );
 
     Ok(())
 }

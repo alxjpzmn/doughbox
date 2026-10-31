@@ -53,6 +53,7 @@ pub async fn get_positions(
     let rows = client.query(&query, &params).await?;
 
     let mut stock_split_information = get_stock_splits().await?;
+    stock_split_information.retain(|split| split.ex_date <= date);
     let listing_changes = get_listing_changes().await?;
 
     let mut units_map: HashMap<String, Decimal> = HashMap::new();

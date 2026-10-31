@@ -84,7 +84,7 @@ pub async fn cli() -> anyhow::Result<()> {
     match args {
         Command::Prices { command } => prices::run(command).await?,
         Command::Portfolio { notify } => {
-            if events_exist(EventFilter::TradesOnly).await? {
+            if events_exist(EventFilter::All).await? {
                 let args = PortfolioArgs {
                     notify: Some(notify),
                 };
@@ -115,11 +115,11 @@ pub async fn cli() -> anyhow::Result<()> {
             }
         }
         Command::Performance {} => {
-            if events_exist(EventFilter::TradesOnly).await? {
+            if events_exist(EventFilter::All).await? {
                 performance().await?;
             } else {
                 println!(
-                    "\x1b[31mPlease import trades first. Run with --help to learn more.\x1b[0m"
+                    "\x1b[31mPlease import portfolio activity first. Run with --help to learn more.\x1b[0m"
                 );
             }
         }

@@ -127,10 +127,9 @@ pub async fn extract_revolut_record(file_content: &[u8]) -> anyhow::Result<()> {
                             amount: parsed_amount,
                             currency: record.currency.clone(),
                             amount_eur: parsed_amount / record.fx_rate.parse::<Decimal>()?,
-                            // Revolut takes withholding tax for dividends, but doesn't state in
-                            // their export files (only in the app). Companies are US listed only,
-                            // withheld dividend tax in the US 15%.
-                            withholding_tax: parsed_amount * dec!(0.15),
+                            // This export does not disclose withholding. Do not invent a tax credit;
+                            // the tax report flags missing Revolut withholding data.
+                            withholding_tax: dec!(0),
                             withholding_tax_currency: record.currency.clone(),
                         };
                         if add_dividend_to_db(dividend.clone(), None).await? {

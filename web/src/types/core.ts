@@ -10,7 +10,7 @@ export interface AnnualTaxableAmounts {
 	net_capital_gains: string;
 	dividends: string;
 	dividend_equivalents: string;
-	fx_appreciation: string;
+	fx_appreciation?: string;
 	withheld_tax_capital_gains: string;
 	withheld_tax_dividends: string;
 	withheld_tax_interest: string;
@@ -381,10 +381,19 @@ export interface MonthlyInvestmentActivity {
 	dividends_interest_eur: string;
 }
 
+export interface PerformanceComponent {
+	asset_id: string;
+	total_value: string;
+	total_invested: string;
+	gross_invested: string;
+}
+
 export interface PerformanceSignal {
 	date: Date;
 	total_value: string;
 	total_invested: string;
+	gross_invested?: string | null;
+	components?: PerformanceComponent[] | null;
 }
 
 export enum EventType {
@@ -439,15 +448,27 @@ export interface PositionWithValueAndAllocation {
 	share?: string;
 }
 
+export interface SecurityHistoryGap {
+	isin: string;
+	broker: string;
+	date: Date;
+	available_units: string;
+	sold_units: string;
+}
+
 export interface PortfolioOverview {
 	generated_at: number;
 	total_value: string;
+	total_invested: string;
 	realized: string;
+	income: string;
 	total_return_abs: string;
 	total_return_rel: string;
 	returns_incomplete: boolean;
+	security_history_gaps: SecurityHistoryGap[];
 	unpriced_assets: number;
 	positions: PositionWithValueAndAllocation[];
+	performance_components: PerformanceComponent[];
 	valuation_complete: boolean;
 	unpriced_isins: string[];
 }
@@ -457,9 +478,10 @@ export interface PositionPerformance {
 	name: string;
 	unrealized: string;
 	realized: string;
+	income: string;
 	performance: string;
-	simulated: string;
-	alpha: string;
+	simulated?: string;
+	alpha?: string;
 	invested_amount: string;
 	total_return: string;
 }
@@ -467,8 +489,8 @@ export interface PositionPerformance {
 export interface PortfolioPerformance {
 	generated_at: number;
 	actual: string;
-	simulated: string;
-	alpha: string;
+	simulated?: string;
+	alpha?: string;
 	position: PositionPerformance[];
 }
 
@@ -514,14 +536,16 @@ export interface PrivateDebtActivity {
 export interface SecWac {
 	units: string;
 	average_cost: string;
-	weighted_avg_fx_rate: string;
 	name: string;
+	broker: string;
+	identifier: string;
 }
 
 export interface TaxationReport {
 	created_at: Date;
 	from_date?: Date;
 	until_date?: Date;
+	limitations: string[];
 	taxable_amounts: any;
 	securities_wacs: any;
 	currency_wacs: any;
@@ -569,6 +593,7 @@ export interface TransactionTaxImpact {
 	impact_type: string;
 	taxable_amount: string;
 	withheld_tax: string;
+	recorded_withholding_tax?: string;
 	tax_liability: string;
 	tax_rate_percent: string;
 	source_country?: string;

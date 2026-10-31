@@ -174,7 +174,7 @@ const AssetActivityCard: React.FC<TimelineCardProps> = ({ timelineEvent }) => {
             ? `${formatCurrency(parseFloat(timelineEvent.price_unit), timelineEvent.currency)}${timelineEvent.unit_label ? ` per ${timelineEvent.unit_label}` : ''} → ${formatCurrency(parseFloat(timelineEvent.total), timelineEvent.total_currency)}`
             : `${formatCurrency(parseFloat(timelineEvent.units), timelineEvent.currency)} → ${formatCurrency(parseFloat(timelineEvent.total), timelineEvent.total_currency)}`}
         </p>
-        {isSnapshot && <p className="text-muted-foreground mt-1 text-xs">Absolute balance · capital-neutral</p>}
+        {isSnapshot && <p className="text-muted-foreground mt-1 text-xs">Absolute balance · opening baseline or unexplained balance adjustment, not investment income</p>}
         <Separator className='my-2' />
         <div className='flex justify-between items-center gap-2'>
           <p className='text-muted-foreground text-sm'>{formatDate(new Date(timelineEvent.date))}</p>

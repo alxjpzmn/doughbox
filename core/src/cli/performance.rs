@@ -15,14 +15,16 @@ struct StringifiedPositionPerformance {
     name: String,
     unrealized: String,
     realized: String,
+    income: String,
     performance: String,
+    #[tabled(rename = "nominal index proxy")]
     simulated: String,
     alpha: String,
     total_return: String,
 }
 
 pub async fn performance() -> anyhow::Result<()> {
-    let mut sp = Spinner::new(Spinners::Point, "Calculating P&L for positions...");
+    let mut sp = Spinner::new(Spinners::Point, "Calculating EUR P&L including recorded dividends...");
     sp.start();
 
     let performance_overview = get_performance().await?;
@@ -39,9 +41,10 @@ pub async fn performance() -> anyhow::Result<()> {
                 name: item.name.clone(),
                 unrealized: format_currency(item.unrealized, true),
                 realized: format_currency(item.realized, true),
+                income: format_currency(item.income, true),
                 performance: format_currency(item.performance, true),
-                simulated: format_currency(item.simulated, true),
-                alpha: format_currency(item.alpha, true),
+                simulated: item.simulated.map(|value| format_currency(value, true)).unwrap_or_else(|| "Unavailable".into()),
+                alpha: item.alpha.map(|value| format_currency(value, true)).unwrap_or_else(|| "Unavailable".into()),
                 total_return: format!(
                     "{}",
                     format!("{}%", round_to_decimals(item.total_return)).style(
@@ -57,12 +60,17 @@ pub async fn performance() -> anyhow::Result<()> {
 
     let table_merged_pl = Table::new(&merged_positions_with_cli_formatting).to_string();
     println!("{}", &table_merged_pl);
+    println!(
+        "Economic EUR P&L includes fees and recorded gross dividends (signed corrections); \
+         realized is trading-only. Return uses cumulative gross purchase spend. \
+         Benchmark: nominal SP500 price-index proxy, not dividend reinvestment."
+    );
 
     println!(
-        "Total actual PL {} vs. total simulated PL {}: {}",
+        "Total actual P&L {} vs. nominal index proxy P&L {}: alpha {}",
         format_currency(performance_overview.actual, true),
-        format_currency(performance_overview.simulated, true),
-        format_currency(performance_overview.alpha, true)
+        performance_overview.simulated.map(|value| format_currency(value, true)).unwrap_or_else(|| "Unavailable".into()),
+        performance_overview.alpha.map(|value| format_currency(value, true)).unwrap_or_else(|| "Unavailable".into())
     );
 
     sp.stop();
