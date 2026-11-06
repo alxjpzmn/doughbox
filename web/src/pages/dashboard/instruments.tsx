@@ -182,7 +182,7 @@ const InstrumentCard = ({ instrument }: { instrument: InstrumentDetails }) => {
             </div>}
           </div>
         </details>
-        {feedback && <p role={feedback.error ? 'alert' : 'status'} className={`break-words text-sm ${feedback.error ? 'text-destructive' : 'text-muted-foreground'}`}>{feedback.message}</p>}
+        {feedback && <p role={feedback.error ? 'alert' : 'status'} className={`break-words text-sm ${feedback.error ? 'text-destructive-foreground' : 'text-muted-foreground'}`}>{feedback.message}</p>}
       </CardContent>
     </Card>
   );
@@ -203,8 +203,8 @@ const Instruments = () => {
   const matchCount = matchingIds.size;
 
   return (
-    <Tabs defaultValue="price-feeds" className="pb-32 md:pb-0">
-      <TabsList className="mb-6 h-auto max-w-full flex-wrap justify-start gap-1" aria-label="Data sections">
+    <Tabs defaultValue="price-feeds" className="max-md:pb-28 md:pb-0">
+      <TabsList dock className="mb-6 h-auto sm:w-fit sm:justify-start" aria-label="Data sections">
         <TabsTrigger value="price-feeds" className="min-h-11">Price Feeds</TabsTrigger>
         <TabsTrigger value="instrument-management" className="min-h-11">Instruments</TabsTrigger>
         <TabsTrigger value="reference-data" className="min-h-11">Reference Data</TabsTrigger>
@@ -236,12 +236,12 @@ const Instruments = () => {
             </div>
             <p id="active-instruments-help" className="text-xs text-muted-foreground">Active instruments are those you currently hold, whether or not a price is available.</p>
             {!pricingStatus && !pricingError && <p role="status" className="text-sm text-muted-foreground">Loading current holdings…</p>}
-            {pricingError && <p role="alert" className="text-sm text-destructive">{pricingStatus ? 'Current holdings could not be refreshed. The active filter uses the last loaded holdings.' : 'The active filter is unavailable because current holdings could not be loaded.'}</p>}
+            {pricingError && <p role="alert" className="text-sm text-destructive-foreground">{pricingStatus ? 'Current holdings could not be refreshed. The active filter uses the last loaded holdings.' : 'The active filter is unavailable because current holdings could not be loaded.'}</p>}
           </CardContent>
         </Card>
 
         {error && <Card><CardContent className="space-y-3 pt-6">
-          <p role="alert" className="break-words text-sm text-destructive">{data ? 'The catalogue could not be refreshed. Previously loaded instruments are shown. ' : 'The instrument catalogue could not be loaded. '}{errorMessage(error)}</p>
+          <p role="alert" className="break-words text-sm text-destructive-foreground">{data ? 'The catalogue could not be refreshed. Previously loaded instruments are shown. ' : 'The instrument catalogue could not be loaded. '}{errorMessage(error)}</p>
           <Button type="button" variant="outline" className="min-h-11" disabled={isValidating} onClick={() => void mutate().catch(() => undefined)}>{isValidating ? 'Retrying…' : 'Retry catalogue'}</Button>
         </CardContent></Card>}
 

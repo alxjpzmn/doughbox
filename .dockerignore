@@ -4,6 +4,7 @@ node_modules
 core/target
 core/input
 core/output
+.local-data/
 *.csv
 *.db
 *.pdf

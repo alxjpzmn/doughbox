@@ -122,7 +122,7 @@ const getErrorMessage = (error: unknown) => {
 }
 
 const FormMessage = ({ message }: { message?: string }) =>
-  message ? <p role="alert" className="text-destructive text-xs leading-relaxed">{message}</p> : null
+  message ? <p role="alert" className="text-destructive-foreground text-xs leading-relaxed">{message}</p> : null
 
 const CurrencySelect = ({
   id,
@@ -274,7 +274,7 @@ const AssetFormDialog = ({ asset, open, onOpenChange, onMutated }: AssetFormDial
 
         <form className="space-y-4" onSubmit={handleSubmit(submit)} noValidate>
           {serverError && (
-            <div role="alert" className="bg-destructive/10 text-destructive rounded-lg border border-destructive/20 p-3 text-sm">
+            <div role="alert" className="bg-destructive/10 text-destructive-foreground rounded-lg border border-destructive/20 p-3 text-sm">
               {serverError}
             </div>
           )}
@@ -775,7 +775,7 @@ const ActivityDialog = ({
 
         <form className="space-y-4" onSubmit={handleSubmit(submit)} noValidate>
           {serverError && (
-            <div role="alert" className="bg-destructive/10 text-destructive rounded-lg border border-destructive/20 p-3 text-sm">
+            <div role="alert" className="bg-destructive/10 text-destructive-foreground rounded-lg border border-destructive/20 p-3 text-sm">
               {serverError}
             </div>
           )}
@@ -828,7 +828,7 @@ const ActivityDialog = ({
               {interestLoading ? (
                 <Skeleton className="h-9 w-full" />
               ) : interestError ? (
-                <p role="alert" className="text-destructive text-sm">{getErrorMessage(interestError)}</p>
+                <p role="alert" className="text-destructive-foreground text-sm">{getErrorMessage(interestError)}</p>
               ) : matchingInterest.length === 0 ? (
                 <div className="space-y-1 rounded-lg border p-4">
                   <p className="text-sm font-medium">No matching unlinked interest</p>
@@ -1148,7 +1148,7 @@ const HistoryDialog = ({ asset, open, onOpenChange, onMutated, onEdit, readOnly 
         </DialogHeader>
 
         {serverError && (
-          <div role="alert" className="bg-destructive/10 text-destructive rounded-lg border border-destructive/20 p-3 text-sm">
+          <div role="alert" className="bg-destructive/10 text-destructive-foreground rounded-lg border border-destructive/20 p-3 text-sm">
             {serverError}
           </div>
         )}
@@ -1160,7 +1160,7 @@ const HistoryDialog = ({ asset, open, onOpenChange, onMutated, onEdit, readOnly 
             ))}
           </div>
         ) : error ? (
-          <div role="alert" className="bg-destructive/10 text-destructive rounded-lg border border-destructive/20 p-3 text-sm">
+          <div role="alert" className="bg-destructive/10 text-destructive-foreground rounded-lg border border-destructive/20 p-3 text-sm">
             {getErrorMessage(error)}
           </div>
         ) : items.length === 0 ? (
@@ -1200,7 +1200,7 @@ const HistoryDialog = ({ asset, open, onOpenChange, onMutated, onEdit, readOnly 
                       type="button"
                       variant="ghost"
                       size="sm"
-                      className={item.removeLabel === "Delete" ? "text-destructive hover:text-destructive" : undefined}
+                      className={item.removeLabel === "Delete" ? "text-destructive-foreground hover:text-destructive-foreground" : undefined}
                       disabled={!!removing}
                       onClick={() => remove(item)}
                     >
@@ -1459,7 +1459,7 @@ const Assets = () => {
       <CashSummary data={cashRequest.data} isLoading={cashRequest.isLoading} />
 
       {pageError && (
-        <div role="alert" className="bg-destructive/10 text-destructive mb-6 rounded-xl border border-destructive/20 p-4 text-sm">
+        <div role="alert" className="bg-destructive/10 text-destructive-foreground mb-6 rounded-xl border border-destructive/20 p-4 text-sm">
           <p className="font-medium">{assetsRequest.data ? "Some manual holding data could not be loaded" : "Manual holdings could not be loaded"}</p>
           <p className="mt-1">{getErrorMessage(pageError)}</p>
           <Button type="button" variant="outline" className="mt-3" onClick={() => revalidateAssets()}>
@@ -1533,7 +1533,7 @@ const Assets = () => {
             <CardTitle>Archived holdings</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            {restoreError && <p role="alert" className="text-destructive text-sm">{restoreError}</p>}
+            {restoreError && <p role="alert" className="text-destructive-foreground text-sm">{restoreError}</p>}
             {archivedAssets.map((asset) => (
               <div key={asset.id} className="flex flex-col items-start gap-3 border-t pt-4 first:border-t-0 first:pt-0 sm:flex-row sm:justify-between">
                 <div className="min-w-0">
@@ -1600,7 +1600,7 @@ const Assets = () => {
             </DialogDescription>
           </DialogHeader>
           {archiveError && (
-            <div role="alert" className="bg-destructive/10 text-destructive rounded-lg border border-destructive/20 p-3 text-sm">
+            <div role="alert" className="bg-destructive/10 text-destructive-foreground rounded-lg border border-destructive/20 p-3 text-sm">
               {archiveError}
             </div>
           )}

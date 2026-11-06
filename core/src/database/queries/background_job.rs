@@ -5,6 +5,7 @@ use crate::services::market_data::prices::{config::Feed, types::PriceJob};
 
 pub const LEASE_SECONDS: i32 = 300;
 const MAX_ATTEMPTS: i32 = 4;
+const RETENTION_BATCH_SIZE: i64 = 5_000;
 
 const EXPIRE_EXHAUSTED: &str = "WITH exhausted AS (
     SELECT id FROM background_job WHERE status = 'running' AND lease_until <= clock_timestamp()
@@ -87,10 +88,23 @@ pub async fn claim(client: &Client, feeds: &[Feed]) -> anyhow::Result<Option<Pri
 }
 
 pub async fn renew(client: &Client, job: &PriceJob) -> anyhow::Result<()> {
-    let changed = client.execute("UPDATE background_job SET lease_until = clock_timestamp() + $3::integer * interval '1 second'
-        WHERE id = $1 AND lease_token = $2 AND status = 'running' AND lease_until > clock_timestamp()",
-        &[&job.id, &job.lease_token, &LEASE_SECONDS]).await?;
-    ensure!(changed == 1, "Price job {} lost its lease", job.id);
+    let owned: bool = client.query_one(
+        "WITH unlocked AS MATERIALIZED (
+            SELECT id FROM background_job WHERE id = $1 FOR UPDATE SKIP LOCKED),
+         renewed AS (
+            UPDATE background_job j SET lease_until = clock_timestamp() + $3::integer * interval '1 second'
+            FROM unlocked WHERE j.id = unlocked.id AND j.lease_token = $2
+                AND j.status = 'running' AND j.lease_until > clock_timestamp()
+            RETURNING j.id)
+         SELECT EXISTS(SELECT 1 FROM renewed) OR
+            (NOT EXISTS(SELECT 1 FROM unlocked) AND EXISTS(
+                SELECT 1 FROM background_job WHERE id = $1 AND lease_token = $2 AND status = 'running'))",
+        &[&job.id, &job.lease_token, &LEASE_SECONDS],
+    ).await?.get(0);
+    // A file writer renews inside its transaction while holding this row lock.
+    // Its newer deadline is invisible here until commit, so only the unlocked
+    // path checks expiry; both paths still fence status and ownership.
+    ensure!(owned, "Price job {} lost its lease", job.id);
     Ok(())
 }
 
@@ -146,21 +160,81 @@ pub async fn finish(client: &mut Client, job: &PriceJob) -> anyhow::Result<()> {
     if rerun {
         enqueue_in(&tx, &job.feed, false).await?;
     }
-    // Bound queue/checkpoint growth; preserve current selected reports and recent tombstones.
-    tx.execute("DELETE FROM background_job WHERE status IN ('succeeded', 'failed') AND finished_at < now() - interval '14 days'", &[]).await?;
-    tx.execute(
-        "DELETE FROM market_data_file WHERE processed_at < now() - interval '7 days'",
-        &[],
-    )
-    .await?;
-    tx.execute(
-        "DELETE FROM market_price_report r WHERE received_at < now() - interval '7 days'
-        AND NOT EXISTS (SELECT 1 FROM instrument i WHERE i.price_report_id = r.id)",
-        &[],
-    )
-    .await?;
+    prune_in(&tx).await?;
     tx.commit().await?;
     Ok(())
+}
+
+/// Prune one bounded batch without requiring a successful feed job.
+/// Returns whether another batch may be needed.
+pub async fn prune(client: &mut Client) -> anyhow::Result<bool> {
+    let tx = client.transaction().await?;
+    let more = prune_in(&tx).await?;
+    tx.commit().await?;
+    Ok(more)
+}
+
+pub(crate) async fn prune_in(tx: &Transaction<'_>) -> anyhow::Result<bool> {
+    tx.query_one("SELECT pg_advisory_xact_lock($1)", &[&super::price::PROJECTION_LOCK]).await?;
+    let quotes = tx.execute(
+        "WITH expired AS MATERIALIZED (
+            SELECT isin, currency, feed FROM mifid_latest_price
+            WHERE as_of < now() - interval '168 hours'
+                AND executed_ns < (extract(epoch FROM now() - interval '168 hours') * 1000000000)::bigint
+            ORDER BY as_of, isin, currency, feed LIMIT $1 FOR UPDATE SKIP LOCKED)
+         DELETE FROM mifid_latest_price q USING expired e
+         WHERE (q.isin, q.currency, q.feed) = (e.isin, e.currency, e.feed)",
+        &[&RETENTION_BATCH_SIZE],
+    ).await?;
+    let floors = tx.execute(
+        "WITH expired AS MATERIALIZED (
+            SELECT isin, currency, feed FROM mifid_price_floor
+            WHERE executed_ns < (extract(epoch FROM now() - interval '168 hours') * 1000000000)::bigint
+            ORDER BY executed_ns, isin, currency, feed LIMIT $1 FOR UPDATE SKIP LOCKED)
+         DELETE FROM mifid_price_floor f USING expired e
+         WHERE (f.isin, f.currency, f.feed) = (e.isin, e.currency, e.feed)",
+        &[&RETENTION_BATCH_SIZE],
+    ).await?;
+    let revisions = tx.execute(
+        "WITH expired AS MATERIALIZED (
+            SELECT id FROM mifid_price_revision
+            WHERE published_at < now() - interval '7 days'
+                AND published_ns < (extract(epoch FROM now() - interval '7 days') * 1000000000)::bigint
+            ORDER BY published_at, id LIMIT $1 FOR UPDATE SKIP LOCKED)
+         DELETE FROM mifid_price_revision r USING expired e WHERE r.id = e.id",
+        &[&RETENTION_BATCH_SIZE],
+    ).await?;
+    // Importers lock source rows before taking the projection lock. Skip those
+    // rows rather than deadlocking; portfolio references remain protected.
+    let reports = tx.execute(
+        "WITH expired AS MATERIALIZED (
+            SELECT r.id FROM market_price_report r
+            WHERE r.received_at < now() - interval '7 days'
+                AND NOT EXISTS (SELECT 1 FROM instrument i WHERE i.price_report_id = r.id)
+            ORDER BY r.received_at, r.id LIMIT $1 FOR UPDATE OF r SKIP LOCKED)
+         DELETE FROM market_price_report r USING expired WHERE r.id = expired.id",
+        &[&RETENTION_BATCH_SIZE],
+    ).await?;
+    let files = tx.execute(
+        "WITH expired AS MATERIALIZED (
+            SELECT feed, file_key, parser_version, scope_hash FROM market_data_file
+            WHERE processed_at < now() - interval '7 days'
+            ORDER BY processed_at LIMIT $1 FOR UPDATE SKIP LOCKED)
+         DELETE FROM market_data_file f USING expired e
+         WHERE f.feed = e.feed AND f.file_key = e.file_key
+            AND f.parser_version = e.parser_version AND f.scope_hash = e.scope_hash",
+        &[&RETENTION_BATCH_SIZE],
+    ).await?;
+    let jobs = tx.execute(
+        "WITH expired AS MATERIALIZED (
+            SELECT id FROM background_job
+            WHERE status IN ('succeeded', 'failed') AND finished_at < now() - interval '14 days'
+            ORDER BY finished_at LIMIT $1 FOR UPDATE SKIP LOCKED)
+         DELETE FROM background_job j USING expired e WHERE j.id = e.id",
+        &[&RETENTION_BATCH_SIZE],
+    ).await?;
+    Ok([quotes, floors, revisions, reports, files, jobs].into_iter()
+        .any(|count| count == RETENTION_BATCH_SIZE as u64))
 }
 
 pub async fn fail(

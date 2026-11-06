@@ -76,7 +76,7 @@ const InvestmentActivityChart = ({ startDate }: { startDate: string }) => {
           <CardTitle>Investment activity</CardTitle>
         </CardHeader>
         <CardContent>
-          <p role="alert" className="text-sm text-destructive">
+          <p role="alert" className="text-sm text-destructive-foreground">
             Investment activity could not be loaded.
           </p>
         </CardContent>

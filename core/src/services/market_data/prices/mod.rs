@@ -3,7 +3,7 @@ mod cboe;
 pub mod config;
 pub mod deutsche_boerse;
 mod euronext;
-mod http;
+pub(super) mod http;
 pub mod types;
 mod worker_limit;
 
@@ -17,7 +17,6 @@ use std::{
 
 use anyhow::{bail, Context};
 use chrono::Utc;
-use futures::{stream, StreamExt};
 use reqwest::Client;
 use tokio::{
     sync::watch,
@@ -64,6 +63,10 @@ impl PriceRuntime {
         let control_stop = receiver.clone();
         tasks.spawn(async move {
             control_loop(control_limits, control_stop).await;
+        });
+        let retention_stop = receiver.clone();
+        tasks.spawn(async move {
+            retention_loop(retention_stop).await;
         });
         if !worker_only {
             let receiver = receiver.clone();
@@ -157,6 +160,43 @@ async fn scheduler(mut stop: watch::Receiver<bool>) {
                 if let Err(error) = result {
                     log::error!("Price scheduler failed: {error:#}");
                     connection = None;
+                }
+            }
+        }
+    }
+}
+
+async fn retention_loop(stop: watch::Receiver<bool>) {
+    retention_loop_with_connection(stop, None).await;
+}
+
+async fn retention_loop_with_connection(
+    mut stop: watch::Receiver<bool>,
+    mut connection: Option<tokio_postgres::Client>,
+) {
+    let mut tick = interval(Duration::from_secs(60 * 60));
+    tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            _ = stop.changed() => return,
+            _ = tick.tick() => {}
+        }
+        loop {
+            let result = tokio::select! {
+                biased;
+                _ = stop.changed() => return,
+                result = async {
+                    let db = queue_connection(&mut connection).await?;
+                    jobs::prune(db).await
+                } => result,
+            };
+            match result {
+                Ok(true) => {}
+                Ok(false) => break,
+                Err(error) => {
+                    log::error!("Price retention cleanup failed: {error:#}");
+                    connection = None;
+                    break;
                 }
             }
         }
@@ -290,133 +330,211 @@ async fn keep_lease_alive(db: &tokio_postgres::Client, job: &PriceJob) -> anyhow
     }
 }
 
-/// Returns counts for a dry run; without a job lease, this never writes prices or checkpoints.
+/// Returns portfolio-report admissions; every parsed batch also updates bulk latest trades.
 async fn refresh_feed(
     client: &Client,
     downloads: Arc<tokio::sync::Semaphore>,
     feed: Feed,
     job: Option<&PriceJob>,
 ) -> anyhow::Result<(usize, usize)> {
+    use std::collections::{HashSet, VecDeque};
+
     let started = Instant::now();
-    log::info!("{}: starting price refresh", feed.key());
     let mut db = db_client().await?;
-    db.batch_execute("SET statement_timeout = '60s'; SET lock_timeout = '10s'")
-        .await?;
-    let tracked = Arc::new(price::tracked_isins(&db).await?);
-    if tracked.is_empty() {
-        log::info!(
-            "{}: no tracked equity ISINs; nothing to refresh",
-            feed.key()
-        );
-        return Ok((0, 0));
-    }
-    let universe = price::universe_hash(&tracked);
+    db.batch_execute("SET statement_timeout = '60s'; SET lock_timeout = '10s'").await?;
+    let tracked = price::tracked_isins(&db).await?;
+    let scope_hash = price::portfolio_scope_hash(&tracked);
     let checkpoints = if job.is_some() {
-        price::checkpoints(&db, feed.key(), &universe).await?
+        price::checkpoints(&db, feed.key(), &scope_hash).await?
     } else {
         Default::default()
     };
-    log::info!(
-        "{}: discovering last-48-hour batches for {} tracked ISINs",
-        feed.key(),
-        tracked.len()
-    );
-    let files = adapter::discover(client, feed).await?;
-    let available_files = files.len();
+    let mut dry_run = Some(price::DryRunAdmissions::default());
+    let mut discovered = adapter::discover(client, feed).await?;
+    discovered.sort_by(|a, b| b.timestamp.cmp(&a.timestamp).then(a.key.cmp(&b.key)));
+    let mut seen: HashSet<_> = discovered.iter().map(|file| file.key.clone()).collect();
+    let mut available_files = discovered.len();
     let now = Utc::now();
-    let files: Vec<_> = files
-        .into_iter()
-        .filter(|file| {
-            // Revalidate recent files for late edits; completed older minute batches are immutable.
-            !checkpoints.contains_key(&file.key)
-                || file.timestamp >= now - chrono::Duration::hours(1)
-        })
-        .collect();
-    let total_files = files.len();
+    let mut queued: VecDeque<_> = discovered.into_iter().filter(|file| {
+        !checkpoints.contains_key(&file.key)
+            || file.timestamp >= now - chrono::Duration::hours(1)
+    }).collect();
+    let mut total_files = queued.len();
     log::info!(
-        "{}: {available_files} batches in the last 48 hours; {total_files} to check, {} skipped by checkpoints",
-        feed.key(),
-        available_files - total_files
+        "{}: {available_files} available batches; {total_files} to check, newest first; bulk latest trades and portfolio reports",
+        feed.key()
     );
     if job.is_some() {
         price::ensure_instruments(&db, &tracked).await?;
     }
-    let mut pending = stream::iter(files.into_iter().map(|file| {
-        let tracked = tracked.clone();
-        let downloads = downloads.clone();
-        let etag = checkpoints.get(&file.key).and_then(|c| c.etag.clone());
-        let previous_hash = checkpoints.get(&file.key).map(|c| c.content_hash.clone());
-        async move {
-            let permit = downloads.acquire_owned().await?;
-            log::debug!("{}: downloading {}", feed.key(), file.key);
-            let download = adapter::download(client, feed, &file, etag.as_deref())
-                .await
-                .with_context(|| format!("Downloading {}", file.key))?;
-            let Some(download) = download else {
-                return Ok::<_, anyhow::Error>(None);
-            };
-            let hash = blake3::hash(&download.bytes).to_hex().to_string();
-            if previous_hash.as_ref() == Some(&hash) {
-                return Ok(None);
-            }
-            let (key, etag, reports) = tokio::task::spawn_blocking(move || {
-                let reports = adapter::parse(feed, &file, &download.bytes, &tracked, Utc::now())
-                    .with_context(|| format!("Parsing {}", file.key))?;
-                Ok::<_, anyhow::Error>((file.key, download.etag, reports))
-            })
-            .await??;
-            drop(permit);
-            Ok(Some((key, hash, etag, reports)))
-        }
-    }))
-    .buffered(MAX_DOWNLOADS);
-    let (mut files_checked, mut files_processed, mut reports_processed) = (0, 0, 0);
+    let mut pending = JoinSet::new();
+    let mut last_discovery = Instant::now();
     let mut last_progress = Instant::now();
-    while let Some(result) = pending.next().await {
-        if let Some((file_key, hash, etag, reports)) = result? {
-            reports_processed += if let Some(job) = job {
-                price::commit_file(
-                    &mut db,
-                    job,
-                    &file_key,
-                    &universe,
-                    &hash,
-                    etag.as_deref(),
-                    reports,
-                )
-                .await?
-            } else {
-                reports.len()
+    let (mut files_checked, mut files_processed, mut reports_processed) = (0, 0, 0);
+    while !queued.is_empty() || !pending.is_empty() {
+        while pending.len() < MAX_DOWNLOADS {
+            let Some(file) = queued.pop_front() else { break };
+            let previous = checkpoints.get(&file.key);
+            pending.spawn(download_file(
+                client.clone(), downloads.clone(), feed, file,
+                previous.and_then(|checkpoint| checkpoint.etag.clone()),
+                previous.map(|checkpoint| checkpoint.content_hash.clone()),
+            ));
+        }
+        let Some(result) = pending.join_next().await else { break };
+        if let Some(file) = result.context("Price download task stopped")?? {
+            let ingestion = match job {
+                Some(job) => FileIngestion::Persist(job),
+                None => FileIngestion::DryRun(&mut dry_run),
             };
+            reports_processed += ingest_file(&mut db, feed, ingestion, file, &tracked, &scope_hash).await?;
             files_processed += 1;
         }
         files_checked += 1;
-        if files_checked == 1
-            || files_checked == total_files
-            || last_progress.elapsed() >= Duration::from_secs(30)
-        {
+        // Catch up the minute tail during a cold backfill. Rolling snapshots are
+        // handled once per job; re-enqueuing their fixed keys would never finish.
+        if feed != Feed::Euronext && last_discovery.elapsed() >= Duration::from_secs(60) {
+            let mut incoming = adapter::discover(client, feed).await?;
+            incoming.retain(|file| seen.insert(file.key.clone()));
+            incoming.sort_by(|a, b| b.timestamp.cmp(&a.timestamp).then(a.key.cmp(&b.key)));
+            available_files += incoming.len();
+            total_files += incoming.len();
+            for file in incoming.into_iter().rev() {
+                queued.push_front(file);
+            }
+            last_discovery = Instant::now();
+        }
+        if files_checked == 1 || files_checked == total_files || last_progress.elapsed() >= Duration::from_secs(30) {
             log::info!(
-                "{}: checked {files_checked}/{total_files} batches ({:.0}%); {files_processed} changed, {} unchanged, {reports_processed} tracked reports; elapsed {}s",
-                feed.key(),
-                files_checked as f64 * 100.0 / total_files as f64,
-                files_checked - files_processed,
-                started.elapsed().as_secs()
+                "{}: checked {files_checked}/{total_files} batches; {files_processed} changed, {reports_processed} portfolio reports; elapsed {}s",
+                feed.key(), started.elapsed().as_secs()
             );
             last_progress = Instant::now();
         }
     }
     if let Some(job) = job {
-        // Re-evaluate freshness tiers and split boundaries even if no new trade arrived.
-        log::info!("{}: selecting current valuations", feed.key());
         price::reselect_all(&mut db, job, &tracked).await?;
     }
     log::info!(
-        "{} refresh complete: {files_checked}/{total_files} batches checked, {files_processed} changed, {} unchanged, {reports_processed} tracked reports; elapsed {}s",
-        feed.key(),
-        files_checked - files_processed,
-        started.elapsed().as_secs()
+        "{} refresh complete: {files_checked}/{total_files} batches checked ({available_files} available); {reports_processed} portfolio reports; elapsed {}s",
+        feed.key(), started.elapsed().as_secs()
     );
     Ok((files_processed, reports_processed))
+}
+
+struct DownloadedFile {
+    file: types::SourceFile,
+    bytes: Vec<u8>,
+    etag: Option<String>,
+    content_hash: String,
+    permit: tokio::sync::OwnedSemaphorePermit,
+}
+
+async fn download_file(
+    client: Client,
+    downloads: Arc<tokio::sync::Semaphore>,
+    feed: Feed,
+    file: types::SourceFile,
+    etag: Option<String>,
+    previous_hash: Option<String>,
+) -> anyhow::Result<Option<DownloadedFile>> {
+    let permit = downloads.acquire_owned().await?;
+    let download = adapter::download(&client, feed, &file, etag.as_deref()).await
+        .with_context(|| format!("Downloading {}", file.key))?;
+    let Some(download) = download else { return Ok(None) };
+    let content_hash = blake3::hash(&download.bytes).to_hex().to_string();
+    if previous_hash.as_ref() == Some(&content_hash) {
+        return Ok(None);
+    }
+    Ok(Some(DownloadedFile {
+        file, bytes: download.bytes, etag: download.etag, content_hash, permit,
+    }))
+}
+
+enum FileIngestion<'a> {
+    Persist(&'a PriceJob),
+    // Taken while ingesting a file and restored only on success. An aborted file
+    // invalidates the refresh's state instead of exposing partial admissions.
+    DryRun(&'a mut Option<price::DryRunAdmissions>),
+}
+
+async fn ingest_file(
+    db: &mut tokio_postgres::Client,
+    feed: Feed,
+    ingestion: FileIngestion<'_>,
+    file: DownloadedFile,
+    tracked: &std::collections::HashSet<String>,
+    scope_hash: &str,
+) -> anyhow::Result<usize> {
+    const BATCH_SIZE: usize = 4096;
+    let DownloadedFile { file, bytes, etag, content_hash, permit } = file;
+    let file_key = file.key.clone();
+    enum Destination<'a> {
+        Persist(price::FileWriter<'a>),
+        DryRun {
+            client: &'a tokio_postgres::Client,
+            state: price::DryRunAdmissions,
+            resume: &'a mut Option<price::DryRunAdmissions>,
+            admitted: usize,
+        },
+    }
+    let mut destination = match ingestion {
+        FileIngestion::Persist(job) => Destination::Persist(price::begin_file(db, job, &file_key, tracked, scope_hash).await?),
+        FileIngestion::DryRun(resume) => Destination::DryRun {
+            client: db,
+            state: resume.take().context("Dry-run refresh already aborted")?,
+            resume,
+            admitted: 0,
+        },
+    };
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(2);
+    let (recycle, mut available) = tokio::sync::mpsc::channel(2);
+    // Three reusable batches bound all-market parsing independently of file size.
+    for _ in 0..2 {
+        recycle.try_send(Vec::<types::PriceReport>::with_capacity(BATCH_SIZE))?;
+    }
+    let parse = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        let mut batch = Vec::with_capacity(BATCH_SIZE);
+        let parsed = {
+            let mut emit = |report| -> anyhow::Result<()> {
+                batch.push(report);
+                if batch.len() == BATCH_SIZE {
+                    sender.blocking_send(std::mem::take(&mut batch))
+                        .map_err(|_| anyhow::anyhow!("Price ingestion cancelled"))?;
+                    batch = available.blocking_recv()
+                        .context("Price ingestion cancelled")?;
+                }
+                Ok(())
+            };
+            adapter::parse(feed, &file, &bytes, Utc::now(), &mut emit)
+                .with_context(|| format!("Parsing {}", file.key))?
+        };
+        if !batch.is_empty() {
+            sender.blocking_send(batch)
+                .map_err(|_| anyhow::anyhow!("Price ingestion cancelled"))?;
+        }
+        Ok::<_, anyhow::Error>(parsed)
+    });
+    while let Some(mut batch) = receiver.recv().await {
+        match &mut destination {
+            Destination::Persist(writer) => writer.push(&batch).await?,
+            Destination::DryRun { client, state, admitted, .. } => {
+                *admitted += state.push(client, &batch, tracked).await?;
+            }
+        }
+        batch.clear();
+        // Once parsing finishes, unused recycled storage can be dropped.
+        let _ = recycle.try_send(batch);
+    }
+    parse.await.context("Price parser task stopped")??;
+    match destination {
+        Destination::Persist(writer) => writer.finish(&content_hash, etag.as_deref()).await,
+        Destination::DryRun { state, resume, admitted, .. } => {
+            *resume = Some(state);
+            Ok(admitted)
+        },
+    }
 }
 
 pub async fn refresh_now(

@@ -13,8 +13,9 @@ If you need to take care of capital gains taxes in Austria, you can use Doughbox
 - Self-hosted, with a Docker image for easy deployment.
 - Web interface, CLI and API.
 - Support for FX conversions and trades in non-Euro currencies with FX rates from the ECB.
-- Optional automatic EUR equity/ETF prices from Xetra, Tradegate, Frankfurt, Cboe Europe and Euronext, using a durable Postgres queue with scheduling and worker limits managed in the web UI.
+- Optional automatic EUR equity/ETF portfolio prices from Xetra, Tradegate, Frankfurt, Cboe Europe and Euronext, using a durable Postgres queue with scheduling and worker limits managed in the web UI. The same bulk imports maintain market-wide latest-trade references for MCP.
 - Import brokerage statements from various brokers, e.g. Trade Republic, Revolut, Trading 212, etc.
+- Connect your an agent via MCP to make orders against your Trading 212 Account (demo or live supported); you approve or discard them in **Trading** before any broker submission.
 - Display Portfolio Allocation across brokerage accounts.
 - Display returns over time for the portfolio and individual positions (both open and closed).
 - Display a consolidated timeline across brokers of past trades, interest & dividend payments and fx conversions.
@@ -29,7 +30,7 @@ If you need to take care of capital gains taxes in Austria, you can use Doughbox
 ## (Known) Limitations
 
 - EUR as base currency — it supports trades in other currencies, but the base currency needs to be EUR.
-- Automatic prices are opt-in and currently cover EUR monetary quotations for instruments imported as `Equity` (including ETFs). Bonds, derivatives and non-EUR market quotations are not automatically priced. Coverage depends on eligible post-trade reports on the enabled venues, including zero-volume price indications; these are delayed valuations, not guaranteed executed-trade prices, live quotes or official closing prices.
+- Automatic portfolio valuation remains opt-in and EUR-only for instruments imported as `Equity` (including ETFs); known bonds and derivatives remain excluded. MCP last-trade references are delayed, not live/executable quotes, bid/ask books, an NBBO, or official closing prices. Missing reports, paused schedules and feed failures can leave references stale or unavailable.
 - Doughbox uses ISINs as primary identifier, so it's agnostic to the trading venue an instrument was bought. If it encounters a ticker symbol during the import, it attempts to convert it to an ISIN via the OpenFIGI API
 - Crypto isn't supported.
 - Custom physical gold, real estate, private loans, and interest-bearing cash accounts can be tracked manually in the web UI. They aren't considered for Taxation.
@@ -60,7 +61,20 @@ If you need to take care of capital gains taxes in Austria, you can use Doughbox
 | Cboe Europe     | BXE, CXE and DXE exchange streams; APA/TRF reporting excluded                                              | `CBOE-posttrade`     |
 | Euronext        | Equities and ETFs/funds across Amsterdam, Brussels, Dublin, Lisbon, Milan, Oslo and Paris, where available | `EURONEXT-posttrade` |
 
-All feeds use eligible EUR monetary reports for known equity/ETF ISINs. Select exchanges in **Data → Price Feeds → Manage scheduler**; refresh and reset controls are available per exchange. These are delayed valuations, not live quotes or guaranteed closing prices.
+Select exchanges in **Data → Price Feeds → Manage scheduler**; refresh and reset controls are available per exchange. All five bulk feeds maintain one compact latest reference per `(ISIN, currency, feed)` across the market, including unheld instruments and an empty portfolio. This does not create unrelated instruments, trades or accounting records. `market_price_report` history is restricted to portfolio equity/ETF reports.
+
+Compact storage keeps only current `mifid_latest_price` heads, not market-wide original-report history. `mifid_price_revision` keeps amendment/cancellation identity guards, so late originals cannot resurrect revoked references. Invalidating a persisted head also saves its full ordering boundary in `mifid_price_floor`. Until a candidate reaches that boundary, MCP returns unavailable rather than selecting a lower runner-up or backdated amendment: discarded competitors from earlier files cannot be reconstructed, even by replaying the original head. Fresh-file amendments/cancellations are still resolved against all per-file candidates before selecting a head.
+
+| Stored data                                   | Retention / pruning rule                                                                                                                          |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Latest reference per `(ISIN, currency, feed)` | Expires exactly **168 hours after its source event**; replay, receipt and `max_age_seconds` never extend it.                                      |
+| Amendment/cancellation identity guards        | Seven days after source publication; replay does not extend retention.                                                                            |
+| Recency floors for unavailable references     | Removed when a defensible head replaces them, or 168 hours after their execution-time boundary. V32 upgrade floors use at least the upgrade time. |
+| Portfolio source reports/tombstones           | Seven days after receipt/latest revision, unless selected by a portfolio instrument. Selected references stay protected.                          |
+| File checkpoints                              | Seven days after processing.                                                                                                                      |
+| Completed/failed jobs                         | 14 days after completion; active jobs are not pruned.                                                                                             |
+
+Startup/hourly cleanup drains batches of at most **5000 rows per table per transaction**, including all three compact tables, even when schedules are paused or feeds fail; successful jobs also run one cleanup batch. Reads enforce event/split validity before maintenance. Expiring a reference is not a delisting decision and never deletes instrument or accounting history. Keep PostgreSQL autovacuum enabled to reclaim/reuse space from updates and pruning; deleting rows does not guarantee that database files shrink on disk.
 
 ## Why does this exist?
 
@@ -72,17 +86,98 @@ In order for Doughbox to run, you need a running Postgres instance. A polygon.io
 
 ### Environment variables
 
-| Variable                  | Required         | Purpose                                                                        |
-| ------------------------- | ---------------- | ------------------------------------------------------------------------------ |
-| `POSTGRES_URL`            | yes              | Postgres connection string                                                     |
-| `POLYGON_TOKEN`           | for stock splits | Stock-split data from polygon.io                                               |
-| `FRED_TOKEN`              | no               | S&P 500 benchmark via FRED                                                     |
-| `PASSWORD`                | no               | Web UI login password                                                          |
-| `API_TOKEN`               | no               | Bearer token for the HTTP API                                                  |
-| `TG_TOKEN` / `TG_CHAT_ID` | no               | Scheduled Telegram portfolio reports and manual notifications (`portfolio -n`) |
-| `RUST_ENV`                | no               | Loads `.env.dev` when `development` (default), `.env.prod` when `production`   |
+| Variable                  | Required         | Purpose                                                                                                                       |
+| ------------------------- | ---------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `POSTGRES_URL`            | yes              | Postgres connection string                                                                                                    |
+| `POLYGON_TOKEN`           | for stock splits | Stock-split data from polygon.io                                                                                              |
+| `FRED_TOKEN`              | no               | S&P 500 benchmark via FRED                                                                                                    |
+| `PASSWORD`                | for trading      | Web UI login password; optional when trading is not used                                                                      |
+| `API_TOKEN`               | no               | Bearer token for the HTTP API                                                                                                 |
+| `TRADING_MASTER_KEY`      | for trading      | Persistent 32-byte key encoded as 64 hex characters; encrypts broker credentials                                              |
+| `TRADING_MCP_HOSTS`       | for remote MCP   | Comma-separated allowed MCP hostnames; defaults to `localhost,127.0.0.1,::1`                                                  |
+| `TG_TOKEN` / `TG_CHAT_ID` | no               | Scheduled Telegram portfolio reports, manual notifications (`portfolio -n`), and trading-proposal approval alerts             |
+| `DOUGHBOX_PUBLIC_URL`     | no               | Browser origin for proposal approval links, e.g. `https://doughbox.example.com`. If unset, links use the allowlisted MCP Host |
+| `RUST_ENV`                | no               | Loads `.env.dev` when `development` (default), `.env.prod` when `production`                                                  |
 
 The **Settings** page shows whether `TG_TOKEN` and `TG_CHAT_ID` are set on the server. Set values use the same green check-circle badges as successful imports; missing, empty, or whitespace-only values use a muted **Not set** badge. This read-only status never exposes the values and does not validate them with Telegram.
+
+### Agent-assisted trading
+
+Trading has two sections: **Orders** for pending approvals and recent order history, and **Setup** for the Trading 212 connection and agent access. Orders is listed first and opens by default when setup is complete or proposals/history already exist; a new account starts in Setup. Approval links open Orders directly; signed-out users on mobile and desktop are sent through login with the proposal return target preserved. Switching tabs preserves unsaved setup inputs and does not submit orders or change the connection.
+
+1. Set a non-empty `PASSWORD` and a persistent `TRADING_MASTER_KEY` on the server, then restart. Generate the encryption key once with `openssl rand -hex 32`; keep it in your server's secret configuration and back it up separately from PostgreSQL. Losing or changing it makes saved broker credentials unreadable.
+2. Open **Trading → Setup**, select **Demo** initially, and enter the Trading 212 **API key ID** and **Secret Key**. Only Trading 212 is supported for now. Create the key pair with the [API key setup](https://helpcentre.trading212.com/hc/en-us/articles/14584770928157-Trading-212-API-key) and see the [API docs](https://docs.trading212.com/api). Trading 212 uses HTTP Basic authentication with both fields. Grant account/metadata read and order-placement permissions. Doughbox verifies account access and saves a stock/ETF instrument catalog before connecting; missing order permission will cause approval submissions to fail.
+3. In **Setup**, create an agent token and copy it immediately. Only its hash is stored; the plaintext is displayed once in the tab and is not persisted in browser storage. Rotation immediately revokes the old token.
+4. Add the displayed **Streamable HTTP MCP endpoint**, `/api/trading/mcp`, to the external agent with `Authorization: Bearer <agent token>` on every request. Never give the agent your broker credentials, Doughbox password, or the owner-level `API_TOKEN`.
+5. Review incoming proposals in **Trading → Orders**. **Approve order / Approve entire batch** submits the reviewed limit orders immediately; **Discard** sends nothing to the broker. Live mode is explicitly labelled. `submit_trades` and `get_proposal` include `approval_url`. Show that exact URL to the user. Opening it only opens this page for that proposal; it does not approve or submit the order. If `TG_TOKEN` and `TG_CHAT_ID` are set, a newly saved proposal also sends that link to Telegram. The daily report schedule is not required for the alert.
+
+A typical agent-client configuration is:
+
+```json
+{
+  "mcpServers": {
+    "doughbox-trading": {
+      "url": "https://doughbox.example.com/api/trading/mcp",
+      "headers": { "Authorization": "Bearer <agent token>" }
+    }
+  }
+}
+```
+
+The MCP surface exposes:
+
+| Tool                 | Purpose                                                                                                                                                                                                                                                                        |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `search_instruments` | Search the connected stock/ETF catalog by ticker, name, or ISIN using `query`; returns exact Trading 212 tickers, ISINs, and native currencies.                                                                                                                                |
+| `get_quotes`         | Read delayed bulk-ingested last-trade prices for 1–50 exact Trading 212 `tickers`, with native provenance, source-event age and stored dated FX conversion.                                                                                                                    |
+| `submit_trades`      | Save one or up to 50 limit trades as a proposal, never execute them. The result includes `approval_url` for the signed-in Trading page. Opening it does not submit the order. A new proposal also requests a Telegram notification with that link when Telegram is configured. |
+| `get_proposal`       | Read a proposal's review/submission status by `id`. Pending results include the same `approval_url`; opening it does not approve the order.                                                                                                                                    |
+
+Before proposing limit orders, call `get_quotes`:
+
+```json
+{ "tickers": ["AAPL_US_EQ", "VODl_EQ"], "max_age_seconds": 1800 }
+```
+
+- Mapping comes from Trading 212's [instrument metadata endpoint](https://docs.trading212.com/api/instruments/instruments). Older saved catalogs are backfilled on first use without reconnecting, discarding proposals, or rotating the token. Metadata backfill attempts are spaced at least 60 seconds apart.
+- The batch returns `delayed: true`, `reference_type: "last_trade"`, `max_age_seconds`, `quotes` in request order **including duplicates**, and `notice`. Each quote has a nullable decimal-string **`price`** in the ticker's exact order `currency`, including **GBX pence**. There are no `bid`, `ask`, `midpoint`, `last_known` or `refresh_error` aliases. Refresh/reconnect MCP clients after upgrading to discover this changed contract.
+- One native `reference` retains decimal-string `price`, nullable `quantity`, currency, the exact bulk `feed` key from the table above, source `"Bulk post-trade files"`, venue, conservative source-event `as_of`, and `received_at`. Receipt is provenance, not freshness. No bid/ask, retail flag, side timestamps or publication timestamp is invented from a last trade.
+- Selection prefers non-indicative references, then those within `max_age_seconds` (positive; default 1800), then requested currency/exact GBP–GBX units, then EUR over other convertible currencies, then latest conservative source-event time. Equal candidates use lexical feed, currency and venue order for deterministic results; prices are never blended across reports.
+- `age_seconds` and `stale` describe source-event age; exactly `max_age_seconds` is not stale. `indicative: true` means the selected report explicitly has quantity zero; unknown quantity remains null and is not assumed zero. An indicative reference can still have a price, and this flag is independent of staleness. `unavailable_reason` explains absent references or failed conversion. No reference survives 168 hours, a future execution/publication time or an effective stock split merely because it was recently received or a large age was requested.
+- Native prices need no FX. Conversion uses stored effective rates on the reference event date and retains actual ECB observation dates. GBP/GBX uses exact 100-pence-per-pound factors; other pairs may cross via EUR. Missing/overflowing FX leaves the order-currency `price` null and preserves the native reference. Quotes never import FX; the existing ECB job warms catalog, portfolio and market-wide latest-reference currencies under **Data → Reference Data**.
+- Quote pricing reads PostgreSQL only: **no exchange quote HTTP, bulk downloads, price-job enqueue or FX fetching**. Existing broker catalog metadata backfill remains possible for older connections. All five supported bulk feeds contribute references for unheld instruments as well as holdings, but only completed background/manual imports populate them. Paused/disabled schedules, unselected feeds, outages, absent reports or expired references mean stale/unavailable results; a quote request never repairs coverage itself.
+- The agent must choose explicit ticker-currency `limit_price` values for **human review**. A last trade is only a delayed reference: quote lookup never chooses, copies, submits or reprices an order, or fetches broker-position marks. It is not a promise that Trading 212 can execute at that price.
+
+Example `submit_trades` arguments (one item for an individual trade; multiple items for a batch):
+
+```json
+{
+  "client_request_id": "agent-review-2026-001",
+  "title": "Proposed Apple purchase",
+  "note": "Explain the trade for the human reviewer.",
+  "trades": [
+    {
+      "ticker": "AAPL_US_EQ",
+      "side": "buy",
+      "quantity": "0.5",
+      "limit_price": "150.00",
+      "time_validity": "DAY"
+    }
+  ]
+}
+```
+
+Use tickers returned by `search_instruments`, not generic exchange symbols. Quantities and limit prices are positive, exact decimal strings; `side` is `buy` or `sell`. Prices use the instrument's native currency, including **GBX (pence), not GBP**, where applicable. `time_validity` is `DAY` (default) or `GOOD_TILL_CANCEL`. Market orders and automatic execution are intentionally absent.
+
+Fractional limit orders are supported, but accepting exact decimal strings does **not** mean Trading 212 accepts arbitrary quantity precision. Its [fractional-share rules](https://helpcentre.trading212.com/hc/en-us/articles/9511997937437-Can-I-trade-with-fractional-shares) depend on instrument price and the existing position: published examples allow two quantity decimals at prices 1 to below 10, three at 10 to below 100, and four at 100 to below 1,000; full-position sales may have exceptions. Do not assume four decimals for every instrument. A delayed quote or user-selected limit is not authoritative broker metadata for this rule. Choose broker-valid quantities explicitly **before human approval**; Doughbox never rounds approved quantities/limits or changes an order to make a rejected request succeed.
+
+After partial batch success, submitted/open orders remain active at Trading 212; they are not rolled back when a later trade fails. Do not include those accepted orders in a replacement batch, which could duplicate them. Any remaining trades require their own explicit review.
+
+If a mutation succeeds but the following status refresh fails, the trading tab pauses further mutations instead of restoring an actionable stale state. Use **Retry / refresh status** to reconcile without repeating the mutation. A newly created token remains in tab memory while paused and is shown again after a successful refresh; rotating it resets the token's copy acknowledgement. Definite connection-validation rejections leave the form editable.
+
+Replacing/disconnecting the broker discards pending proposals and revokes agent access, but never cancels existing broker orders. Token rotation alone preserves proposals. Recent history tracks broker-reported order status; manage cancellations in Trading 212 and continue importing statements for portfolio/tax accounting. The tab shows all pending proposals plus the latest 50 processed/discarded proposals; older records remain in PostgreSQL.
+
+`Open` is checked against Trading 212's [pending orders API](https://docs.trading212.com/api/orders/orders) (`GET /api/v0/equity/orders`); it is not inferred from successful submission. Orders no longer present there are checked against the latest 50 historical orders. The page refreshes every 10 seconds while idle, with broker status requests spaced at least 6 seconds apart. Order-status reconciliation skips submitting batches and updates only matched orders after the batch finishes; approved amounts and broker order IDs are preserved. Failed polls preserve the last-known state, and absence from both responses is not treated as a fill or cancellation. Grant the broker key order-read and order-history permissions as well as placement access.
 
 ### Docker
 
@@ -120,7 +215,7 @@ You can run the following commands in the CLI:
 
 `api`: the command to run the web server that serves both the web frontend and the API. The docker container automatically runs this.
 
-`prices refresh [--feed xetra|tradegate|frankfurt|cboe|euronext] [--dry-run]`: enqueue the persisted feed selection (or one explicitly named feed) and wait for completion, or validate the available last 48 hours without writing prices/checkpoints/jobs. Shows queue status and refresh progress; does not prompt for FX updates. With no selected feeds, choose a feed explicitly or update the UI selection.
+`prices refresh [--feed xetra|tradegate|frankfurt|cboe|euronext] [--dry-run]`: enqueue the persisted feed selection (or one explicitly named feed) and wait for completion, or parse and validate available last-48-hour bulk files without writing reports/prices/checkpoints/jobs. Parsing includes an empty portfolio. Dry-run counts are **portfolio source-report admissions** (holdings/existing identities), not estimates of market-wide retained heads. In-memory admission state spans batches and files within each feed refresh, so later off-scope amendments/cancellations of an earlier admission remain countable without database writes. Persistent ingestion additionally reduces all reports into compact global latest references. Shows queue status and portfolio-report processing progress; does not prompt for FX updates. With no selected feeds, choose a feed explicitly or update the UI selection.
 
 `prices status`: JSON summary of the schedule, queue and current holdings' price sources/timestamps.
 
@@ -202,7 +297,7 @@ Live performance and buy-ins return `422 IncompleteSecurityHistory` until the hi
 
 ### Manual web calculations
 
-- **Performance → Refresh performance** rebuilds the CSV/JSON securities exports and saves an income-inclusive, filterable portfolio history point. The saved widgets refresh when the job completes; leaving the page does not cancel the job.
+- **Portfolio → Performance → Refresh performance** rebuilds the CSV/JSON securities exports and saves an income-inclusive, filterable portfolio history point. The saved widgets refresh when the job completes; leaving the page does not cancel the job.
 - **Taxation → Recalculate taxation** saves the summary, transaction impacts and detailed export from one historical replay for the selected inclusive date range. Opening the page, switching tabs, changing dates and pressing **Export Detailed** only read saved results. An uncached range prompts an explicit calculation instead of calculating automatically.
 - Full-history taxation is saved as `output/taxation_detailed.json` plus the summary `output/taxation.json`. Selected ranges use `output/taxation_detailed_from_<YYYY-MM-DD|all>_until_<YYYY-MM-DD|all>.json` and never overwrite full-history results. The summary, transactions and detailed GET endpoints all read the matching bundle; legacy summary-only or mismatched-range exports need one explicit recalculation.
 - CSV/JSON files are published individually by atomic rename, so readers do not receive partially written files. A failed job preserves its previous last-success timestamp; publication across multiple files and the history database is not a single transaction.
@@ -240,12 +335,12 @@ Paths below are relative to `core/src/`, except `web/` paths.
 | Manual EUR amounts/fees                  | `assets.rs::resolve_eur`, `resolve_trade_fees_eur`, `try_convert_current`                                                                           | Explicit historical EUR equivalent or date FX; fee conversion may use explicit EUR/native price ratio. Missing current FX makes valuation unavailable.                                                                                                                                                          |
 | Position quantities                      | `database/queries/position.rs::get_positions`, `services/positions.rs`                                                                              | Canonical-ISIN purchases minus sales, split-adjusted only through the requested date; name/sort enrichment does not recalculate returns.                                                                                                                                                                        |
 | Stock splits                             | `services/instruments/stock_splits.rs`                                                                                                              | Compound all applicable `to/from` unit factors; price uses inverse factors, preserving consideration.                                                                                                                                                                                                           |
-| EUR FX / GBX                             | `database/queries/fx_rate.rs`, `services/market_data/fx_rates.rs::convert_amount`                                                                   | EUR→foreign uses stored rate; reverse divides; GBX applies 100 pence/GBP. Latest available ECB observation **on or before** date; conversion multiplies by selected rate. No non-EUR cross-rate API.                                                                                                            |
+| EUR FX / GBX                             | `database/queries/fx_rate.rs`, `services/market_data/fx_rates.rs::convert_amount`                                                                   | Accounting conversion retains its EUR-leg requirement. MiFID quote conversion additionally supports stored EUR-cross rates. GBX applies 100 pence/GBP. Each ECB observation is the latest available **on or before** the reference date, with its actual date retained.                                         |
 | Price selection                          | `database/queries/price.rs`, `services/market_data/prices/*`                                                                                        | Positive eligible EUR quotation/manual pin selection; stale pre-split prices cannot silently value current quantities. Feed parsers normalize quotation/notation, not investment returns.                                                                                                                       |
 | Benchmark                                | `performance.rs::simulate_alternate_purchase`, `market_data/fred.rs`                                                                                | Gross EUR purchase budget / nominal index level; sales release the same split-adjusted held fraction. Latest valid observation on/before date; unavailable prehistory errors. A price-index proxy, not an investable EUR total-return benchmark.                                                                |
 | Snapshot/reporting                       | `services/portfolio_reports.rs`, `database/{models,queries}/performance.rs`, `services/telegram_reports.rs`                                         | Persist raw income-inclusive value/net/gross aggregates and per-asset components. P&L = value − net baseline; period P&L change = value delta − baseline delta. Reject incomplete snapshots. Legacy component breakdowns remain unknown.                                                                        |
 | Monthly activity                         | `database/queries/composite.rs::get_monthly_investment_activity`                                                                                    | UTC monthly buys − sales before fees; cash deposits − withdrawals; recorded dividends + interest. Three separate, non-additive measures; includes archived history, excludes valuations/snapshots/debt principal.                                                                                               |
-| Austrian security cost                   | `services/taxation/wac.rs::SecWac::update`                                                                                                          | Moving EUR average per broker/ISIN: `(old units × old EUR WAC + new units × acquisition EUR price) / total units`. No deductible acquisition fees. Broker identifies the brokerage portfolio; multiple brokerage portfolios at the same broker cannot be distinguished. |
+| Austrian security cost                   | `services/taxation/wac.rs::SecWac::update`                                                                                                          | Moving EUR average per broker/ISIN: `(old units × old EUR WAC + new units × acquisition EUR price) / total units`. No deductible acquisition fees. Broker identifies the brokerage portfolio; multiple brokerage portfolios at the same broker cannot be distinguished.                                         |
 | Austrian security disposal               | `taxation/process.rs::TaxEngine::trade`                                                                                                             | Sale EUR proceeds − sold units × historical EUR WAC. Includes FX while holding the security; excludes trading fees and does not add a second cash-FX gain.                                                                                                                                                      |
 | Austrian gross income / withholding      | `services/events.rs::income_tax_values`, `TaxEngine::income`, `services/dtt.rs`                                                                     | Native gross converted independently to EUR; actual withholding kept separate from estimated treaty-capped credit. Never increase gross by only the creditable withholding. Unknown treaty/source does not imply a credit.                                                                                      |
 | Reporting funds / OeKB                   | `TaxEngine::fund`, `normalize_fund_shares`, `market_data/oekb.rs`                                                                                   | 10287 supplies dividend-equivalent income; 10289 adjusts EUR basis; 10288 supplies reported assessment credit subject to supported context. Normalize per-share reports for splits. 10595 is a warning and 10759 loss-offset information, **not extra income**.                                                 |

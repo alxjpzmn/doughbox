@@ -29,7 +29,7 @@ const Portfolio = () => {
     <>
       {error && error.details?.events_present === false && <EmptyState variant={EmptyStateVariants.WithCliInstructionImportTrades} docker={error.details?.in_docker} />}
       {error && error.details?.events_present !== false && (
-        <div role="alert" className="bg-destructive/10 text-destructive mb-6 rounded-xl border border-destructive/20 p-4 text-sm">
+        <div role="alert" className="bg-destructive/10 text-destructive-foreground mb-6 rounded-xl border border-destructive/20 p-4 text-sm">
           Portfolio could not be loaded.
         </div>
       )}

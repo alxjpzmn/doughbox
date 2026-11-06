@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use chrono::{Duration as ChronoDuration, Utc};
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
@@ -6,7 +8,10 @@ use tokio_postgres::{Client, NoTls};
 use super::*;
 use crate::database::queries::{background_job as jobs, price, price_scheduler};
 
+mod retention;
+mod quotes;
 mod scheduler;
+mod streaming;
 
 #[test]
 fn retries_back_off_and_respect_provider_retry_after() {
@@ -66,6 +71,36 @@ async fn cleanup(db: &Client, schema: &str) {
     .await
     .unwrap();
 }
+
+// Existing portfolio fixtures use instrument rows directly. Keep this collector
+// test-only; production pins the equity-only tracked_isins result for each job.
+async fn write_file(
+    db: &mut Client,
+    job: &PriceJob,
+    file_key: &str,
+    content_hash: &str,
+    etag: Option<&str>,
+    reports: Vec<types::PriceReport>,
+) -> anyhow::Result<usize> {
+    let tracked: HashSet<String> = db.query("SELECT id FROM instrument", &[]).await?
+        .into_iter().map(|row| row.get(0)).collect();
+    let scope_hash = price::portfolio_scope_hash(&tracked);
+    let mut writer = price::begin_file(db, job, file_key, &tracked, &scope_hash).await?;
+    for batch in reports.chunks(4096) {
+        writer.push(batch).await?;
+    }
+    writer.finish(content_hash, etag).await
+}
+
+async fn connect_schema(schema: &str) -> Client {
+    let (db, connection) = tokio_postgres::connect(
+        &std::env::var("TEST_POSTGRES_URL").unwrap(), NoTls,
+    ).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    db.batch_execute(&format!("SET search_path TO {schema}")).await.unwrap();
+    db
+}
+
 
 #[tokio::test]
 #[ignore = "Requires an isolated TEST_POSTGRES_URL; also run in CI"]
@@ -186,17 +221,7 @@ async fn pricing_database_queue_recovers_leases_and_coalesces_requests() {
     assert_eq!(recovered.attempts, 2);
     assert!(jobs::renew(&db, &first).await.is_err());
     assert!(jobs::finish(&mut db, &first).await.is_err());
-    assert!(price::commit_file(
-        &mut db,
-        &first,
-        "expired-file",
-        "universe",
-        "hash",
-        None,
-        vec![]
-    )
-    .await
-    .is_err());
+    assert!(price::begin_file(&mut db, &first, "stale", &HashSet::new(), &price::portfolio_scope_hash(&HashSet::new())).await.is_err());
     let checkpoint_count: i64 = db
         .query_one("SELECT count(*) FROM market_data_file", &[])
         .await
@@ -293,15 +318,7 @@ async fn pricing_database_interrupted_job_preserves_progress_and_fences_old_work
     )
     .await
     .unwrap();
-    price::commit_file(
-        &mut db,
-        &first,
-        "saved-batch",
-        "universe",
-        "hash",
-        None,
-        vec![],
-    )
+    write_file(&mut db, &first, "saved-batch", "hash", None, vec![])
     .await
     .unwrap();
     jobs::release(&db, &first).await.unwrap();
@@ -312,7 +329,7 @@ async fn pricing_database_interrupted_job_preserves_progress_and_fences_old_work
     assert!(resumed.lease_token > first.lease_token);
     assert!(jobs::release(&db, &first).await.is_err());
     assert!(jobs::finish(&mut db, &first).await.is_err());
-    let checkpoints = price::checkpoints(&db, Feed::Frankfurt.key(), "universe")
+    let checkpoints = price::checkpoints(&db, Feed::Frankfurt.key(), &price::portfolio_scope_hash(&HashSet::new()))
         .await
         .unwrap();
     assert_eq!(checkpoints["saved-batch"].content_hash, "hash");
@@ -352,6 +369,7 @@ fn report(id: &str, minutes_ago: i64, value: Decimal) -> types::PriceReport {
         revision_hash: id.into(),
         price: value,
         currency: "EUR".into(),
+        quantity: Some(dec!(1)),
         eligible: true,
     }
 }
@@ -379,40 +397,26 @@ async fn pricing_database_policy_replay_reselects_identical_reports_without_revi
     )
     .await
     .unwrap();
-    let tracked = std::collections::HashSet::from(["DE0007164600".into()]);
-    let old_universe = blake3::hash(b"DE0007164600\n").to_hex().to_string();
-    let universe = price::universe_hash(&tracked);
     jobs::enqueue(&mut db, &[Feed::Frankfurt]).await.unwrap();
     let job = jobs::claim(&db, &[Feed::Frankfurt]).await.unwrap().unwrap();
     let mut indication = report("zero-quantity-indication", 5, dec!(48));
     indication.venue = "FRAB".into();
+    indication.quantity = Some(Decimal::ZERO);
     let mut previously_rejected = indication.clone();
     previously_rejected.eligible = false;
-    price::commit_file(
-        &mut db,
-        &job,
-        "minute",
-        &old_universe,
-        "same-content",
-        None,
-        vec![previously_rejected],
-    )
+    write_file(&mut db, &job, "minute", "same-content", None, vec![previously_rejected])
     .await
     .unwrap();
     assert_eq!(selected(&db).await.0, dec!(50));
-    assert!(price::checkpoints(&db, &job.feed, &universe)
+    db.execute(
+        "UPDATE market_data_file SET parser_version = 'previous-policy' WHERE feed = $1",
+        &[&job.feed],
+    ).await.unwrap();
+    assert!(price::checkpoints(&db, &job.feed, &price::portfolio_scope_hash(&HashSet::from(["DE0007164600".into()])))
         .await
         .unwrap()
         .is_empty());
-    price::commit_file(
-        &mut db,
-        &job,
-        "minute",
-        &universe,
-        "same-content",
-        None,
-        vec![indication.clone()],
-    )
+    write_file(&mut db, &job, "minute", "same-content", None, vec![indication.clone()])
     .await
     .unwrap();
     assert_eq!(
@@ -427,26 +431,10 @@ async fn pricing_database_policy_replay_reselects_identical_reports_without_revi
     cancellation.revision = 2;
     cancellation.published_ns += 1;
     cancellation.eligible = false;
-    price::commit_file(
-        &mut db,
-        &job,
-        "cancel",
-        &universe,
-        "cancel-content",
-        None,
-        vec![cancellation],
-    )
+    write_file(&mut db, &job, "cancel", "cancel-content", None, vec![cancellation])
     .await
     .unwrap();
-    price::commit_file(
-        &mut db,
-        &job,
-        "minute",
-        &universe,
-        "same-content",
-        None,
-        vec![indication],
-    )
+    write_file(&mut db, &job, "minute", "same-content", None, vec![indication])
     .await
     .unwrap();
     assert_eq!(selected(&db).await.0, dec!(50));
@@ -544,15 +532,7 @@ async fn pricing_database_feed_fallback_respects_freshness_and_precedence() {
     ];
     for (index, (feed, change, expected_feed, expected)) in cases.into_iter().enumerate() {
         let job = feed_jobs.iter().find(|job| job.feed == feed.key()).unwrap();
-        price::commit_file(
-            &mut db,
-            job,
-            &format!("minute-{index}"),
-            "universe",
-            &format!("hash-{index}"),
-            None,
-            vec![change],
-        )
+        write_file(&mut db, job, &format!("minute-{index}"), &format!("hash-{index}"), None, vec![change])
         .await
         .unwrap();
         assert_eq!(
@@ -588,15 +568,7 @@ async fn pricing_database_revisions_pins_and_checkpoints_are_atomic() {
     assert_eq!(ids, [job.id]);
     let first = report("first", 20, dec!(100));
     let second = report("second", 10, dec!(101));
-    price::commit_file(
-        &mut db,
-        &job,
-        "minute-1",
-        "universe",
-        "hash1",
-        None,
-        vec![first.clone(), second.clone()],
-    )
+    write_file(&mut db, &job, "minute-1", "hash1", None, vec![first.clone(), second.clone()])
     .await
     .unwrap();
     assert_eq!(
@@ -604,15 +576,7 @@ async fn pricing_database_revisions_pins_and_checkpoints_are_atomic() {
         (dec!(101), "deutsche_boerse".into(), Some("second".into()))
     );
     // Replaying old files and duplicate rows does not roll the current price back.
-    price::commit_file(
-        &mut db,
-        &job,
-        "daily",
-        "universe",
-        "hash2",
-        None,
-        vec![first.clone(), first.clone()],
-    )
+    write_file(&mut db, &job, "daily", "hash2", None, vec![first.clone(), first.clone()])
     .await
     .unwrap();
     assert_eq!(selected(&db).await.0, dec!(101));
@@ -620,15 +584,7 @@ async fn pricing_database_revisions_pins_and_checkpoints_are_atomic() {
     cancellation.revision = 2;
     cancellation.eligible = false;
     cancellation.published_ns += 1000;
-    price::commit_file(
-        &mut db,
-        &job,
-        "cancellation",
-        "universe",
-        "hash3",
-        None,
-        vec![cancellation],
-    )
+    write_file(&mut db, &job, "cancellation", "hash3", None, vec![cancellation])
     .await
     .unwrap();
     assert_eq!(selected(&db).await.0, dec!(100));
@@ -637,38 +593,14 @@ async fn pricing_database_revisions_pins_and_checkpoints_are_atomic() {
     tombstone.revision = 2;
     tombstone.eligible = false;
     tombstone.published_ns += 1000;
-    price::commit_file(
-        &mut db,
-        &job,
-        "tombstone",
-        "universe",
-        "hash-tombstone",
-        None,
-        vec![tombstone],
-    )
+    write_file(&mut db, &job, "tombstone", "hash-tombstone", None, vec![tombstone])
     .await
     .unwrap();
-    price::commit_file(
-        &mut db,
-        &job,
-        "original-after-tombstone",
-        "universe",
-        "hash-original",
-        None,
-        vec![late_original],
-    )
+    write_file(&mut db, &job, "original-after-tombstone", "hash-original", None, vec![late_original])
     .await
     .unwrap();
     assert_eq!(selected(&db).await.0, dec!(100));
-    price::commit_file(
-        &mut db,
-        &job,
-        "late-original",
-        "universe",
-        "hash4",
-        None,
-        vec![second],
-    )
+    write_file(&mut db, &job, "late-original", "hash4", None, vec![second])
     .await
     .unwrap();
     assert_eq!(selected(&db).await.0, dec!(100));
@@ -676,44 +608,20 @@ async fn pricing_database_revisions_pins_and_checkpoints_are_atomic() {
     amendment.revision = 1;
     amendment.price = dec!(99);
     amendment.published_ns += 2000;
-    price::commit_file(
-        &mut db,
-        &job,
-        "amendment",
-        "universe",
-        "hash5",
-        None,
-        vec![amendment],
-    )
+    write_file(&mut db, &job, "amendment", "hash5", None, vec![amendment])
     .await
     .unwrap();
     assert_eq!(selected(&db).await.0, dec!(99));
     // Identical price on a newer trade still advances provenance and the timestamp.
     let newer = report("newer", 5, dec!(99));
-    price::commit_file(
-        &mut db,
-        &job,
-        "newer",
-        "universe",
-        "hash6",
-        None,
-        vec![newer],
-    )
+    write_file(&mut db, &job, "newer", "hash6", None, vec![newer])
     .await
     .unwrap();
     assert_eq!(selected(&db).await.2.as_deref(), Some("newer"));
     price::set_manual(&mut db, "DE0007164600", dec!(123), Utc::now())
         .await
         .unwrap();
-    price::commit_file(
-        &mut db,
-        &job,
-        "pinned",
-        "universe",
-        "hash7",
-        None,
-        vec![report("latest", 1, dec!(105))],
-    )
+    write_file(&mut db, &job, "pinned", "hash7", None, vec![report("latest", 1, dec!(105))])
     .await
     .unwrap();
     assert_eq!(selected(&db).await.0, dec!(123));
@@ -733,16 +641,12 @@ async fn pricing_database_revisions_pins_and_checkpoints_are_atomic() {
     assert!(quotes[1].price.is_none());
     assert_eq!(quotes[0].price, quotes[2].price);
     assert_eq!(
-        price::checkpoints(&db, &job.feed, "universe")
+        price::checkpoints(&db, &job.feed, &price::portfolio_scope_hash(&HashSet::from(["DE0007164600".into()])))
             .await
             .unwrap()
             .len(),
         9
     );
-    assert!(price::checkpoints(&db, &job.feed, "new-universe")
-        .await
-        .unwrap()
-        .is_empty());
     // A split makes old unadjusted quotes and fallbacks unusable; don't multiply a
     // post-split inventory by a pre-split price or silently invent an adjusted quote.
     db.execute(
@@ -771,17 +675,7 @@ async fn pricing_database_revisions_pins_and_checkpoints_are_atomic() {
             .is_none()
     );
     jobs::finish(&mut db, &job).await.unwrap();
-    assert!(price::commit_file(
-        &mut db,
-        &job,
-        "after-finish",
-        "universe",
-        "hash",
-        None,
-        vec![]
-    )
-    .await
-    .is_err());
+    assert!(price::begin_file(&mut db, &job, "finished", &HashSet::new(), &price::portfolio_scope_hash(&HashSet::new())).await.is_err());
     cleanup(&db, &schema).await;
 }
 
@@ -883,15 +777,7 @@ async fn pricing_database_imports_preserve_market_prices_and_manual_pins() {
         record_execution_price(&db, &execution).await.unwrap();
         jobs::enqueue(&mut db, &[feed]).await.unwrap();
         let job = jobs::claim(&db, &[feed]).await.unwrap().unwrap();
-        price::commit_file(
-            &mut db,
-            &job,
-            "market",
-            "universe",
-            "hash",
-            None,
-            vec![report("market", 5, dec!(100))],
-        )
+        write_file(&mut db, &job, "market", "hash", None, vec![report("market", 5, dec!(100))])
         .await
         .unwrap();
         let market_time = price::quotes(&db, std::slice::from_ref(&execution.id))
@@ -948,8 +834,8 @@ async fn pricing_database_imports_preserve_market_prices_and_manual_pins() {
 
 #[tokio::test]
 #[ignore = "Requires an isolated TEST_POSTGRES_URL; also run in CI"]
-async fn pricing_database_tracks_only_known_equities_and_replays_new_instruments() {
-    let (db, schema) = test_database().await;
+async fn pricing_database_tracks_only_portfolio_equities_after_listing_changes() {
+    let (mut db, schema) = test_database().await;
     for (hash, isin, security_type) in [
         ("equity", "equity-isin", "Equity"),
         ("bond", "bond-isin", "Bond"),
@@ -967,19 +853,47 @@ async fn pricing_database_tracks_only_known_equities_and_replays_new_instruments
     let tracked = price::tracked_isins(&db).await.unwrap();
     assert_eq!(
         tracked,
-        std::collections::HashSet::from(["equity-isin".into(), "new-isin".into()])
+        std::collections::HashSet::from([
+            "equity-isin".into(),
+            "new-isin".into(),
+        ])
     );
     price::ensure_instruments(&db, &tracked).await.unwrap();
     assert!(price::quotes(&db, &["new-isin".into()]).await.unwrap()[0]
         .price
         .is_none());
-    let old_fingerprint = price::universe_hash(&tracked);
-    db.execute("INSERT INTO trade(hash, broker, date, units, avg_price_per_unit, eur_avg_price_per_unit,
-        security_type, direction, currency, isin, date_added)
-        VALUES('new-equity', 'Test', now(), 1, 1, 1, 'Equity', 'Buy', 'EUR', 'another-equity', now())", &[]).await.unwrap();
-    assert_ne!(
-        old_fingerprint,
-        price::universe_hash(&price::tracked_isins(&db).await.unwrap())
+    jobs::enqueue(&mut db, &[Feed::Xetra]).await.unwrap();
+    let job = jobs::claim(&db, &[Feed::Xetra]).await.unwrap().unwrap();
+    let mut bond = report("bond-print", 1, dec!(99));
+    bond.isin = "bond-isin".into();
+    let mut derivative = report("derivative-print", 1, dec!(98));
+    derivative.isin = "derivative-isin".into();
+    let mut equity = report("equity-print", 1, dec!(101));
+    equity.isin = "equity-isin".into();
+    let mut unheld = report("unheld-print", 1, dec!(97));
+    unheld.isin = "unheld-isin".into();
+    let reports = [bond, derivative, equity, unheld];
+    let mut dry_run = price::DryRunAdmissions::default();
+    assert_eq!(dry_run.push(&db, &reports, &tracked).await.unwrap(), 1);
+    assert_eq!(db.query_one("SELECT count(*) FROM market_price_report", &[]).await.unwrap().get::<_, i64>(0), 0);
+    let scope_hash = price::portfolio_scope_hash(&tracked);
+    let mut writer = price::begin_file(&mut db, &job, "mixed", &tracked, &scope_hash).await.unwrap();
+    writer.push(&reports).await.unwrap();
+    assert_eq!(writer.finish("hash", None).await.unwrap(), 1);
+    assert_eq!(db.query_one("SELECT count(*) FROM market_price_report", &[]).await.unwrap().get::<_, i64>(0), 1);
+    assert_eq!(price::quotes(&db, &["equity-isin".into()]).await.unwrap()[0].price, Some(dec!(101)));
+    let mut latest = price::latest_prices(&db, &[
+        "bond-isin".into(), "derivative-isin".into(), "equity-isin".into(), "unheld-isin".into(),
+    ]).await.unwrap();
+    latest.sort_by(|a, b| a.isin.cmp(&b.isin));
+    assert_eq!(latest.iter().map(|quote| (quote.isin.as_str(), quote.price)).collect::<Vec<_>>(), vec![
+        ("bond-isin", dec!(99)), ("derivative-isin", dec!(98)),
+        ("equity-isin", dec!(101)), ("unheld-isin", dec!(97)),
+    ]);
+    assert_eq!(
+        db.query_one("SELECT count(*) FROM instrument WHERE id IN ('unheld-isin', 'bond-isin', 'derivative-isin', 'mixed-isin')", &[])
+            .await.unwrap().get::<_, i64>(0),
+        0
     );
     cleanup(&db, &schema).await;
 }
@@ -1036,6 +950,7 @@ async fn pricing_database_instrument_catalog_and_rename_preserve_price_safety() 
     assert_eq!(renamed.quote.price, Some(exact_price));
     assert_eq!(renamed.quote.source, "manual");
     assert!(renamed.quote.pinned);
+    assert_eq!(renamed.quote.indicative, None);
 
     // No trades or positions exist: catalog quotes must include all known instruments.
     let catalog = get_all_instruments(&db).await.unwrap();
@@ -1071,5 +986,347 @@ async fn pricing_database_instrument_catalog_and_rename_preserve_price_safety() 
     assert_eq!(unpinned.quote.price, Some(dec!(50)));
     assert_eq!(unpinned.quote.source, "execution_fallback");
     assert!(!unpinned.quote.pinned);
+    cleanup(&db, &schema).await;
+}
+
+
+#[tokio::test]
+#[ignore = "Requires an isolated TEST_POSTGRES_URL; also run in CI"]
+async fn pricing_database_latest_upgrade_preserves_trading_and_portfolio_with_compact_bulk_heads() {
+    let (mut db, schema) = test_database_at(refinery::Target::Version(27)).await;
+    configure_scheduler(&mut db, &config()).await.unwrap();
+    db.batch_execute(
+        "UPDATE trading_connection SET generation = 'saved-generation', environment = 'demo',
+            credentials = 'saved-encrypted-credentials', agent_token_hash = 'saved-agent-hash',
+            instruments = '[{\"ticker\":\"TEST\",\"isin\":\"saved-holding\"}]'::jsonb;
+         INSERT INTO trading_proposals(id, generation, client_request_id, request, title, note, environment, trades)
+            VALUES('saved-proposal', 'saved-generation', 'saved-request', '{}', 'Saved', 'Keep', 'demo', '[]');
+         INSERT INTO market_data_file(feed, file_key, parser_version, content_hash)
+            VALUES('CBOE-posttrade', 'old-file', 'previous-policy', 'old-hash');
+         INSERT INTO market_price_report(id, feed, isin, transaction_id, publisher, venue,
+            executed_at, executed_ns, published_ns, revision, revision_hash, price, currency, eligible, file_key)
+            VALUES('saved-report', 'CBOE-posttrade', 'saved-holding', 'saved-report', 'CEUX', 'CEUX',
+                now() - interval '1 hour',
+                (extract(epoch FROM now() - interval '1 hour') * 1000000000)::bigint,
+                (extract(epoch FROM now() - interval '1 hour') * 1000000000)::bigint,
+                0, 'saved', 42, 'EUR', TRUE, 'old-file');
+         INSERT INTO instrument(id, name, price, last_price_update, price_pinned, price_report_id)
+            VALUES('saved-holding', 'Saved holding', 42, '2020-01-01', TRUE, 'saved-report');
+         INSERT INTO mifid_latest_price(isin, currency, report_id, as_of)
+            SELECT isin, currency, id, executed_at FROM market_price_report WHERE id = 'saved-report';",
+    ).await.unwrap();
+    let state_sql = "SELECT
+        (SELECT to_jsonb(c)::text FROM trading_connection c),
+        (SELECT to_jsonb(p)::text FROM trading_proposals p),
+        (SELECT to_jsonb(i)::text FROM instrument i),
+        (SELECT jsonb_agg(to_jsonb(s) ORDER BY feed)::text FROM price_feed_schedule s),
+        (SELECT to_jsonb(r)::text FROM market_price_report r),
+        (SELECT to_jsonb(s)::text FROM price_scheduler_settings s)";
+    let before = db.query_one(state_sql, &[]).await.unwrap();
+    let before: Vec<String> = (0..6).map(|i| before.get(i)).collect();
+    refinery::embed_migrations!("migrations");
+    migrations::runner().set_target(refinery::Target::Version(29)).run_async(&mut db).await.unwrap();
+    db.batch_execute(
+        "INSERT INTO mifid_quote_cache(isin, checked_at, as_of, state)
+         VALUES('obsolete-book', now(), now(), '{\"feeds\":[]}')",
+    ).await.unwrap();
+    let upgrade = migrations::runner().set_target(refinery::Target::Version(30)).run_async(&mut db).await.unwrap();
+    assert_eq!(upgrade.applied_migrations().len(), 1);
+    migrations::runner().run_async(&mut db).await.unwrap();
+    let after = db.query_one(state_sql, &[]).await.unwrap();
+    let after: Vec<String> = (0..6).map(|i| after.get(i)).collect();
+    assert_eq!(before, after);
+    assert!(db.query_one("SELECT to_regclass('mifid_quote_cache')::text", &[]).await.unwrap().get::<_, Option<String>>(0).is_none());
+    let latest = price::latest_prices(&db, &["saved-holding".into(), "obsolete-book".into()]).await.unwrap();
+    let saved = latest.iter().find(|reference| reference.isin == "saved-holding").unwrap();
+    assert_eq!(saved.price, dec!(42));
+    assert_eq!(saved.currency, "EUR");
+    assert_eq!(saved.feed, "CBOE-posttrade");
+    assert!(!latest.iter().any(|reference| reference.isin == "obsolete-book"));
+    let checkpoint = db.query_one("SELECT scope_hash, content_hash FROM market_data_file", &[]).await.unwrap();
+    assert_eq!(checkpoint.get::<_, String>("scope_hash"), "global");
+    assert_eq!(checkpoint.get::<_, String>("content_hash"), "old-hash");
+    assert!(price::checkpoints(&db, Feed::Cboe.key(), &price::portfolio_scope_hash(&HashSet::from(["saved-holding".into()]))).await.unwrap().is_empty());
+    assert!(migrations::runner().run_async(&mut db).await.unwrap().applied_migrations().is_empty());
+    cleanup(&db, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "Requires an isolated TEST_POSTGRES_URL; also run in CI"]
+async fn pricing_database_cache_retirement_preserves_pins_when_cache_is_already_absent() {
+    let (mut db, schema) = test_database_at(refinery::Target::Version(30)).await;
+    db.batch_execute(
+        "DROP TABLE mifid_quote_cache;
+         INSERT INTO instrument(id, name, price, last_price_update, price_pinned, price_source)
+         VALUES('saved-without-cache', 'Saved holding', 42, '2020-01-01', TRUE, 'manual')",
+    )
+    .await
+    .unwrap();
+    refinery::embed_migrations!("migrations");
+    migrations::runner().run_async(&mut db).await.unwrap();
+    let upgraded: bool = db
+        .query_one(
+            "SELECT EXISTS(SELECT 1 FROM refinery_schema_history WHERE version = 31)
+                AND to_regclass('mifid_quote_cache') IS NULL",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert!(upgraded);
+    let quotes = price::quotes(&db, &["saved-without-cache".into()])
+        .await
+        .unwrap();
+    assert_eq!(
+        (quotes[0].price, quotes[0].source.as_str(), quotes[0].pinned),
+        (Some(dec!(42)), "manual", true)
+    );
+    cleanup(&db, &schema).await;
+}
+
+
+#[tokio::test]
+#[ignore = "Requires an isolated TEST_POSTGRES_URL; also run in CI"]
+async fn pricing_database_scoped_identity_amendments_cancellations_and_old_replays() {
+    let (mut db, schema) = test_database().await;
+    let tracked = HashSet::from(["DE0007164600".into()]);
+    price::ensure_instruments(&db, &tracked).await.unwrap();
+    jobs::enqueue(&mut db, &[Feed::Cboe]).await.unwrap();
+    let job = jobs::claim(&db, &[Feed::Cboe]).await.unwrap().unwrap();
+    let fallback = report("fallback", 20, dec!(100));
+    let original = report("move", 10, dec!(101));
+    write_file(&mut db, &job, "initial", "initial", None, vec![fallback, original.clone()]).await.unwrap();
+    assert_eq!(selected(&db).await.0, dec!(101));
+    let mut amendment = original.clone();
+    amendment.isin = "moved-untracked".into();
+    amendment.currency = "JPY".into();
+    amendment.price = dec!(11000);
+    amendment.revision = 1;
+    amendment.published_ns += 1000;
+    let mut dry_run = price::DryRunAdmissions::default();
+    assert_eq!(dry_run.push(&db, std::slice::from_ref(&amendment), &tracked).await.unwrap(), 1);
+    assert_eq!(selected(&db).await.0, dec!(101));
+    write_file(&mut db, &job, "move", "move", None, vec![amendment.clone()]).await.unwrap();
+    assert_eq!(selected(&db).await.0, dec!(100));
+    write_file(&mut db, &job, "old-replay", "old", None, vec![original]).await.unwrap();
+    let moved = db.query_one("SELECT isin, currency, revision FROM market_price_report WHERE id = 'move'", &[]).await.unwrap();
+    assert_eq!(moved.get::<_, String>("isin"), "moved-untracked");
+    assert_eq!(moved.get::<_, String>("currency"), "JPY");
+    assert_eq!(moved.get::<_, i32>("revision"), 1);
+    let mut cancellation = amendment;
+    cancellation.revision = 2;
+    cancellation.eligible = false;
+    cancellation.published_ns += 1000;
+    write_file(&mut db, &job, "cancel-moved", "cancel", None, vec![cancellation]).await.unwrap();
+    assert_eq!(selected(&db).await.0, dec!(100));
+    assert_eq!(db.query_one("SELECT revision FROM market_price_report WHERE id = 'move'", &[]).await.unwrap().get::<_, i32>(0), 2);
+
+    let unseen = report("correction-before-original", 3, dec!(999));
+    let mut correction = unseen.clone();
+    correction.revision = 1;
+    correction.published_ns += 1000;
+    correction.price = dec!(99);
+    let scope_hash = price::portfolio_scope_hash(&tracked);
+    let mut writer = price::begin_file(&mut db, &job, "correction-first", &tracked, &scope_hash).await.unwrap();
+    writer.push(&[correction.clone(), correction.clone()]).await.unwrap();
+    writer.push(std::slice::from_ref(&unseen)).await.unwrap();
+    writer.finish("hash", None).await.unwrap();
+    assert_eq!(selected(&db).await.0, dec!(99));
+    let mut cancel_correction = correction;
+    cancel_correction.revision = 2;
+    cancel_correction.eligible = false;
+    cancel_correction.published_ns += 1000;
+    write_file(&mut db, &job, "cancel-correction", "cancel", None, vec![cancel_correction]).await.unwrap();
+    write_file(&mut db, &job, "old-original", "old", None, vec![unseen]).await.unwrap();
+    assert_eq!(selected(&db).await.0, dec!(100));
+
+    let unseen = report("cancel-before-original", 1, dec!(999));
+    let mut cancellation = unseen.clone();
+    cancellation.revision = 2;
+    cancellation.eligible = false;
+    cancellation.published_ns += 1000;
+    write_file(&mut db, &job, "cancel-first", "cancel", None, vec![cancellation]).await.unwrap();
+    write_file(&mut db, &job, "cancelled-old", "old", None, vec![unseen]).await.unwrap();
+    assert_eq!(selected(&db).await.0, dec!(100));
+    assert_eq!(db.query_one("SELECT revision FROM market_price_report WHERE id = 'cancel-before-original'", &[]).await.unwrap().get::<_, i32>(0), 2);
+    assert_eq!(db.query_one("SELECT count(*) FROM instrument WHERE id = 'moved-untracked'", &[]).await.unwrap().get::<_, i64>(0), 0);
+    cleanup(&db, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "Requires an isolated TEST_POSTGRES_URL; also run in CI"]
+async fn pricing_database_parallel_feeds_converge_and_heartbeat_skips_owned_file_locks() {
+    let (mut db, schema) = test_database().await;
+    let mut other = connect_schema(&schema).await;
+    let mut observer = connect_schema(&schema).await;
+    let tracked = HashSet::from(["DE0007164600".into(), "second-isin".into()]);
+    let scope_hash = price::portfolio_scope_hash(&tracked);
+    price::ensure_instruments(&db, &tracked).await.unwrap();
+    jobs::enqueue(&mut db, &[Feed::Xetra, Feed::Cboe, Feed::Euronext]).await.unwrap();
+    let xetra = jobs::claim(&db, &[Feed::Xetra]).await.unwrap().unwrap();
+    let cboe = jobs::claim(&db, &[Feed::Cboe]).await.unwrap().unwrap();
+    let cleanup_job = jobs::claim(&db, &[Feed::Euronext]).await.unwrap().unwrap();
+    let mut xetra_a = report("xetra-a", 5, dec!(100));
+    let mut xetra_b = xetra_a.clone();
+    xetra_b.id = "xetra-b".into();
+    xetra_b.isin = "second-isin".into();
+    let mut cboe_a = report("cboe-a", 10, dec!(90));
+    let mut cboe_b = cboe_a.clone();
+    cboe_b.id = "cboe-b".into();
+    cboe_b.isin = "second-isin".into();
+    write_file(&mut db, &xetra, "initial-xetra", "x", None, vec![xetra_a.clone(), xetra_b.clone()]).await.unwrap();
+    write_file(&mut other, &cboe, "initial-cboe", "c", None, vec![cboe_b.clone(), cboe_a.clone()]).await.unwrap();
+    db.execute("UPDATE market_price_report SET received_at = now() - interval '8 days'", &[]).await.unwrap();
+    xetra_a.revision = 1;
+    xetra_a.published_ns += 1000;
+    xetra_a.price = dec!(101);
+    xetra_b.revision = 1;
+    xetra_b.published_ns += 1000;
+    xetra_b.price = dec!(102);
+    cboe_a.revision = 1;
+    cboe_a.published_ns += 1000;
+    cboe_a.price = dec!(91);
+    cboe_b.revision = 1;
+    cboe_b.published_ns += 1000;
+    cboe_b.price = dec!(92);
+    db.execute(
+        "UPDATE background_job SET lease_until = clock_timestamp() + interval '2 seconds' WHERE id = ANY($1)",
+        &[&vec![xetra.id, cboe.id]],
+    ).await.unwrap();
+    let mut first = price::begin_file(&mut db, &xetra, "amend-xetra", &tracked, &scope_hash).await.unwrap();
+    let mut second = price::begin_file(&mut other, &cboe, "amend-cboe", &tracked, &scope_hash).await.unwrap();
+    first.push(&[xetra_a, xetra_b]).await.unwrap();
+    second.push(&[cboe_b, cboe_a]).await.unwrap();
+    // The persisted deadline expires, but each locked writer has extended it
+    // inside its transaction; external heartbeats cannot see those new values.
+    tokio::time::sleep(Duration::from_millis(2100)).await;
+    tokio::time::timeout(Duration::from_secs(2), jobs::renew(&observer, &xetra))
+        .await.expect("External heartbeat must not block on its file writer").unwrap();
+    tokio::time::timeout(Duration::from_secs(2), jobs::renew(&observer, &cboe))
+        .await.expect("Every active feed must retain its heartbeat").unwrap();
+    let mut stale = xetra.clone();
+    stale.lease_token += 1;
+    assert!(jobs::renew(&observer, &stale).await.is_err());
+    tokio::time::timeout(Duration::from_secs(2), jobs::finish(&mut observer, &cleanup_job))
+        .await.expect("Retention must skip source rows locked by file writers").unwrap();
+    let (first, second) = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(
+            first.finish("x", None),
+            second.finish("c", None),
+        )
+    }).await.expect("Cross-feed source locks must not deadlock the projection phase");
+    first.unwrap();
+    second.unwrap();
+    let quotes = price::quotes(&observer, &["DE0007164600".into(), "second-isin".into()]).await.unwrap();
+    assert_eq!(quotes[0].price, Some(dec!(101)));
+    assert_eq!(quotes[1].price, Some(dec!(102)));
+    db.execute(
+        "UPDATE background_job SET lease_until = clock_timestamp() - interval '1 second' WHERE id = $1",
+        &[&xetra.id],
+    ).await.unwrap();
+    assert!(jobs::renew(&observer, &xetra).await.is_err());
+    drop(observer);
+    drop(other);
+    cleanup(&db, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "Requires an isolated TEST_POSTGRES_URL; also run in CI"]
+async fn pricing_database_unfinished_or_expired_file_rolls_back_source_portfolio_progress_and_checkpoint() {
+    let (mut db, schema) = test_database().await;
+    let observer = connect_schema(&schema).await;
+    let tracked = HashSet::from(["DE0007164600".into()]);
+    let scope_hash = price::portfolio_scope_hash(&tracked);
+    price::ensure_instruments(&db, &tracked).await.unwrap();
+    jobs::enqueue(&mut db, &[Feed::Xetra]).await.unwrap();
+    let job = jobs::claim(&db, &[Feed::Xetra]).await.unwrap().unwrap();
+    let mut writer = price::begin_file(&mut db, &job, "parse-failed", &tracked, &scope_hash).await.unwrap();
+    writer.push(&[report("parse-failed", 1, dec!(100))]).await.unwrap();
+    assert!(price::quotes(&observer, &["DE0007164600".into()]).await.unwrap()[0].price.is_none());
+    // A parser error drops the writer without ever calling finish.
+    drop(writer);
+    assert_eq!(db.query_one("SELECT count(*) FROM market_price_report", &[]).await.unwrap().get::<_, i64>(0), 0);
+    db.batch_execute(&format!(
+        "CREATE FUNCTION expire_file_lease() RETURNS trigger LANGUAGE plpgsql AS $$
+         BEGIN
+            UPDATE background_job SET lease_until = clock_timestamp() - interval '1 second' WHERE id = {};
+            RETURN NULL;
+         END $$;
+         CREATE TRIGGER expire_file_lease AFTER INSERT ON market_price_report
+            FOR EACH STATEMENT EXECUTE FUNCTION expire_file_lease()",
+        job.id,
+    )).await.unwrap();
+    let mut writer = price::begin_file(&mut db, &job, "lease-failed", &tracked, &scope_hash).await.unwrap();
+    assert!(writer.push(&[report("lease-failed", 1, dec!(101))]).await.is_err());
+    drop(writer);
+    assert_eq!(db.query_one("SELECT count(*) FROM market_price_report", &[]).await.unwrap().get::<_, i64>(0), 0);
+    assert!(price::quotes(&db, &["DE0007164600".into()]).await.unwrap()[0].price.is_none());
+    assert!(price::checkpoints(&db, &job.feed, &scope_hash).await.unwrap().is_empty());
+    let progress = db.query_one(
+        "SELECT files_processed, reports_processed, lease_until > clock_timestamp() AS valid
+         FROM background_job WHERE id = $1", &[&job.id],
+    ).await.unwrap();
+    assert_eq!(progress.get::<_, i32>("files_processed"), 0);
+    assert_eq!(progress.get::<_, i32>("reports_processed"), 0);
+    assert!(progress.get::<_, bool>("valid"));
+    db.batch_execute(
+        "DROP TRIGGER expire_file_lease ON market_price_report; DROP FUNCTION expire_file_lease()",
+    ).await.unwrap();
+    write_file(&mut db, &job, "success", "success", None, vec![report("success", 1, dec!(102))]).await.unwrap();
+    assert_eq!(price::quotes(&observer, &["DE0007164600".into()]).await.unwrap()[0].price, Some(dec!(102)));
+    drop(observer);
+    cleanup(&db, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "Requires an isolated TEST_POSTGRES_URL; also run in CI"]
+async fn pricing_database_scope_changes_replay_available_files_and_preserve_checkpoints() {
+    let (mut db, schema) = test_database().await;
+    db.batch_execute(
+        "INSERT INTO trade(hash, broker, date, units, avg_price_per_unit, eur_avg_price_per_unit,
+            security_type, direction, currency, isin, date_added)
+         VALUES('scope-a', 'Test', now(), 1, 1, 1, 'Equity', 'Buy', 'EUR', 'DE0007164600', now())",
+    ).await.unwrap();
+    let scope_a = price::tracked_isins(&db).await.unwrap();
+    let hash_a = price::portfolio_scope_hash(&scope_a);
+    price::ensure_instruments(&db, &scope_a).await.unwrap();
+    jobs::enqueue(&mut db, &[Feed::Xetra]).await.unwrap();
+    let job = jobs::claim(&db, &[Feed::Xetra]).await.unwrap().unwrap();
+    let a = report("scope-a-print", 2, dec!(101));
+    let mut b = report("scope-b-print", 1, dec!(202));
+    b.isin = "second-isin".into();
+    let reports = vec![a, b];
+    let mut writer = price::begin_file(&mut db, &job, "same-file", &scope_a, &hash_a).await.unwrap();
+    writer.push(&reports).await.unwrap();
+    assert_eq!(writer.finish("same-content", Some("same-etag")).await.unwrap(), 1);
+    let checkpoint = price::checkpoints(&db, &job.feed, &hash_a).await.unwrap();
+    assert_eq!(checkpoint["same-file"].content_hash, "same-content");
+    assert_eq!(db.query_one("SELECT count(*) FROM market_price_report", &[]).await.unwrap().get::<_, i64>(0), 1);
+    let latest = price::latest_prices(&db, &["DE0007164600".into(), "second-isin".into()]).await.unwrap();
+    assert_eq!(latest.len(), 2);
+    assert_eq!(latest.iter().find(|quote| quote.isin == "second-isin").unwrap().price, dec!(202));
+    jobs::finish(&mut db, &job).await.unwrap();
+    db.batch_execute(
+        "INSERT INTO trade(hash, broker, date, units, avg_price_per_unit, eur_avg_price_per_unit,
+            security_type, direction, currency, isin, date_added)
+         VALUES('scope-b', 'Test', now(), 1, 1, 1, 'Equity', 'Buy', 'EUR', 'second-isin', now())",
+    ).await.unwrap();
+    jobs::enqueue(&mut db, &[Feed::Xetra]).await.unwrap();
+    let job = jobs::claim(&db, &[Feed::Xetra]).await.unwrap().unwrap();
+    let scope_ab = price::tracked_isins(&db).await.unwrap();
+    let hash_ab = price::portfolio_scope_hash(&scope_ab);
+    assert_ne!(hash_a, hash_ab);
+    assert!(price::checkpoints(&db, &job.feed, &hash_ab).await.unwrap().is_empty());
+    price::ensure_instruments(&db, &scope_ab).await.unwrap();
+    let mut writer = price::begin_file(&mut db, &job, "same-file", &scope_ab, &hash_ab).await.unwrap();
+    writer.push(&reports).await.unwrap();
+    writer.finish("same-content", Some("same-etag")).await.unwrap();
+    let quotes = price::quotes(&db, &["DE0007164600".into(), "second-isin".into()]).await.unwrap();
+    assert_eq!(quotes[0].price, Some(dec!(101)));
+    assert_eq!(quotes[1].price, Some(dec!(202)));
+    assert_eq!(db.query_one("SELECT count(*) FROM market_price_report", &[]).await.unwrap().get::<_, i64>(0), 2);
+    assert_eq!(price::checkpoints(&db, &job.feed, &hash_a).await.unwrap()["same-file"].content_hash, "same-content");
+    assert_eq!(price::checkpoints(&db, &job.feed, &hash_ab).await.unwrap()["same-file"].content_hash, "same-content");
+    assert_eq!(db.query_one("SELECT count(*) FROM market_data_file WHERE file_key = 'same-file'", &[]).await.unwrap().get::<_, i64>(0), 2);
     cleanup(&db, &schema).await;
 }

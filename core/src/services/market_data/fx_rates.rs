@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{collections::BTreeSet, time::Duration};
 
 use anyhow::Context;
 use chrono::NaiveDate;
@@ -24,10 +24,7 @@ pub async fn fetch_historic_ecb_rates(currency: Option<&str>) -> anyhow::Result<
             .filter(|c| c != "EUR" && c != "GBX")
             .collect()
     } else {
-        used_currencies
-            .into_iter()
-            .filter(|c| c != "EUR" && c != "GBX")
-            .collect()
+        background_import_currencies(&db, used_currencies).await?
     };
 
     let client = Client::builder()
@@ -53,16 +50,64 @@ pub async fn fetch_historic_ecb_rates(currency: Option<&str>) -> anyhow::Result<
     let results = futures::future::join_all(fetch_tasks).await;
     for result in results {
         let (used_currency, rates) = result?;
-        for rate in rates {
-            let hash = hash_string(&format!("{}{}", rate.date, used_currency));
-            db.execute(
-                "INSERT INTO fx_rate (hash, date, rate, currency_from, currency_to) values ($1, $2, $3, $4, $5) ON CONFLICT(hash) DO NOTHING",
-                &[&hash, &rate.date, &rate.rate, &"EUR", used_currency],
-            )
-            .await?;
-        }
+        store_rates(&db, used_currency, &rates).await?;
     }
 
+    Ok(())
+}
+
+fn import_currencies(currencies: impl IntoIterator<Item = String>) -> Vec<String> {
+    currencies.into_iter()
+        .map(|currency| if currency == "GBX" { "GBP".to_string() } else { currency })
+        .filter(|currency| currency != "EUR" && !currency.is_empty())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+async fn background_import_currencies(
+    db: &tokio_postgres::Client,
+    used_currencies: Vec<String>,
+) -> anyhow::Result<Vec<String>> {
+    let cached = db.query(
+        "SELECT instrument->>'currency' AS currency
+         FROM trading_connection
+         CROSS JOIN LATERAL jsonb_array_elements(
+             CASE WHEN jsonb_typeof(instruments) = 'array' THEN instruments ELSE '[]'::jsonb END
+         ) AS instrument
+         WHERE instrument->>'currency' IS NOT NULL
+         UNION SELECT currency FROM mifid_latest_price",
+        &[],
+    ).await?;
+    Ok(import_currencies(used_currencies.into_iter().chain(
+        cached.into_iter().map(|row| row.get::<_, String>("currency"))
+    )))
+}
+
+const RATE_BATCH_SIZE: usize = 4096;
+
+async fn store_rates(
+    db: &tokio_postgres::Client,
+    currency: &str,
+    rates: &[EcbRate],
+) -> anyhow::Result<()> {
+    for batch in rates.chunks(RATE_BATCH_SIZE) {
+        let mut hashes = Vec::with_capacity(batch.len());
+        let mut dates = Vec::with_capacity(batch.len());
+        let mut values = Vec::with_capacity(batch.len());
+        for rate in batch {
+            hashes.push(hash_string(&format!("{}{}", rate.date, currency)));
+            dates.push(rate.date);
+            values.push(rate.rate);
+        }
+        db.execute(
+            "INSERT INTO fx_rate (hash, date, rate, currency_from, currency_to)
+             SELECT observations.hash, observations.date, observations.rate, 'EUR', $4
+             FROM unnest($1::text[], $2::date[], $3::numeric[]) AS observations(hash, date, rate)
+             ON CONFLICT (hash) DO NOTHING",
+            &[&hashes, &dates, &values, &currency],
+        ).await?;
+    }
     Ok(())
 }
 
@@ -123,6 +168,55 @@ async fn fetch_rates(client: &Client, url: &str) -> anyhow::Result<Vec<EcbRate>>
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn background_import_normalizes_pence_and_deduplicates_sources() {
+        assert_eq!(
+            import_currencies(["EUR", "GBX", "USD", "GBP", "USD", ""].map(str::to_string)),
+            vec!["GBP".to_string(), "USD".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires an isolated TEST_POSTGRES_URL; also run in CI"]
+    async fn unheld_currencies_are_warmed_and_bulk_history_is_quote_ready() {
+        use crate::database::queries::fx_rate::quote_conversion;
+        let url = std::env::var("TEST_POSTGRES_URL").expect("Set an isolated TEST_POSTGRES_URL");
+        let (db, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        db.batch_execute(
+            r#"CREATE TEMP TABLE trading_connection (instruments JSONB NOT NULL);
+               CREATE TEMP TABLE mifid_latest_price (isin TEXT, currency TEXT);
+               CREATE TEMP TABLE fx_rate (
+                   hash TEXT PRIMARY KEY, date DATE NOT NULL, rate NUMERIC,
+                   currency_from TEXT NOT NULL, currency_to TEXT NOT NULL
+               );
+               INSERT INTO trading_connection VALUES
+                   ('[{"currency":"GBX"},{"currency":"USD"},{"currency":"EUR"}]');
+               INSERT INTO mifid_latest_price VALUES
+                   ('unheld', 'JPY'),
+                   ('pence', 'GBX'),
+                   ('native', 'EUR');"#,
+        ).await.unwrap();
+        assert_eq!(
+            background_import_currencies(&db, vec!["CHF".to_string(), "USD".to_string()]).await.unwrap(),
+            ["CHF", "GBP", "JPY", "USD"].map(str::to_string).to_vec()
+        );
+        let start = NaiveDate::from_ymd_opt(2000, 1, 1).unwrap();
+        let rates: Vec<EcbRate> = (0..RATE_BATCH_SIZE + 3).map(|day| EcbRate {
+            date: start + chrono::Duration::days(day as i64),
+            rate: Decimal::new(125, 2),
+        }).collect();
+        store_rates(&db, "USD", &rates).await.unwrap();
+        let last_date = rates.last().unwrap().date;
+        store_rates(&db, "USD", &[EcbRate { date: last_date, rate: Decimal::new(999, 0) }]).await.unwrap();
+        let count: i64 = db.query_one("SELECT count(*) FROM fx_rate", &[]).await.unwrap().get(0);
+        assert_eq!(count, rates.len() as i64);
+        let quote = quote_conversion(&db, "USD", "EUR", &(last_date + chrono::Duration::days(2))).await.unwrap();
+        assert_eq!(quote.rate, Decimal::new(8, 1));
+        assert_eq!(quote.observations[0].as_of, last_date);
+        assert_eq!(quote.observations[0].units_per_eur, Decimal::new(125, 2));
+    }
 
     #[test]
     fn malformed_or_empty_ecb_responses_are_failures() {

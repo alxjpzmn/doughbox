@@ -3,6 +3,7 @@ core/target
 /target
 core/input
 core/output
+/.local-data/
 node_modules
 *.csv
 *.db

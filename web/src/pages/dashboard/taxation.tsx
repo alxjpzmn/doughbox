@@ -263,10 +263,10 @@ const Taxation = () => {
         </Card>
       )}
 
-      <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "summary" | "transactions")}>
-        <TabsList className="mb-6">
-          <TabsTrigger value="summary">Summary</TabsTrigger>
-          <TabsTrigger value="transactions">Transactions</TabsTrigger>
+      <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "summary" | "transactions")} className="max-md:pb-28">
+        <TabsList dock className="mb-6 h-auto sm:w-fit">
+          <TabsTrigger value="summary" className="min-h-11">Summary</TabsTrigger>
+          <TabsTrigger value="transactions" className="min-h-11">Transactions</TabsTrigger>
         </TabsList>
 
         <TabsContent value="summary">

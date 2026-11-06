@@ -16,7 +16,14 @@ use crate::{
     },
 };
 
-use super::background_job::lock_lease;
+use super::background_job::{lock_lease, LEASE_SECONDS};
+mod latest;
+pub(crate) use latest::{latest_prices, LatestPrice};
+
+/// Bump when source admission or parser policy changes so available files replay.
+pub const PARSER_VERSION: &str = "mifid-bulk-v4";
+pub(super) const PROJECTION_LOCK: i64 = 0x4D49464944505243;
+const MAX_REPORT_BATCH: usize = 4096;
 
 pub struct FileCheckpoint {
     pub content_hash: String,
@@ -44,25 +51,82 @@ pub async fn tracked_isins(client: &Client) -> anyhow::Result<HashSet<String>> {
         .collect())
 }
 
-pub fn universe_hash(tracked: &HashSet<String>) -> String {
-    let sorted: BTreeSet<_> = tracked.iter().collect();
-    let mut hash = blake3::Hasher::new();
-    // Reprocess the available window when eligibility rules change, not just tracked ISINs.
-    hash.update(b"price-eligibility-v2:zero-quantity\n");
-    for isin in sorted {
-        hash.update(isin.as_bytes());
-        hash.update(b"\n");
+/// A checkpoint is reusable only for the exact portfolio universe pinned by its job.
+pub fn portfolio_scope_hash(tracked: &HashSet<String>) -> String {
+    let mut isins: Vec<_> = tracked.iter().map(String::as_str).collect();
+    isins.sort_unstable();
+    let mut hasher = blake3::Hasher::new();
+    for isin in isins {
+        hasher.update(isin.as_bytes());
+        hasher.update(b"\0");
     }
-    hash.finalize().to_hex().to_string()
+    hasher.finalize().to_hex().to_string()
+}
+
+fn latest_reports(reports: &[PriceReport]) -> Vec<&PriceReport> {
+    // One unnest upsert cannot affect the same ID twice. Borrow the winning
+    // revision rather than clone report payloads, and lock source rows in ID order.
+    let mut latest: HashMap<&str, &PriceReport> = HashMap::with_capacity(reports.len());
+    for report in reports {
+        let replace = latest.get(report.id.as_str()).is_none_or(|old| {
+            (report.published_ns, report.revision, &report.revision_hash)
+                > (old.published_ns, old.revision, &old.revision_hash)
+        });
+        if replace {
+            latest.insert(report.id.as_str(), report);
+        }
+    }
+    let mut reports: Vec<_> = latest.into_values().collect();
+    reports.sort_unstable_by(|left, right| left.id.cmp(&right.id));
+    reports
+}
+
+/// Read-only admissions for one feed refresh, retaining only admitted identities.
+#[derive(Default)]
+pub struct DryRunAdmissions {
+    admitted: HashSet<String>,
+}
+
+impl DryRunAdmissions {
+    pub async fn push(
+        &mut self,
+        client: &Client,
+        reports: &[PriceReport],
+        tracked: &HashSet<String>,
+    ) -> anyhow::Result<usize> {
+        ensure!(reports.len() <= MAX_REPORT_BATCH, "Price report batch exceeds {MAX_REPORT_BATCH}");
+        let reports = latest_reports(reports);
+        let ids: Vec<_> = reports.iter()
+            .filter(|report| !tracked.contains(&report.isin) && !self.admitted.contains(report.id.as_str()))
+            .map(|report| report.id.as_str())
+            .collect();
+        let rows = if ids.is_empty() {
+            Vec::new()
+        } else {
+            client.query("SELECT id FROM market_price_report WHERE id = ANY($1)", &[&ids]).await?
+        };
+        let existing: HashSet<&str> = rows.iter().map(|row| row.get("id")).collect();
+        let mut count = 0;
+        for report in reports {
+            if self.admitted.contains(report.id.as_str()) {
+                count += 1;
+            } else if tracked.contains(&report.isin) || existing.contains(report.id.as_str()) {
+                self.admitted.insert(report.id.clone());
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
 }
 
 pub async fn checkpoints(
     client: &Client,
     feed: &str,
-    universe: &str,
+    scope_hash: &str,
 ) -> anyhow::Result<HashMap<String, FileCheckpoint>> {
-    Ok(client.query("SELECT file_key, content_hash, etag FROM market_data_file WHERE feed = $1 AND universe_hash = $2",
-        &[&feed, &universe]).await?.into_iter().map(|row| (row.get(0), FileCheckpoint { content_hash: row.get(1), etag: row.get(2) })).collect())
+    Ok(client.query("SELECT file_key, content_hash, etag FROM market_data_file
+        WHERE feed = $1 AND parser_version = $2 AND scope_hash = $3",
+        &[&feed, &PARSER_VERSION, &scope_hash]).await?.into_iter().map(|row| (row.get(0), FileCheckpoint { content_hash: row.get(1), etag: row.get(2) })).collect())
 }
 
 pub async fn ensure_instruments(client: &Client, tracked: &HashSet<String>) -> anyhow::Result<()> {
@@ -73,98 +137,157 @@ pub async fn ensure_instruments(client: &Client, tracked: &HashSet<String>) -> a
     Ok(())
 }
 
-pub async fn commit_file(
-    client: &mut Client,
-    job: &PriceJob,
-    file_key: &str,
-    universe: &str,
-    content_hash: &str,
-    etag: Option<&str>,
-    reports: Vec<PriceReport>,
-) -> anyhow::Result<usize> {
-    // A file may contain multiple revisions of one transaction; deduplicate before
-    // INSERT ... ON CONFLICT, which cannot update the same row twice in one statement.
-    let mut latest: HashMap<String, PriceReport> = HashMap::new();
-    for report in reports {
-        let replace = latest.get(&report.id).is_none_or(|old| {
-            (report.published_ns, report.revision, &report.revision_hash)
-                > (old.published_ns, old.revision, &old.revision_hash)
-        });
-        if replace {
-            latest.insert(report.id.clone(), report);
-        }
-    }
-    let reports: Vec<_> = latest.into_values().collect();
+/// A dropped writer rolls back every source row, projection and checkpoint in its file.
+pub struct FileWriter<'a> {
+    tx: Transaction<'a>,
+    job: &'a PriceJob,
+    file_key: &'a str,
+    tracked: &'a HashSet<String>,
+    scope_hash: &'a str,
+    reports_processed: usize,
+}
+
+pub async fn begin_file<'a>(
+    client: &'a mut Client,
+    job: &'a PriceJob,
+    file_key: &'a str,
+    tracked: &'a HashSet<String>,
+    scope_hash: &'a str,
+) -> anyhow::Result<FileWriter<'a>> {
     let tx = client.transaction().await?;
     lock_lease(&tx, job).await?;
-    if !reports.is_empty() {
-        let ids: Vec<_> = reports.iter().map(|r| &r.id).collect();
-        let mut affected: BTreeSet<String> = reports.iter().map(|r| r.isin.clone()).collect();
-        for row in tx
-            .query(
-                "SELECT DISTINCT isin FROM market_price_report WHERE id = ANY($1)",
-                &[&ids],
-            )
-            .await?
-        {
-            affected.insert(row.get(0));
+    // Keep only distinct affected identities across the file, on the database side.
+    // Report payloads and upsert arrays remain bounded by one parser batch.
+    tx.batch_execute(
+        "CREATE TEMP TABLE portfolio_price_isins (isin TEXT PRIMARY KEY) ON COMMIT DROP",
+    )
+    .await?;
+    latest::prepare(&tx).await?;
+    let writer = FileWriter {
+        tx,
+        job,
+        file_key,
+        tracked,
+        scope_hash,
+        reports_processed: 0,
+    };
+    writer.renew_lease().await?;
+    Ok(writer)
+}
+
+impl FileWriter<'_> {
+    async fn renew_lease(&self) -> anyhow::Result<()> {
+        // The transaction owns the job-row lock, so the external heartbeat cannot
+        // renew it until this file commits. Never resurrect an already expired lease.
+        let changed = self.tx.execute(
+            "UPDATE background_job SET lease_until = clock_timestamp() + $3::integer * interval '1 second'
+             WHERE id = $1 AND lease_token = $2 AND status = 'running'
+                AND lease_until > clock_timestamp()",
+            &[&self.job.id, &self.job.lease_token, &LEASE_SECONDS],
+        ).await?;
+        ensure!(changed == 1, "Price job {} lost its lease", self.job.id);
+        Ok(())
+    }
+
+    pub async fn push(&mut self, reports: &[PriceReport]) -> anyhow::Result<()> {
+        ensure!(reports.len() <= MAX_REPORT_BATCH, "Price report batch exceeds {MAX_REPORT_BATCH}");
+        self.renew_lease().await?;
+        let mut reports = latest_reports(reports);
+        if reports.is_empty() {
+            return Ok(());
         }
-        let isins: Vec<_> = reports.iter().map(|r| &r.isin).collect();
-        let transactions: Vec<_> = reports.iter().map(|r| &r.transaction_id).collect();
-        let publishers: Vec<_> = reports.iter().map(|r| &r.publisher).collect();
-        let venues: Vec<_> = reports.iter().map(|r| &r.venue).collect();
-        let executed: Vec<_> = reports.iter().map(|r| r.executed_at).collect();
-        let executed_ns: Vec<_> = reports.iter().map(|r| r.executed_ns).collect();
-        let published_ns: Vec<_> = reports.iter().map(|r| r.published_ns).collect();
-        let revisions: Vec<_> = reports.iter().map(|r| r.revision).collect();
-        let hashes: Vec<_> = reports.iter().map(|r| &r.revision_hash).collect();
-        let prices: Vec<_> = reports.iter().map(|r| r.price).collect();
-        let currencies: Vec<_> = reports.iter().map(|r| &r.currency).collect();
-        let eligible: Vec<_> = reports.iter().map(|r| r.eligible).collect();
-        tx.execute("INSERT INTO market_price_report(id, feed, isin, transaction_id, publisher, venue,
-            executed_at, executed_ns, published_ns, revision, revision_hash, price, currency, eligible, file_key)
-            SELECT r.id, $14, r.isin, r.transaction_id, r.publisher, r.venue, r.executed_at,
-                r.executed_ns, r.published_ns, r.revision, r.revision_hash, r.price, r.currency, r.eligible, $15
-            FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::timestamptz[],
-                $7::bigint[], $8::bigint[], $9::integer[], $10::text[], $11::numeric[], $12::text[], $13::boolean[])
-            AS r(id, isin, transaction_id, publisher, venue, executed_at, executed_ns, published_ns,
-                revision, revision_hash, price, currency, eligible)
-            ON CONFLICT(id) DO UPDATE SET isin = EXCLUDED.isin, venue = EXCLUDED.venue,
+        latest::stage(&self.tx, &self.job.feed, &reports).await?;
+        let mut ids: Vec<_> = reports.iter().map(|&report| report.id.as_str()).collect();
+        // Lock only this bounded batch's existing source identities, in the same
+        // order as the upsert. Existing identities remain admissible even when a
+        // correction moves them away from the pinned portfolio.
+        let rows = self.tx.query(
+            "SELECT id, isin FROM market_price_report
+             WHERE id = ANY($1) ORDER BY id FOR NO KEY UPDATE",
+            &[&ids],
+        ).await?;
+        let existing: HashSet<&str> = rows.iter().map(|row| row.get("id")).collect();
+        reports.retain(|report| {
+            self.tracked.contains(&report.isin) || existing.contains(report.id.as_str())
+        });
+        if reports.is_empty() {
+            return Ok(());
+        }
+        ids.clear();
+        ids.extend(reports.iter().map(|&report| report.id.as_str()));
+        // Both old and new ISINs must be reselected when an admitted identity moves.
+        let mut affected: Vec<&str> = Vec::with_capacity(rows.len() + reports.len());
+        affected.extend(rows.iter().map(|row| row.get::<_, &str>("isin")));
+        affected.extend(reports.iter().map(|report| report.isin.as_str()));
+        self.tx.execute(
+            "INSERT INTO pg_temp.portfolio_price_isins(isin)
+             SELECT isin FROM unnest($1::text[]) AS isin WHERE TRUE ON CONFLICT DO NOTHING",
+            &[&affected],
+        ).await?;
+        self.tx.execute(
+            "INSERT INTO market_price_report(id, feed, isin, transaction_id, publisher, venue,
+                executed_at, executed_ns, published_ns, revision, revision_hash, price, currency,
+                eligible, quantity, file_key)
+             SELECT r.report_id, $2, r.isin, r.transaction_id, r.publisher, r.venue, r.as_of,
+                r.executed_ns, r.published_ns, r.revision, r.revision_hash, r.price, r.currency,
+                r.eligible, r.quantity, $3
+             FROM pg_temp.bulk_price_batch r WHERE r.report_id = ANY($1)
+             ORDER BY r.report_id
+             ON CONFLICT(id) DO UPDATE SET isin = EXCLUDED.isin, venue = EXCLUDED.venue,
                 executed_at = EXCLUDED.executed_at, executed_ns = EXCLUDED.executed_ns,
                 published_ns = EXCLUDED.published_ns, revision = EXCLUDED.revision,
                 revision_hash = EXCLUDED.revision_hash, price = EXCLUDED.price,
-                currency = EXCLUDED.currency, eligible = EXCLUDED.eligible,
+                currency = EXCLUDED.currency, eligible = EXCLUDED.eligible, quantity = EXCLUDED.quantity,
                 received_at = now(), file_key = EXCLUDED.file_key
-            WHERE (EXCLUDED.published_ns, EXCLUDED.revision, EXCLUDED.revision_hash) >
-                  (market_price_report.published_ns, market_price_report.revision, market_price_report.revision_hash)
-               OR ((EXCLUDED.published_ns, EXCLUDED.revision, EXCLUDED.revision_hash) =
+             WHERE (EXCLUDED.published_ns, EXCLUDED.revision, EXCLUDED.revision_hash) >
                    (market_price_report.published_ns, market_price_report.revision, market_price_report.revision_hash)
-                   AND EXCLUDED.eligible IS DISTINCT FROM market_price_report.eligible)",
-            &[&ids, &isins, &transactions, &publishers, &venues, &executed, &executed_ns, &published_ns,
-                &revisions, &hashes, &prices, &currencies, &eligible, &job.feed, &file_key]).await?;
-        // Sorted row locks prevent different feed workers deadlocking on shared ISINs.
-        for isin in affected {
-            select_quote(&tx, &isin).await?;
-        }
+                OR ((EXCLUDED.published_ns, EXCLUDED.revision, EXCLUDED.revision_hash) =
+                    (market_price_report.published_ns, market_price_report.revision, market_price_report.revision_hash)
+                    AND (EXCLUDED.eligible IS DISTINCT FROM market_price_report.eligible
+                        OR EXCLUDED.quantity IS DISTINCT FROM market_price_report.quantity))",
+            &[&ids, &self.job.feed, &self.file_key],
+        ).await?;
+        self.reports_processed += reports.len();
+        self.renew_lease().await?;
+        Ok(())
     }
-    tx.execute(
-        "INSERT INTO market_data_file(feed, file_key, universe_hash, content_hash, etag)
-        VALUES($1,$2,$3,$4,$5) ON CONFLICT(feed, file_key, universe_hash) DO UPDATE SET
-            content_hash = EXCLUDED.content_hash, etag = EXCLUDED.etag, processed_at = now()",
-        &[&job.feed, &file_key, &universe, &content_hash, &etag],
-    )
-    .await?;
-    let count = i32::try_from(reports.len())?;
-    tx.execute(
-        "UPDATE background_job SET files_processed = files_processed + 1,
-        reports_processed = reports_processed + $2 WHERE id = $1",
-        &[&job.id, &count],
-    )
-    .await?;
-    // Check again after potentially expensive work; an expired worker may not commit.
-    lock_lease(&tx, job).await?;
-    tx.commit().await?;
-    Ok(reports.len())
+
+    pub async fn finish(
+        self,
+        content_hash: &str,
+        etag: Option<&str>,
+    ) -> anyhow::Result<usize> {
+        self.renew_lease().await?;
+        // Serialize only the short projection phase, not downloads or source writes.
+        // At READ COMMITTED the next statement sees every earlier projection's commit.
+        self.tx.query_one("SELECT pg_advisory_xact_lock($1)", &[&PROJECTION_LOCK]).await?;
+        self.renew_lease().await?;
+        latest::apply(&self.tx).await?;
+        for row in self.tx.query(
+            "SELECT isin FROM pg_temp.portfolio_price_isins ORDER BY isin",
+            &[],
+        ).await? {
+            let isin: &str = row.get("isin");
+            if self.tracked.contains(isin) {
+                select_quote(&self.tx, isin).await?;
+            }
+        }
+        self.tx.execute(
+            "INSERT INTO market_data_file(feed, file_key, parser_version, scope_hash, content_hash, etag)
+             VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(feed, file_key, parser_version, scope_hash) DO UPDATE SET
+                content_hash = EXCLUDED.content_hash, etag = EXCLUDED.etag, processed_at = now()",
+            &[&self.job.feed, &self.file_key, &PARSER_VERSION, &self.scope_hash, &content_hash, &etag],
+        ).await?;
+        let count = i32::try_from(self.reports_processed)?;
+        self.tx.execute(
+            "UPDATE background_job SET files_processed = files_processed + 1,
+                reports_processed = reports_processed + $2 WHERE id = $1",
+            &[&self.job.id, &count],
+        ).await?;
+        self.renew_lease().await?;
+        self.tx.commit().await?;
+        Ok(self.reports_processed)
+    }
 }
 
 pub async fn select_quote(tx: &Transaction<'_>, isin: &str) -> anyhow::Result<()> {
@@ -239,6 +362,7 @@ pub async fn reselect_all(
 ) -> anyhow::Result<()> {
     let tx = client.transaction().await?;
     lock_lease(&tx, job).await?;
+    tx.query_one("SELECT pg_advisory_xact_lock($1)", &[&PROJECTION_LOCK]).await?;
     for isin in tracked.iter().collect::<BTreeSet<_>>() {
         select_quote(&tx, isin).await?;
     }
@@ -284,10 +408,11 @@ pub async fn unpin(client: &mut Client, isin: &str) -> anyhow::Result<()> {
 pub async fn quotes(client: &Client, isins: &[String]) -> anyhow::Result<Vec<PriceQuote>> {
     let rows = client
         .query(
-            "SELECT id, price, last_price_update, price_source, price_venue, price_received_at,
-         price_pinned, (NOT price_pinned AND EXISTS(SELECT 1 FROM stock_split s WHERE s.isin = i.id
+            "SELECT i.id, i.price, last_price_update, price_source, price_venue, price_received_at,
+         price_pinned, r.quantity, (NOT price_pinned AND EXISTS(SELECT 1 FROM stock_split s WHERE s.isin = i.id
             AND s.ex_date > i.last_price_update AND s.ex_date <= now())) AS invalid_after_split
-         FROM instrument i WHERE id = ANY($1)",
+         FROM instrument i LEFT JOIN market_price_report r ON r.id = i.price_report_id
+         WHERE i.id = ANY($1)",
             &[&isins],
         )
         .await?;
@@ -313,26 +438,40 @@ pub async fn quotes(client: &Client, isins: &[String]) -> anyhow::Result<Vec<Pri
                 as_of: valid.then_some(as_of),
                 received_at: row.get("price_received_at"),
                 pinned: row.get("price_pinned"),
+                indicative: if valid && !row.get::<_, bool>("price_pinned") {
+                    row.get::<_, Option<Decimal>>("quantity").map(|quantity| quantity.is_zero())
+                } else {
+                    None
+                },
                 older_than_hour: valid && as_of < Utc::now() - Duration::hours(1),
             },
         );
     }
-    Ok(isins
+    Ok(ordered_quotes(isins, &quotes))
+}
+
+fn missing_quote(isin: String, currency: String) -> PriceQuote {
+    PriceQuote {
+        isin,
+        price: None,
+        currency,
+        source: "missing".into(),
+        venue: None,
+        as_of: None,
+        received_at: None,
+        pinned: false,
+        indicative: None,
+        older_than_hour: false,
+    }
+}
+
+fn ordered_quotes(isins: &[String], quotes: &HashMap<String, PriceQuote>) -> Vec<PriceQuote> {
+    isins
         .iter()
         .map(|isin| {
-            quotes.get(isin).cloned().unwrap_or_else(|| PriceQuote {
-                isin: isin.clone(),
-                price: None,
-                currency: "EUR".into(),
-                source: "missing".into(),
-                venue: None,
-                as_of: None,
-                received_at: None,
-                pinned: false,
-                older_than_hour: false,
-            })
+            quotes.get(isin).cloned().unwrap_or_else(|| missing_quote(isin.clone(), "EUR".into()))
         })
-        .collect())
+        .collect()
 }
 
 pub async fn feed_status(client: &Client) -> anyhow::Result<Vec<PriceFeedStatus>> {
@@ -365,18 +504,3 @@ pub async fn feed_status(client: &Client) -> anyhow::Result<Vec<PriceFeedStatus>
         .collect()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn universe_fingerprint_is_stable_and_changes_for_new_instruments() {
-        let first = HashSet::from(["A".into(), "B".into()]);
-        let second = HashSet::from(["B".into(), "A".into()]);
-        assert_eq!(universe_hash(&first), universe_hash(&second));
-        assert_ne!(
-            universe_hash(&first),
-            universe_hash(&HashSet::from(["A".into()]))
-        );
-    }
-}

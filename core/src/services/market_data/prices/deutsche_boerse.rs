@@ -1,6 +1,6 @@
 use std::{
-    collections::{HashMap, HashSet},
-    io::Read,
+    collections::HashMap,
+    io::{BufRead, BufReader, Read},
     sync::LazyLock,
 };
 
@@ -18,7 +18,7 @@ use serde::Deserialize;
 use super::http::http_client;
 use super::{
     config::Feed,
-    http::{check_status, limited_body, RequestLimiter},
+    http::{check_status, limited_body, RateLimited, RequestLimiter},
     types::{Download, PriceReport, SourceFile},
 };
 
@@ -31,6 +31,21 @@ const MAX_INFLATED_BYTES: u64 = 128 * 1024 * 1024;
 // One API budget across feeds, workers and dry runs.
 static REQUEST_LIMITER: LazyLock<RequestLimiter> = LazyLock::new(RequestLimiter::new);
 
+async fn signing_request(
+    limiter: &RequestLimiter,
+    request: impl Fn() -> RequestBuilder,
+) -> anyhow::Result<Response> {
+    match limiter.send(request()).await {
+        Err(error) if error.is::<RateLimited>() => {
+            log::warn!(
+                "{error}; retrying the price signing API request once after the shared cooldown"
+            );
+            limiter.send(request()).await
+        }
+        result => result,
+    }
+}
+
 #[derive(Deserialize)]
 struct FileIndex {
     #[serde(rename = "CurrentFiles")]
@@ -38,9 +53,10 @@ struct FileIndex {
 }
 
 pub async fn discover(client: &Client, feed: Feed) -> anyhow::Result<Vec<SourceFile>> {
-    let response = REQUEST_LIMITER
-        .send(client.get(format!("{BASE_URL}/api/{}", feed.key())))
-        .await?;
+    let response = signing_request(&REQUEST_LIMITER, || {
+        client.get(format!("{BASE_URL}/api/{}", feed.key()))
+    })
+    .await?;
     check_status(&response)?;
     let index: FileIndex = serde_json::from_slice(&limited_body(response, MAX_INDEX_BYTES).await?)?;
     recent_files(index, feed, Utc::now())
@@ -63,7 +79,7 @@ fn recent_files(
             files.push(file);
         }
     }
-    files.sort_by(|a, b| a.timestamp.cmp(&b.timestamp).then(a.key.cmp(&b.key)));
+    files.sort_by(|a, b| b.timestamp.cmp(&a.timestamp).then(a.key.cmp(&b.key)));
     files.dedup_by(|a, b| a.key == b.key);
     Ok(files)
 }
@@ -100,12 +116,13 @@ pub async fn download(
 ) -> anyhow::Result<Option<Download>> {
     let mut state = DownloadState::default();
     loop {
-        let request = state.request(client, file, etag);
         let response = if state.storage_url.is_some() {
             // The two-second storage signature must not wait for another API slot.
-            REQUEST_LIMITER.send_now(request).await
+            REQUEST_LIMITER
+                .send_now(state.request(client, file, etag))
+                .await
         } else {
-            REQUEST_LIMITER.send(request).await
+            signing_request(&REQUEST_LIMITER, || state.request(client, file, etag)).await
         }
         .context(state.error_context())?;
         match state.receive(response, file).await? {
@@ -252,7 +269,7 @@ struct RawReport {
     message_id: String,
     instrument_identification_code: String,
     transaction_identification_code: String,
-    venue_of_publication: String,
+    venue_of_publication: Option<String>,
     venue_of_execution: String,
     trading_date_and_time: DateTime<Utc>,
     publication_date_and_time: DateTime<Utc>,
@@ -288,60 +305,73 @@ fn flag_is(value: &str, allowed: &[&str]) -> bool {
 pub fn parse_gzip(
     feed: Feed,
     bytes: &[u8],
-    tracked: &HashSet<String>,
     now: DateTime<Utc>,
-) -> anyhow::Result<Vec<PriceReport>> {
-    let mut text = String::new();
-    MultiGzDecoder::new(bytes)
-        .take(MAX_INFLATED_BYTES + 1)
-        .read_to_string(&mut text)?;
-    ensure!(
-        text.len() as u64 <= MAX_INFLATED_BYTES,
-        "Inflated price file exceeds size limit"
-    );
-    parse_ndjson(feed, &text, tracked, now)
+    emit: impl FnMut(PriceReport) -> anyhow::Result<()>,
+) -> anyhow::Result<usize> {
+    let reader = BufReader::new(MultiGzDecoder::new(bytes).take(MAX_INFLATED_BYTES + 1));
+    parse_reader(feed, reader, now, emit)
 }
 
-pub fn parse_ndjson(
+
+fn parse_reader(
     feed: Feed,
-    text: &str,
-    tracked: &HashSet<String>,
+    mut reader: impl BufRead,
     now: DateTime<Utc>,
-) -> anyhow::Result<Vec<PriceReport>> {
-    let mut reports = Vec::new();
-    for (index, line) in text
-        .lines()
-        .enumerate()
-        .filter(|(_, line)| !line.trim().is_empty())
-    {
+    mut emit: impl FnMut(PriceReport) -> anyhow::Result<()>,
+) -> anyhow::Result<usize> {
+    let mut count = 0;
+    let mut line = String::new();
+    let mut inflated_bytes = 0u64;
+    let mut index = 0;
+    loop {
+        line.clear();
+        let bytes_read = reader.read_line(&mut line)?;
+        if bytes_read == 0 {
+            break;
+        }
+        inflated_bytes += bytes_read as u64;
+        ensure!(
+            inflated_bytes <= MAX_INFLATED_BYTES,
+            "Inflated price file exceeds size limit"
+        );
+        index += 1;
+        let line = line.trim_end_matches(['\r', '\n']);
+        if line.trim().is_empty() {
+            continue;
+        }
         let value: serde_json::Value = serde_json::from_str(line)
-            .with_context(|| format!("Invalid price JSON at line {}", index + 1))?;
+            .with_context(|| format!("Invalid price JSON at line {index}"))?;
         match value.get("messageId").and_then(|v| v.as_str()) {
             Some("posttrade") => {}
             // The provider mixes quote indications into some post-trade batches.
             // They have no execution identity and must never become valuations.
             Some("pretrade") => continue,
-            Some(message) => bail!("Unknown price message {message:?} at line {}", index + 1),
-            None => bail!("Missing or invalid price messageId at line {}", index + 1),
-        }
-        let isin = value
-            .get("instrumentIdentificationCode")
-            .and_then(|v| v.as_str())
-            .context("Price message has no ISIN")?;
-        if !tracked.contains(isin) {
-            continue;
+            Some(message) => bail!("Unknown price message {message:?} at line {index}"),
+            None => bail!("Missing or invalid price messageId at line {index}"),
         }
         let raw: RawReport = serde_json::from_value(value)
-            .with_context(|| format!("Invalid tracked price report at line {}", index + 1))?;
+            .with_context(|| format!("Invalid price report at line {index}"))?;
         ensure!(raw.message_id == "posttrade", "Unexpected price message");
+        ensure!(
+            raw.instrument_identification_code.len() == 12
+                && raw.instrument_identification_code.bytes().all(|b| b.is_ascii_alphanumeric()),
+            "Invalid price ISIN"
+        );
         let revision = match raw.mmt_modification_ind.as_str() {
             "-" => 0,
             "A" => 1,
             "C" => 2,
             other => bail!("Unknown price modification indicator: {other}"),
         };
+        let publisher = match raw.venue_of_publication {
+            Some(publisher) => publisher,
+            // CEF cancellation messages can omit the publisher. Use XCEF, as on
+            // the original report, so the cancellation retains its report identity.
+            None if revision == 2 => "XCEF".to_owned(),
+            None => bail!("Price report has no publication venue at line {index}"),
+        };
         ensure!(
-            !raw.transaction_identification_code.is_empty() && !raw.venue_of_publication.is_empty(),
+            !raw.transaction_identification_code.is_empty() && !publisher.is_empty(),
             "Price report has no transaction identity"
         );
         let executed_ns = raw
@@ -356,7 +386,8 @@ pub fn parse_ndjson(
         // Field mappings are documented in the provider's public view service.
         // Apply corrections even when their new price/currency/conditions are ineligible.
         let eligible = revision != 2
-            && raw.price_currency == "EUR"
+            && raw.price_currency.len() == 3
+            && raw.price_currency.bytes().all(|b| b.is_ascii_uppercase())
             && raw.price_notation == Some(1)
             && price > Decimal::ZERO
             && raw.quantity.is_some_and(|q| q >= Decimal::ZERO)
@@ -392,15 +423,15 @@ pub fn parse_ndjson(
         let identity = format!(
             "{}|{}|{}|{}",
             feed.key(),
-            raw.venue_of_publication,
+            publisher,
             raw.trading_date_and_time.date_naive(),
             raw.transaction_identification_code
         );
-        reports.push(PriceReport {
+        emit(PriceReport {
             id: blake3::hash(identity.as_bytes()).to_hex().to_string(),
             isin: raw.instrument_identification_code,
             transaction_id: raw.transaction_identification_code,
-            publisher: raw.venue_of_publication,
+            publisher,
             venue: raw.venue_of_execution,
             executed_at: raw.trading_date_and_time,
             executed_ns,
@@ -409,10 +440,12 @@ pub fn parse_ndjson(
             revision_hash: blake3::hash(line.as_bytes()).to_hex().to_string(),
             price,
             currency: raw.price_currency,
+            quantity: raw.quantity,
             eligible,
-        });
+        })?;
+        count += 1;
     }
-    Ok(reports)
+    Ok(count)
 }
 
 #[cfg(test)]
@@ -420,8 +453,79 @@ mod tests {
     use super::*;
     use flate2::{write::GzEncoder, Compression};
     use rust_decimal_macros::dec;
-    use std::io::Write;
+    use std::io::{Cursor, Write};
     use tokio::sync::Mutex;
+
+    #[tokio::test]
+    async fn signing_requests_wait_for_rate_limits_retry_once_and_preserve_other_statuses() {
+        use axum::Router;
+        use std::{
+            sync::Arc,
+            time::{Duration, Instant},
+        };
+
+        for statuses in [
+            vec![StatusCode::TOO_MANY_REQUESTS, StatusCode::NOT_MODIFIED],
+            vec![StatusCode::TOO_MANY_REQUESTS, StatusCode::TOO_MANY_REQUESTS],
+            vec![StatusCode::SERVICE_UNAVAILABLE],
+        ] {
+            let expected_status = *statuses.last().unwrap();
+            let expected_requests = statuses.len();
+            let received = Arc::new(Mutex::new(Vec::new()));
+            let requests = received.clone();
+            let app = Router::new().fallback(move || {
+                let received = received.clone();
+                let statuses = statuses.clone();
+                async move {
+                    let mut received = received.lock().await;
+                    let status = statuses
+                        .get(received.len())
+                        .copied()
+                        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+                    received.push(Instant::now());
+                    (status, [("retry-after", "1")])
+                }
+            });
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let client = http_client().unwrap();
+            let limiter = RequestLimiter::with_interval(Duration::ZERO);
+            let result = signing_request(&limiter, || {
+                client.get(format!("http://{address}/api/download/batch.json.gz"))
+            })
+            .await;
+
+            if expected_status == StatusCode::TOO_MANY_REQUESTS {
+                assert_eq!(
+                    result
+                        .err()
+                        .unwrap()
+                        .downcast_ref::<RateLimited>()
+                        .unwrap()
+                        .retry_after_seconds,
+                    1
+                );
+            } else {
+                assert_eq!(result.unwrap().status(), expected_status);
+            }
+            let requests = requests.lock().await;
+            assert_eq!(requests.len(), expected_requests);
+            for pair in requests.windows(2) {
+                assert!(pair[1] - pair[0] >= Duration::from_secs(1));
+            }
+            server.abort();
+        }
+    }
+
+    fn parse_ndjson(
+        feed: Feed,
+        text: &str,
+        now: DateTime<Utc>,
+        emit: impl FnMut(PriceReport) -> anyhow::Result<()>,
+    ) -> anyhow::Result<usize> {
+        parse_reader(feed, Cursor::new(text.as_bytes()), now, emit)
+    }
 
     const DOWNLOAD_TEST_KEY: &str = "DFRA-posttrade-2026-10-15T14_30.json.gz";
     const EXPIRED_TOKEN_XML: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Error><Code>ExpiredToken</Code><Message>secret credential canonical signature</Message></Error>";
@@ -699,11 +803,24 @@ mod tests {
         serde_json::from_str(r#"{"messageId":"posttrade","instrumentIdentificationCode":"DE0007164600","transactionIdentificationCode":"test-1","venueOfPublication":"XCEF","venueOfExecution":"XETA","tradingDateAndTime":"2026-10-15T14:30:00.137618751Z","publicationDateAndTime":"2026-10-15T14:30:00.147705000Z","price":201.600000000000000001,"quantity":91,"priceCurrency":"EUR","priceNotation":1,"mmtModificationInd":"-","mmtTradingMode":"2"}"#).unwrap()
     }
 
+    fn collected(
+        feed: Feed,
+        text: &str,
+        now: DateTime<Utc>,
+    ) -> anyhow::Result<Vec<PriceReport>> {
+        let mut reports = Vec::new();
+        let count = parse_ndjson(feed, text, now, |report| {
+            reports.push(report);
+            Ok(())
+        })?;
+        assert_eq!(count, reports.len());
+        Ok(reports)
+    }
+
     fn parse(value: serde_json::Value) -> PriceReport {
-        parse_ndjson(
+        collected(
             Feed::Xetra,
             &value.to_string(),
-            &HashSet::from(["DE0007164600".into()]),
             "2026-10-15T16:00:00Z".parse().unwrap(),
         )
         .unwrap()
@@ -715,15 +832,21 @@ mod tests {
         let text = format!("{}\n{}\n", sample(), sample());
         let mut gzip = GzEncoder::new(Vec::new(), Compression::default());
         gzip.write_all(text.as_bytes()).unwrap();
-        let reports = parse_gzip(
+        let mut reports = Vec::new();
+        let count = parse_gzip(
             Feed::Xetra,
             &gzip.finish().unwrap(),
-            &HashSet::from(["DE0007164600".into()]),
             "2026-10-15T16:00:00Z".parse().unwrap(),
+            |report| {
+                reports.push(report);
+                Ok(())
+            },
         )
         .unwrap();
+        assert_eq!(count, reports.len());
         assert_eq!(reports.len(), 2);
         assert_eq!(reports[0].price, dec!(201.600000000000000001));
+        assert_eq!(reports[0].quantity, Some(dec!(91)));
         assert_eq!(reports[0].executed_at.timestamp_subsec_nanos(), 137618751);
         assert!(reports[0].eligible);
     }
@@ -735,27 +858,28 @@ mod tests {
             r#"{"messageId":"posttrade","instrumentIdentificationCode":"JP3122400009","transactionIdentificationCode":"3000000000000000044240179216100784982633400000004976","venueOfPublication":"XCEF","venueOfExecution":"FRAB","tradingDateAndTime":"2026-10-16T14:30:07.849826334Z","publicationDateAndTime":"2026-10-16T14:30:07.860419000Z","price":190.54,"quantity":1.0,"priceCurrency":"EUR","priceNotation":1,"mmtModificationInd":"-","mmtTradingMode":"U","mmtAlgoInd":"-","mmtPubModeDefReason":"-","notionalCurrency":"EUR","tradingSystem":"9"}"#,
         )
         .unwrap();
-        let tracked = HashSet::from(["JP3122400009".into()]);
         let now = "2026-10-16T16:00:00Z".parse().unwrap();
-        let execution = parse_ndjson(Feed::Frankfurt, &value.to_string(), &tracked, now)
+        let execution = collected(Feed::Frankfurt, &value.to_string(), now)
             .unwrap()
             .remove(0);
         assert!(execution.eligible);
+        assert_eq!(execution.quantity, Some(Decimal::ONE));
         assert_eq!(execution.price, dec!(190.54));
         assert_eq!(execution.venue, "FRAB");
         assert_eq!(execution.publisher, "XCEF");
         assert_eq!(execution.executed_at.timestamp_subsec_nanos(), 849826334);
         value["quantity"] = serde_json::json!(0);
-        let indication = parse_ndjson(Feed::Frankfurt, &value.to_string(), &tracked, now)
+        let indication = collected(Feed::Frankfurt, &value.to_string(), now)
             .unwrap()
             .remove(0);
         assert!(indication.eligible);
+        assert_eq!(indication.quantity, Some(Decimal::ZERO));
     }
 
     #[test]
     fn unsuitable_prices_are_not_candidates() {
         for (key, value) in [
-            ("priceCurrency", serde_json::json!("USD")),
+            ("priceCurrency", serde_json::json!("")),
             ("priceNotation", serde_json::json!(2)),
             ("quantity", serde_json::json!(-1)),
             ("quantity", serde_json::Value::Null),
@@ -785,6 +909,45 @@ mod tests {
     }
 
     #[test]
+    fn reported_tradegate_cancellation_without_publisher_matches_original_identity() {
+        // DGAT-posttrade-2026-11-05T08_24.json.gz, line 234.
+        let cancellation: serde_json::Value = serde_json::from_str(
+            r#"{"messageId":"posttrade","instrumentIdentificationCode":"US24703L2025","tradingSystem":"7","mmtTradingMode":"U","mmtModificationInd":"C","tradingDateAndTime":"2026-11-05T08:00:32.009000000Z","price":337.10,"quantity":3.00,"priceCurrency":"EUR","priceNotation":1,"publicationDateAndTime":"2026-11-05T08:24:08.891000000Z","transactionIdentificationCode":"XGATUS24703L202520261105080032009831","venueOfExecution":"XGAT","mmtAlgoInd":"-"}"#,
+        )
+        .unwrap();
+        let mut original = cancellation.clone();
+        original["venueOfPublication"] = serde_json::json!("XCEF");
+        original["mmtModificationInd"] = serde_json::json!("-");
+        let reports = collected(
+            Feed::Tradegate,
+            &format!("{original}\n{cancellation}\n"),
+            "2026-11-05T09:00:00Z".parse().unwrap(),
+        )
+        .unwrap();
+        assert!(reports[0].eligible);
+        assert_eq!(reports[1].id, reports[0].id);
+        assert_eq!(reports[1].publisher, "XCEF");
+        assert_eq!(reports[1].revision, 2);
+        assert!(!reports[1].eligible);
+    }
+
+    #[test]
+    fn originals_and_amendments_still_require_a_publisher() {
+        for modification in ["-", "A"] {
+            let mut value = sample();
+            value["mmtModificationInd"] = serde_json::json!(modification);
+            value.as_object_mut().unwrap().remove("venueOfPublication");
+            assert!(parse_ndjson(
+                Feed::Tradegate,
+                &value.to_string(),
+                "2026-10-15T16:00:00Z".parse().unwrap(),
+                |_| Ok(())
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
     fn mixed_pretrade_indications_do_not_hide_executions_or_cancellations() {
         let mut original = sample();
         original["venueOfExecution"] = serde_json::json!("XGAT");
@@ -799,10 +962,9 @@ mod tests {
         cancellation["mmtModificationInd"] = serde_json::json!("C");
         cancellation["price"] = serde_json::Value::Null;
         let text = format!("{original}\n{indication}\n{cancellation}\n");
-        let reports = parse_ndjson(
+        let reports = collected(
             Feed::Tradegate,
             &text,
-            &HashSet::from(["DE0007164600".into()]),
             "2026-10-15T16:00:00Z".parse().unwrap(),
         )
         .unwrap();
@@ -816,19 +978,23 @@ mod tests {
 
     #[test]
     fn unknown_schema_and_modifications_fail_closed() {
-        let tracked = HashSet::from(["DE0007164600".into()]);
         let now = Utc::now();
-        assert!(parse_ndjson(Feed::Xetra, "{}", &tracked, now).is_err());
+        assert!(parse_ndjson(Feed::Xetra, "{}", now, |_| Ok(())).is_err());
         assert!(parse_ndjson(
             Feed::Xetra,
             r#"{"messageId":"posttrade-v2"}"#,
-            &tracked,
-            now
+            now,
+            |_| Ok(())
         )
         .is_err());
         let mut value = sample();
         value["mmtModificationInd"] = serde_json::json!("unexpected");
-        assert!(parse_ndjson(Feed::Xetra, &value.to_string(), &tracked, now).is_err());
+        assert!(parse_ndjson(Feed::Xetra, &value.to_string(), now, |_| Ok(())).is_err());
+        for invalid in ["", "not-an-isin", "DE000716460!"] {
+            let mut value = sample();
+            value["instrumentIdentificationCode"] = serde_json::json!(invalid);
+            assert!(parse_ndjson(Feed::Xetra, &value.to_string(), now, |_| Ok(())).is_err());
+        }
     }
 
     #[test]
@@ -848,7 +1014,7 @@ mod tests {
     }
 
     #[test]
-    fn discovery_limits_all_feeds_to_48_hours_even_over_a_weekend() {
+    fn discovery_prioritizes_newest_files_within_48_hours_even_over_a_weekend() {
         let now = "2026-10-25T12:30:00Z".parse().unwrap();
         for feed in [Feed::Xetra, Feed::Tradegate, Feed::Frankfurt] {
             let key = |timestamp| format!("{}-{timestamp}.json.gz", feed.key());
@@ -866,7 +1032,7 @@ mod tests {
             .unwrap();
             assert_eq!(
                 files.into_iter().map(|file| file.key).collect::<Vec<_>>(),
-                [key("2026-10-23T12_30"), key("2026-10-23T21_00")]
+                [key("2026-10-23T21_00"), key("2026-10-23T12_30")]
             );
             let old_only = recent_files(
                 FileIndex {
@@ -930,27 +1096,57 @@ mod tests {
                 feed.key(),
                 files.len()
             );
-            let Some(latest) = files.last() else {
+            let Some(latest) = files.first() else {
                 continue;
             };
             let file = files
                 .iter()
-                .rev()
                 .find(|file| file.key.contains("T14_30"))
                 .unwrap_or(latest);
             let file = download(&client, file, None).await.unwrap().unwrap();
-            let tracked = HashSet::from(["DE0007164600".into()]);
-            let reports = parse_gzip(feed, &file.bytes, &tracked, Utc::now()).unwrap();
-            assert!(reports.iter().all(|report| report.isin == "DE0007164600"));
-            if !reports.is_empty() {
-                assert!(reports.iter().any(|report| report.eligible));
-            }
+            let mut eligible = 0;
+            let count = parse_gzip(feed, &file.bytes, Utc::now(), |report| {
+                if report.eligible {
+                    eligible += 1;
+                }
+                Ok(())
+            }).unwrap();
             println!(
-                "{}: validated live gzip NDJSON: {} bytes, {} tracked reports",
+                "{}: validated live gzip NDJSON: {} bytes, {} reports ({} eligible)",
                 feed.key(),
                 file.bytes.len(),
-                reports.len()
+                count,
+                eligible
             );
         }
+    }
+
+    #[test]
+    fn all_instruments_and_monetary_currencies_reach_the_visitor_exactly() {
+        let mut foreign = sample();
+        foreign["instrumentIdentificationCode"] = serde_json::json!("US0378331005");
+        foreign["priceCurrency"] = serde_json::json!("USD");
+        foreign["quantity"] = serde_json::json!(12.75);
+        let text = format!("{}\n{foreign}\n", sample());
+        let reports = collected(Feed::Xetra, &text, "2026-10-15T16:00:00Z".parse().unwrap()).unwrap();
+        assert_eq!(reports.len(), 2);
+        assert_eq!(reports[1].isin, "US0378331005");
+        assert_eq!(reports[1].currency, "USD");
+        assert_eq!(reports[1].price, dec!(201.600000000000000001));
+        assert_eq!(reports[1].quantity, Some(dec!(12.75)));
+        assert!(reports[1].eligible);
+    }
+
+    #[test]
+    fn visitor_errors_stop_before_later_lines() {
+        let text = format!("{}\nnot JSON\n", sample());
+        let now = "2026-10-15T16:00:00Z".parse().unwrap();
+        let mut calls = 0;
+        let error = parse_ndjson(Feed::Xetra, &text, now, |_| {
+            calls += 1;
+            anyhow::bail!("consumer stopped")
+        }).unwrap_err();
+        assert_eq!(calls, 1);
+        assert_eq!(error.to_string(), "consumer stopped");
     }
 }

@@ -70,15 +70,7 @@ async fn pricing_database_scheduler_bootstrap_and_restart_preserve_persisted_cho
     let (mut db, schema) = test_database().await;
     jobs::enqueue(&mut db, &[Feed::Xetra]).await.unwrap();
     let completed = jobs::claim(&db, &[Feed::Xetra]).await.unwrap().unwrap();
-    price::commit_file(
-        &mut db,
-        &completed,
-        "before-bootstrap",
-        "universe",
-        "saved-hash",
-        None,
-        vec![],
-    )
+    write_file(&mut db, &completed, "before-bootstrap", "saved-hash", None, vec![])
     .await
     .unwrap();
     jobs::finish(&mut db, &completed).await.unwrap();
@@ -416,15 +408,7 @@ async fn pricing_database_scheduler_reset_fences_live_worker_and_preserves_price
         .await
         .unwrap();
     let completed = jobs::claim(&db, &[Feed::Xetra]).await.unwrap().unwrap();
-    price::commit_file(
-        &mut db,
-        &completed,
-        "completed-file",
-        "universe",
-        "completed-hash",
-        Some("completed-etag"),
-        vec![report("selected-before-reset", 10, dec!(101))],
-    )
+    write_file(&mut db, &completed, "completed-file", "completed-hash", Some("completed-etag"), vec![report("selected-before-reset", 10, dec!(101))])
     .await
     .unwrap();
     jobs::finish(&mut db, &completed).await.unwrap();
@@ -432,15 +416,10 @@ async fn pricing_database_scheduler_reset_fences_live_worker_and_preserves_price
     let running = jobs::claim(&db, &[Feed::Xetra]).await.unwrap().unwrap();
     let mut pinned_report = report("pinned-before-reset", 5, dec!(202));
     pinned_report.isin = "DE0000000001".into();
-    price::commit_file(
-        &mut db,
-        &running,
-        "partial-file",
-        "universe",
-        "partial-hash",
-        Some("partial-etag"),
-        vec![pinned_report],
-    )
+    let mut unheld_report = report("unheld-before-reset", 6, dec!(404));
+    unheld_report.isin = "reset-unheld".into();
+    unheld_report.revision = 1;
+    write_file(&mut db, &running, "partial-file", "partial-hash", Some("partial-etag"), vec![pinned_report, unheld_report])
     .await
     .unwrap();
     price::set_manual(&mut db, "DE0000000001", dec!(333), Utc::now())
@@ -452,15 +431,7 @@ async fn pricing_database_scheduler_reset_fences_live_worker_and_preserves_price
         [running.id]
     );
     let other_worker = jobs::claim(&db, &[Feed::Tradegate]).await.unwrap().unwrap();
-    price::commit_file(
-        &mut db,
-        &other_worker,
-        "other-feed-file",
-        "universe",
-        "other-hash",
-        None,
-        vec![],
-    )
+    write_file(&mut db, &other_worker, "other-feed-file", "other-hash", None, vec![])
     .await
     .unwrap();
     db.execute(
@@ -485,6 +456,8 @@ async fn pricing_database_scheduler_reset_fences_live_worker_and_preserves_price
     let prices_before = snapshot(&db, "instrument").await;
     let reports_before = snapshot(&db, "market_price_report").await;
     let checkpoints_before = snapshot(&db, "market_data_file").await;
+    let latest_before = snapshot(&db, "mifid_latest_price").await;
+    let revisions_before = snapshot(&db, "mifid_price_revision").await;
     let settings_before = snapshot(&db, "price_scheduler_settings").await;
     let completed_before: String = db
         .query_one(
@@ -538,6 +511,11 @@ async fn pricing_database_scheduler_reset_fences_live_worker_and_preserves_price
     assert_eq!(snapshot(&db, "instrument").await, prices_before);
     assert_eq!(snapshot(&db, "market_price_report").await, reports_before);
     assert_eq!(snapshot(&db, "market_data_file").await, checkpoints_before);
+    assert_eq!(snapshot(&db, "mifid_latest_price").await, latest_before);
+    assert_eq!(snapshot(&db, "mifid_price_revision").await, revisions_before);
+    let unheld = price::latest_prices(&db, &["reset-unheld".into()]).await.unwrap();
+    assert_eq!(unheld.len(), 1);
+    assert_eq!(unheld[0].price, dec!(404));
     assert_eq!(
         snapshot(&db, "price_scheduler_settings").await,
         settings_before
@@ -596,17 +574,11 @@ async fn pricing_database_scheduler_reset_fences_live_worker_and_preserves_price
     assert!(jobs::fail(&mut db, &running, "stale worker error", 1)
         .await
         .is_err());
-    assert!(price::commit_file(
-        &mut db,
-        &running,
-        "stale-worker-file",
-        "universe",
-        "stale-hash",
-        None,
-        vec![report("stale-worker-report", 0, dec!(999))],
-    )
-    .await
-    .is_err());
+    let tracked = HashSet::from(["DE0007164600".into(), "DE0000000001".into()]);
+    let scope_hash = price::portfolio_scope_hash(&tracked);
+    assert!(price::begin_file(&mut db, &running, "reset", &tracked, &scope_hash)
+        .await
+        .is_err());
     assert_eq!(snapshot(&db, "background_job").await, jobs_after_reset);
     assert_eq!(
         snapshot(&db, "price_feed_schedule").await,
@@ -615,7 +587,9 @@ async fn pricing_database_scheduler_reset_fences_live_worker_and_preserves_price
     assert_eq!(snapshot(&db, "instrument").await, prices_before);
     assert_eq!(snapshot(&db, "market_price_report").await, reports_before);
     assert_eq!(snapshot(&db, "market_data_file").await, checkpoints_before);
-    let checkpoints = price::checkpoints(&db, Feed::Xetra.key(), "universe")
+    assert_eq!(snapshot(&db, "mifid_latest_price").await, latest_before);
+    assert_eq!(snapshot(&db, "mifid_price_revision").await, revisions_before);
+    let checkpoints = price::checkpoints(&db, Feed::Xetra.key(), &scope_hash)
         .await
         .unwrap();
     assert_eq!(checkpoints.len(), 2);
@@ -626,15 +600,7 @@ async fn pricing_database_scheduler_reset_fences_live_worker_and_preserves_price
     assert_eq!(fresh.attempts, 1);
     assert!(jobs::claim(&db, &[Feed::Xetra]).await.unwrap().is_none());
     jobs::renew(&db, &other_worker).await.unwrap();
-    price::commit_file(
-        &mut db,
-        &fresh,
-        "fresh-worker-file",
-        "universe",
-        "fresh-hash",
-        None,
-        vec![report("fresh-worker-report", 0, dec!(102))],
-    )
+    write_file(&mut db, &fresh, "fresh-worker-file", "fresh-hash", None, vec![report("fresh-worker-report", 0, dec!(102))])
     .await
     .unwrap();
     jobs::finish(&mut db, &fresh).await.unwrap();
@@ -670,7 +636,12 @@ async fn pricing_database_ui_settings_upgrade_and_worker_changes_preserve_existi
         .await
         .unwrap()
         .get(0);
-    let checkpoints = snapshot(&db, "market_data_file").await;
+    let checkpoints: Vec<String> = db.query(
+        "SELECT (to_jsonb(f) - 'universe_hash'
+             || jsonb_build_object('parser_version', universe_hash, 'scope_hash', 'global'))::text
+         FROM market_data_file f ORDER BY feed, file_key",
+        &[],
+    ).await.unwrap().into_iter().map(|row| row.get(0)).collect();
     refinery::embed_migrations!("migrations");
     migrations::runner().run_async(&mut db).await.unwrap();
     scheduler::initialize(&mut db).await.unwrap();
