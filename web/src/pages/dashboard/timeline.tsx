@@ -77,7 +77,7 @@ export const Timeline = () => {
       <InvestmentActivityChart startDate={startDate} />
 
       {error ? (
-        <div role="alert" className="bg-destructive/10 text-destructive mb-6 rounded-xl border border-destructive/20 p-4 text-sm">
+        <div role="alert" className="bg-destructive/10 text-destructive-foreground mb-6 rounded-xl border border-destructive/20 p-4 text-sm">
           Timeline could not be loaded.
         </div>
       ) : isLoading ? (

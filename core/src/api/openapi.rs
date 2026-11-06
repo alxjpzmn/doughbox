@@ -7,6 +7,7 @@ use super::handlers::{
     assets,
     auth::{self, LoginRequestData},
     data_imports, market, performance, portfolio, settings, statement_imports, taxation, timeline, trades,
+    trading,
 };
 use crate::{
     api::errors::{ErrorDetails, ErrorResponse},
@@ -148,6 +149,12 @@ impl Modify for SecurityAddon {
         taxation::get_taxation_status,
         taxation::refresh_taxation,
         taxation::save_taxation_scheduler,
+        trading::state,
+        trading::connect,
+        trading::disconnect,
+        trading::token,
+        trading::approve,
+        trading::discard,
     ),
     components(schemas(
         LoginRequestData,

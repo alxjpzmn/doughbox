@@ -56,7 +56,7 @@ const TradeCard: React.FC<TimelineCardProps> = ({ timelineEvent }) => {
           <p className='text-muted-foreground text-sm'>{formatDate(new Date(timelineEvent?.date))}</p>
           <div className="flex items-center gap-2">
             <TaxStatus timelineEvent={timelineEvent} />
-            {timelineEvent.direction === TradeDirection.Buy ? <ArrowDownLeftIcon className='text-success-foreground' size={16} /> : <ArrowUpRightIcon className='text-red-400' size={16} />}
+            {timelineEvent.direction === TradeDirection.Buy ? <ArrowDownLeftIcon className='text-success-foreground' size={16} /> : <ArrowUpRightIcon className='text-destructive-foreground' size={16} />}
           </div>
         </div>
       </CardContent>

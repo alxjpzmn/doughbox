@@ -10,6 +10,12 @@ struct SendTelegramMessageRequest<'a> {
     chat_id: &'a str,
     text: &'a str,
     parse_mode: &'static str,
+    #[serde(skip_serializing_if = "is_false")]
+    disable_web_page_preview: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Deserialize)]
@@ -24,6 +30,14 @@ pub fn configured() -> bool {
 }
 
 async fn send_telegram_message(text: &str) -> Result<()> {
+    send_telegram_message_with(text, false).await
+}
+
+async fn send_telegram_message_without_preview(text: &str) -> Result<()> {
+    send_telegram_message_with(text, true).await
+}
+
+async fn send_telegram_message_with(text: &str, disable_preview: bool) -> Result<()> {
     let token = get_env_variable("TG_TOKEN")
         .filter(|value| !value.trim().is_empty())
         .context("Telegram bot token is not configured")?;
@@ -40,10 +54,10 @@ async fn send_telegram_message(text: &str) -> Result<()> {
     } else {
         text
     };
-    send_to_endpoint(&endpoint, &chat_id, text).await
+    send_to_endpoint(&endpoint, &chat_id, text, disable_preview).await
 }
 
-async fn send_to_endpoint(endpoint: &str, chat_id: &str, text: &str) -> Result<()> {
+async fn send_to_endpoint(endpoint: &str, chat_id: &str, text: &str, disable_preview: bool) -> Result<()> {
     anyhow::ensure!(!chat_id.trim().is_empty(), "Telegram chat ID is not configured");
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(20))
@@ -51,7 +65,12 @@ async fn send_to_endpoint(endpoint: &str, chat_id: &str, text: &str) -> Result<(
         .build()
         .map_err(|_| anyhow::anyhow!("Could not initialize Telegram transport"))?;
     let response = client.post(endpoint)
-        .json(&SendTelegramMessageRequest { chat_id, text, parse_mode: "HTML" })
+        .json(&SendTelegramMessageRequest {
+            chat_id,
+            text,
+            parse_mode: "HTML",
+            disable_web_page_preview: disable_preview,
+        })
         .send().await
         .map_err(|_| anyhow::anyhow!("Telegram request failed or timed out"))?;
     if !response.status().is_success() {
@@ -70,6 +89,10 @@ pub struct Notification {
 impl Notification {
     pub async fn send(&self) -> Result<()> {
         send_telegram_message(&self.content).await
+    }
+
+    pub async fn send_without_preview(&self) -> Result<()> {
+        send_telegram_message_without_preview(&self.content).await
     }
 }
 
@@ -94,7 +117,7 @@ mod tests {
     #[tokio::test]
     async fn delivery_requires_http_and_telegram_confirmation() {
         let endpoint = serve_response("200 OK", r#"{"ok":true,"result":{"message_id":1}}"#).await;
-        send_to_endpoint(&endpoint, "private_chat", "Report").await.unwrap();
+        send_to_endpoint(&endpoint, "private_chat", "Report", false).await.unwrap();
         for (status, body) in [
             ("200 OK", r#"{"ok":false,"description":"SECRET_TOKEN private_chat"}"#),
             ("200 OK", "SECRET_TOKEN malformed"),
@@ -103,7 +126,7 @@ mod tests {
             ("500 Internal Server Error", "SECRET_TOKEN private_chat"),
         ] {
             let endpoint = serve_response(status, body).await;
-            let error = send_to_endpoint(&endpoint, "private_chat", "Report").await.unwrap_err();
+            let error = send_to_endpoint(&endpoint, "private_chat", "Report", false).await.unwrap_err();
             let message = format!("{error:#}");
             assert!(!message.contains("SECRET_TOKEN"));
             assert!(!message.contains("private_chat"));
@@ -116,10 +139,10 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = format!("http://{}/botSECRET_TOKEN/sendMessage", listener.local_addr().unwrap());
         drop(listener);
-        let error = send_to_endpoint(&endpoint, "private_chat", "Report").await.unwrap_err();
+        let error = send_to_endpoint(&endpoint, "private_chat", "Report", true).await.unwrap_err();
         let message = format!("{error:#}");
         assert!(!message.contains("SECRET_TOKEN"));
         assert!(!message.contains("http://"));
-        assert!(send_to_endpoint(&endpoint, " \t", "Report").await.is_err());
+        assert!(send_to_endpoint(&endpoint, " \t", "Report", false).await.is_err());
     }
 }

@@ -15,7 +15,6 @@
 //! the application's 48-hour ingestion window.
 
 use std::{
-    collections::HashSet,
     io::{BufRead, BufReader, Cursor, Read},
     str::FromStr,
     sync::LazyLock,
@@ -126,18 +125,18 @@ pub async fn download(
 pub fn parse(
     file: &SourceFile,
     bytes: &[u8],
-    tracked: &HashSet<String>,
     now: DateTime<Utc>,
-) -> anyhow::Result<Vec<PriceReport>> {
-    parse_archive(bytes, tracked, now)
+    emit: impl FnMut(PriceReport) -> anyhow::Result<()>,
+) -> anyhow::Result<usize> {
+    parse_archive(bytes, now, emit)
         .with_context(|| format!("Parsing Euronext file {}", file.key))
 }
 
 fn parse_archive(
     bytes: &[u8],
-    tracked: &HashSet<String>,
     now: DateTime<Utc>,
-) -> anyhow::Result<Vec<PriceReport>> {
+    emit: impl FnMut(PriceReport) -> anyhow::Result<()>,
+) -> anyhow::Result<usize> {
     ensure!(
         bytes.len() <= MAX_ZIP_BYTES,
         "Euronext archive exceeds size limit"
@@ -179,14 +178,14 @@ fn parse_archive(
             && notice.contains("Terms and Conditions for Delayed Trade Data"),
         "Missing Euronext terms notice"
     );
-    parse_csv(reader, tracked, now)
+    parse_csv(reader, now, emit)
 }
 
 fn parse_csv(
     reader: impl Read,
-    tracked: &HashSet<String>,
     now: DateTime<Utc>,
-) -> anyhow::Result<Vec<PriceReport>> {
+    mut emit: impl FnMut(PriceReport) -> anyhow::Result<()>,
+) -> anyhow::Result<usize> {
     let mut csv = csv::ReaderBuilder::new().from_reader(reader);
     let headers = csv
         .headers()
@@ -210,7 +209,7 @@ fn parse_csv(
         .filter(|(_, name)| name.starts_with("Mmt") && !COLUMNS.contains(name))
         .map(|(index, _)| index)
         .collect();
-    let mut reports = Vec::new();
+    let mut count = 0;
     let mut row = csv::StringRecord::new();
     let cutoff = now - Duration::hours(48);
     let mut index = 1usize;
@@ -221,9 +220,10 @@ fn parse_csv(
         index += 1;
         let value = |column: usize| row.get(positions[column]).unwrap_or_default();
         let isin = value(2);
-        if !tracked.contains(isin) {
-            continue;
-        }
+        ensure!(
+            isin.len() == 12 && isin.bytes().all(|b| b.is_ascii_alphanumeric()),
+            "Invalid Euronext ISIN at row {index}"
+        );
         let published = timestamp(value(1))
             .with_context(|| format!("Invalid publication time at Euronext row {index}"))?;
         if published < cutoff || published > now {
@@ -250,7 +250,8 @@ fn parse_csv(
         // Preserve ineligible corrections/cancellations so they invalidate an earlier
         // valuation with the same identity, including currency/condition amendments.
         let eligible = revision != 2
-            && value(6) == "EUR"
+            && value(6).len() == 3
+            && value(6).bytes().all(|b| b.is_ascii_uppercase())
             && value(5) == "MONE"
             && price.is_some_and(|p| p > Decimal::ZERO)
             && quantity.is_some_and(|q| q >= Decimal::ZERO)
@@ -279,7 +280,7 @@ fn parse_csv(
             revision_hash.update(&(field.len() as u64).to_le_bytes());
             revision_hash.update(field.as_bytes());
         }
-        reports.push(PriceReport {
+        emit(PriceReport {
             id: blake3::hash(identity.as_bytes()).to_hex().to_string(),
             isin: isin.to_owned(),
             transaction_id: transaction.to_owned(),
@@ -296,10 +297,12 @@ fn parse_csv(
             revision_hash: revision_hash.finalize().to_hex().to_string(),
             price: price.unwrap_or(Decimal::ZERO),
             currency: value(6).to_owned(),
+            quantity,
             eligible,
-        });
+        })?;
+        count += 1;
     }
-    Ok(reports)
+    Ok(count)
 }
 
 fn timestamp(value: &str) -> anyhow::Result<DateTime<Utc>> {
@@ -317,9 +320,6 @@ mod tests {
     fn now() -> DateTime<Utc> {
         timestamp("2026-10-23T20:00:00Z").unwrap()
     }
-    fn tracked() -> HashSet<String> {
-        HashSet::from(["FR0004056851".to_owned()])
-    }
     fn fields() -> Vec<String> {
         REAL_ROW.split(',').map(str::to_owned).collect()
     }
@@ -331,8 +331,17 @@ mod tests {
         }
         csv.into_inner().unwrap()
     }
+    fn collected(reader: impl Read) -> anyhow::Result<Vec<PriceReport>> {
+        let mut reports = Vec::new();
+        let count = parse_csv(reader, now(), |report| {
+            reports.push(report);
+            Ok(())
+        })?;
+        assert_eq!(count, reports.len());
+        Ok(reports)
+    }
     fn report(fields: Vec<String>) -> PriceReport {
-        parse_csv(Cursor::new(csv_bytes(&[fields])), &tracked(), now())
+        collected(Cursor::new(csv_bytes(&[fields])))
             .unwrap()
             .pop()
             .unwrap()
@@ -343,9 +352,12 @@ mod tests {
         let original = report(fields());
         assert!(original.eligible);
         assert_eq!(original.price, Decimal::from_str("2.4").unwrap());
+        assert_eq!(original.quantity, Some(Decimal::from(42)));
         let mut zero = fields();
         zero[4] = "0.0".into();
-        assert!(report(zero).eligible);
+        let zero = report(zero);
+        assert!(zero.eligible);
+        assert_eq!(zero.quantity, Some(Decimal::ZERO));
         for quantity in ["-1", "", "NaN"] {
             let mut row = fields();
             row[4] = quantity.into();
@@ -363,8 +375,15 @@ mod tests {
         let amendment = report(amendment);
         assert_eq!(original.id, amendment.id);
         assert_eq!(amendment.revision, 1);
-        assert!(!amendment.eligible);
+        assert!(amendment.eligible);
+        assert_eq!(amendment.currency, "USD");
         assert_ne!(original.revision_hash, amendment.revision_hash);
+        let mut ineligible = fields();
+        ineligible[9] = "AMND".into();
+        ineligible[5] = "PERC".into();
+        let ineligible = report(ineligible);
+        assert_eq!(ineligible.id, original.id);
+        assert!(!ineligible.eligible);
         let mut cancellation = fields();
         cancellation[9] = "CANC".into();
         cancellation[3].clear();
@@ -393,7 +412,7 @@ mod tests {
             (3, "0"),
             (3, "-1"),
             (5, "PERC"),
-            (6, "NOK"),
+            (6, ""),
             (7, "4"),
             (7, "8"),
             (8, "NLIQ"),
@@ -426,31 +445,28 @@ mod tests {
         assert_eq!(report(correction).revision, 1);
         let mut old = fields();
         old[1] = "2026-10-21T19:59:59Z".into();
-        assert!(parse_csv(Cursor::new(csv_bytes(&[old])), &tracked(), now())
-            .unwrap()
-            .is_empty());
+        assert!(collected(Cursor::new(csv_bytes(&[old]))).unwrap().is_empty());
         let mut boundary = fields();
         boundary[1] = "2026-10-21T20:00:00Z".into();
         boundary[0] = boundary[1].clone();
         assert_eq!(
-            parse_csv(Cursor::new(csv_bytes(&[boundary])), &tracked(), now())
-                .unwrap()
-                .len(),
+            collected(Cursor::new(csv_bytes(&[boundary]))).unwrap().len(),
             1
         );
     }
 
     #[test]
     fn schema_and_unknown_revisions_fail_instead_of_succeeding_empty() {
-        assert!(parse_csv(
-            Cursor::new(b"TradingDateTime,MifidInstrumentID\n"),
-            &tracked(),
-            now()
-        )
+        assert!(collected(Cursor::new(b"TradingDateTime,MifidInstrumentID\n"))
         .is_err());
         let mut row = fields();
         row[9] = "UNKN".into();
-        assert!(parse_csv(Cursor::new(csv_bytes(&[row])), &tracked(), now()).is_err());
+        assert!(collected(Cursor::new(csv_bytes(&[row]))).is_err());
+        for invalid in ["", "not-an-isin", "FR000405685!"] {
+            let mut row = fields();
+            row[2] = invalid.into();
+            assert!(collected(Cursor::new(csv_bytes(&[row]))).is_err());
+        }
     }
 
     #[test]
@@ -465,7 +481,7 @@ mod tests {
         writer.write_record(&headers).unwrap();
         writer.write_record(&row).unwrap();
         let bytes = writer.into_inner().unwrap();
-        let reports = parse_csv(Cursor::new(bytes), &tracked(), now()).unwrap();
+        let reports = collected(Cursor::new(bytes)).unwrap();
         assert_eq!(reports.len(), 1);
         assert!(!reports[0].eligible);
         assert_eq!(reports[0].price, Decimal::from_str("2.4").unwrap());
@@ -488,21 +504,11 @@ mod tests {
             let mut future = fields();
             future[1] = "2026-10-24T07:00:00Z".into();
             future[9] = modification.into();
-            let reports = parse_csv(
-                Cursor::new(csv_bytes(&[fields(), future])),
-                &tracked(),
-                now(),
-            )
-            .unwrap();
+            let reports = collected(Cursor::new(csv_bytes(&[fields(), future]))).unwrap();
             assert_eq!(reports.len(), 1);
             assert!(reports[0].eligible);
             assert_eq!(reports[0].revision, 0);
         }
-        assert!(
-            parse_csv(Cursor::new(csv_bytes(&[fields()])), &HashSet::new(), now())
-                .unwrap()
-                .is_empty()
-        );
     }
 
     #[test]
@@ -518,9 +524,42 @@ mod tests {
         writer.write_all(b"(c) 2025 Euronext N.V. All Rights Reserved. Terms and Conditions for Delayed Trade Data\n").unwrap();
         writer.write_all(&csv_bytes(&[fields()])).unwrap();
         let zip = writer.finish().unwrap().into_inner();
-        let reports = parse_archive(&zip, &tracked(), now()).unwrap();
+        let mut reports = Vec::new();
+        let count = parse_archive(&zip, now(), |report| {
+            reports.push(report);
+            Ok(())
+        }).unwrap();
+        assert_eq!(count, reports.len());
         assert_eq!(reports.len(), 1);
         assert!(reports[0].eligible);
-        assert!(parse_archive(b"<html>Access denied</html>", &tracked(), now()).is_err());
+        assert!(parse_archive(b"<html>Access denied</html>", now(), |_| Ok(())).is_err());
+    }
+
+    #[test]
+    fn all_instruments_and_monetary_currencies_reach_the_visitor_exactly() {
+        let mut foreign = fields();
+        foreign[2] = "NO0010096985".into();
+        foreign[3] = "123.456789012345678901".into();
+        foreign[4] = "12.75".into();
+        foreign[6] = "NOK".into();
+        let reports = collected(Cursor::new(csv_bytes(&[fields(), foreign]))).unwrap();
+        assert_eq!(reports.len(), 2);
+        assert_eq!(reports[1].isin, "NO0010096985");
+        assert_eq!(reports[1].currency, "NOK");
+        assert_eq!(reports[1].price, Decimal::from_str("123.456789012345678901").unwrap());
+        assert_eq!(reports[1].quantity, Some(Decimal::from_str("12.75").unwrap()));
+        assert!(reports[1].eligible);
+    }
+
+    #[test]
+    fn visitor_errors_stop_before_later_rows() {
+        let bytes = csv_bytes(&[fields(), fields()]);
+        let mut calls = 0;
+        let error = parse_csv(Cursor::new(bytes), now(), |_| {
+            calls += 1;
+            anyhow::bail!("consumer stopped")
+        }).unwrap_err();
+        assert_eq!(calls, 1);
+        assert_eq!(error.to_string(), "consumer stopped");
     }
 }

@@ -31,6 +31,8 @@ pub struct PriceReport {
     pub revision_hash: String,
     pub price: Decimal,
     pub currency: String,
+    /// Source quantity, including zero-volume reference reports; absent on legacy rows.
+    pub quantity: Option<Decimal>,
     pub eligible: bool,
 }
 
@@ -53,6 +55,8 @@ pub struct PriceQuote {
     pub as_of: Option<DateTime<Utc>>,
     pub received_at: Option<DateTime<Utc>>,
     pub pinned: bool,
+    /// None for unsourced prices; sourced zero quantity is indicative.
+    pub indicative: Option<bool>,
     /// A clock-age indicator, not a trading-calendar or market-open assertion.
     pub older_than_hour: bool,
 }

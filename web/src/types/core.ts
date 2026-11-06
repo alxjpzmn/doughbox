@@ -335,6 +335,8 @@ export interface PriceQuote {
 	as_of?: Date;
 	received_at?: Date;
 	pinned: boolean;
+	/** Zero-volume reference indication; unknown for legacy or manual prices. */
+	indicative?: boolean;
 	/** A clock-age indicator, not a trading-calendar or market-open assertion. */
 	older_than_hour: boolean;
 }

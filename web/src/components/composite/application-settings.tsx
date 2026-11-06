@@ -105,7 +105,7 @@ export const ApplicationSettingsPanel = () => {
     </CardHeader>
     <CardContent className="space-y-4">
       {!data && !error && <p role="status" className="text-sm text-muted-foreground">Loading settings…</p>}
-      {error && <div role="alert" className="space-y-2 text-sm text-destructive">
+      {error && <div role="alert" className="space-y-2 text-sm text-destructive-foreground">
         <p>{data ? 'Settings could not be refreshed. Last loaded values are shown.' : 'Application settings could not be loaded.'}</p>
         <Button type="button" variant="outline" disabled={busy} onClick={async () => {
           try { await mutate(); } catch { setFeedback({ error: true, message: 'Settings are still unavailable.' }); }
@@ -136,8 +136,8 @@ export const ApplicationSettingsPanel = () => {
             <dd><TelegramStatusBadge isSet={data.telegram_chat_id_set} /></dd>
           </div>
         </dl>
-        <p className="text-xs text-muted-foreground">Both values must be set on the server to send Telegram notifications. Values are never shown here; this status does not verify them with Telegram.</p>
-        {(!data.telegram_token_set || !data.telegram_chat_id_set) && <p role="status" className="text-sm text-muted-foreground">You can save a schedule now, but reports will not send until both Telegram values are configured.</p>}
+        <p className="text-xs text-muted-foreground">Both values must be set on the server to send Telegram notifications. Trading proposals notify this chat immediately when both are set; daily reports still follow the schedule below. Values are never shown here; this status does not verify them with Telegram.</p>
+        {(!data.telegram_token_set || !data.telegram_chat_id_set) && <p role="status" className="text-sm text-muted-foreground">You can save a schedule now, but reports will not send until both Telegram values are configured. Proposal alerts also wait for both values.</p>}
         {schedule && <form onSubmit={saveSchedule} aria-label="Telegram daily report schedule" className="space-y-4">
           <div className="flex items-center gap-3">
             <Switch id="telegram-schedule-enabled" checked={schedule.enabled} disabled={scheduleBusy || busy || !!error}
@@ -164,7 +164,7 @@ export const ApplicationSettingsPanel = () => {
               setScheduleFeedback(null);
             }}>Discard schedule changes</Button>}
           </div>
-          {scheduleFeedback && <p role={scheduleFeedback.error ? 'alert' : 'status'} className={`text-sm ${scheduleFeedback.error ? 'text-destructive' : 'text-muted-foreground'}`}>{scheduleFeedback.message}</p>}
+          {scheduleFeedback && <p role={scheduleFeedback.error ? 'alert' : 'status'} className={`text-sm ${scheduleFeedback.error ? 'text-destructive-foreground' : 'text-muted-foreground'}`}>{scheduleFeedback.message}</p>}
         </form>}
         <dl className="space-y-2 text-sm">
           <div className="flex flex-wrap gap-x-3 gap-y-1">
@@ -179,13 +179,13 @@ export const ApplicationSettingsPanel = () => {
             <dt className="text-muted-foreground">Last report status</dt>
             <dd>{reportStatuses[data.telegram_schedule.last_status] ?? data.telegram_schedule.last_status}</dd>
           </div>
-          {data.telegram_schedule.last_error && <div className="space-y-1 break-words text-destructive">
+          {data.telegram_schedule.last_error && <div className="space-y-1 break-words text-destructive-foreground">
             <dt>Last report error</dt>
             <dd>{data.telegram_schedule.last_error}</dd>
           </div>}
         </dl>
       </section>}
-      {feedback && <p role={feedback.error ? 'alert' : 'status'} className={`text-sm ${feedback.error ? 'text-destructive' : 'text-muted-foreground'}`}>{feedback.message}</p>}
+      {feedback && <p role={feedback.error ? 'alert' : 'status'} className={`text-sm ${feedback.error ? 'text-destructive-foreground' : 'text-muted-foreground'}`}>{feedback.message}</p>}
     </CardContent>
   </Card>;
 };

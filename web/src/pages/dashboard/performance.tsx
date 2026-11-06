@@ -70,11 +70,11 @@ const Performance = () => {
         <p className="text-sm text-muted-foreground">Applies to history, conviction, individual performance and visible alpha.</p>
       </div>
       {activeHistoryIncomplete ? (
-        <p role="alert" className="rounded-xl border border-destructive/20 bg-destructive/10 p-4 text-sm text-destructive">
+        <p role="alert" className="rounded-xl border border-destructive/20 bg-destructive/10 p-4 text-sm text-destructive-foreground">
           Active holdings cannot be determined reliably because acquisition history is incomplete. All performance widgets are hidden. Reconcile the history gaps shown on Portfolio, or turn off Active only to view saved full-portfolio results.
         </p>
       ) : showOnlyActivePositions && activePositionsError ? (
-        <p role="alert" className="rounded-xl border border-destructive/20 bg-destructive/10 p-4 text-sm text-destructive">
+        <p role="alert" className="rounded-xl border border-destructive/20 bg-destructive/10 p-4 text-sm text-destructive-foreground">
           Active holdings could not be loaded. All performance widgets are hidden until the active selection is available. Turn off Active only to view the full portfolio.
         </p>
       ) : activeSelectionUnknown ? (

@@ -3,9 +3,9 @@ import { Route, Switch } from "wouter";
 import { SWRConfig } from "swr";
 import Login from "@/pages/login";
 import Overview from "@/pages/dashboard/overview";
-import Performance from "@/pages/dashboard/performance";
 import Taxation from "@/pages/dashboard/taxation";
 import Instruments from "@/pages/dashboard/instruments";
+import Trading from "@/pages/dashboard/trading";
 import useIsMobile from "@/hooks/useIsMobile";
 import { Menu, MobileMenu } from "@/components/composite/menu";
 import useAuth from "@/hooks/useAuth";
@@ -37,9 +37,10 @@ export default function App() {
                 <div className="max-w-2xl mx-auto">
                   {!isMobile && <Menu />}
                   <Route path="/overview" component={Overview} />
-                  <Route path="/performance" component={Performance} />
+                  <Route path="/performance" component={Overview} />
                   <Route path="/instruments" component={Instruments} />
                   <Route path="/taxation" component={Taxation} />
+                  <Route path="/trading" component={Trading} />
                   <Route path="/settings" component={ApplicationSettingsPanel} />
                 </div>
               </main>

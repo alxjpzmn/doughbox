@@ -22,7 +22,7 @@ const PerformanceChart: React.FC<PerformanceChartProps> = ({ activeOnly, activeA
 
   if (error) {
     return (
-      <p role="alert" className="py-8 text-sm text-destructive">
+      <p role="alert" className="py-8 text-sm text-destructive-foreground">
         Return history could not be loaded.
       </p>
     );

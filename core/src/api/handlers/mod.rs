@@ -9,6 +9,7 @@ pub mod statement_imports;
 pub mod taxation;
 pub mod timeline;
 pub mod trades;
+pub mod trading;
 
 use axum::{
     extract::Request,

@@ -22,13 +22,13 @@
   </head>
   <!-- to prevent FOUC -->
   <style>
-    body {
+    html:not(.light):not(.dark) body {
       background-color: #ffffff;
       margin: 0;
       padding: 0;
     }
     @media (prefers-color-scheme: dark) {
-      body {
+      html:not(.light):not(.dark) body {
         background-color: #000000;
       }
     }

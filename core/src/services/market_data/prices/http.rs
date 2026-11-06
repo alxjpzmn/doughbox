@@ -16,7 +16,7 @@ use super::types::{Download, SourceFile};
 const REQUEST_INTERVAL: Duration = Duration::from_secs(2);
 const MAX_REQUEST_INTERVAL: Duration = Duration::from_secs(60);
 
-pub(super) struct RequestLimiter {
+pub(in crate::services::market_data) struct RequestLimiter {
     state: Mutex<RequestSchedule>,
 }
 
@@ -26,11 +26,15 @@ struct RequestSchedule {
 }
 
 impl RequestLimiter {
-    pub(super) fn new() -> Self {
+    pub(in crate::services::market_data) fn new() -> Self {
+        Self::with_interval(REQUEST_INTERVAL)
+    }
+
+    pub(in crate::services::market_data) fn with_interval(interval: Duration) -> Self {
         Self {
             state: Mutex::new(RequestSchedule {
                 next_request: Instant::now(),
-                interval: REQUEST_INTERVAL,
+                interval,
             }),
         }
     }
@@ -61,7 +65,7 @@ impl RequestLimiter {
             .max(Instant::now() + duration.max(state.interval));
     }
 
-    pub(super) async fn send(&self, request: RequestBuilder) -> anyhow::Result<Response> {
+    pub(in crate::services::market_data) async fn send(&self, request: RequestBuilder) -> anyhow::Result<Response> {
         self.wait().await;
         self.send_now(request).await
     }
@@ -94,7 +98,7 @@ impl std::fmt::Display for RateLimited {
 }
 
 impl std::error::Error for RateLimited {}
-pub fn http_client() -> anyhow::Result<Client> {
+pub(in crate::services::market_data) fn http_client() -> anyhow::Result<Client> {
     // Redirects are validated explicitly by the download adapter, never followed blindly.
     Ok(Client::builder()
         .user_agent(concat!("Doughbox/", env!("CARGO_PKG_VERSION")))
@@ -104,7 +108,7 @@ pub fn http_client() -> anyhow::Result<Client> {
         .build()?)
 }
 
-pub(super) async fn limited_body(mut response: Response, limit: usize) -> anyhow::Result<Vec<u8>> {
+pub(in crate::services::market_data) async fn limited_body(mut response: Response, limit: usize) -> anyhow::Result<Vec<u8>> {
     let length = response.content_length();
     ensure!(
         length.is_none_or(|n| n <= limit as u64),
@@ -147,7 +151,7 @@ fn rate_limited(response: &Response) -> RateLimited {
     }
 }
 
-pub(super) fn check_status(response: &Response) -> anyhow::Result<()> {
+pub(in crate::services::market_data) fn check_status(response: &Response) -> anyhow::Result<()> {
     response
         .error_for_status_ref()
         .map_err(|error| error.without_url())?;

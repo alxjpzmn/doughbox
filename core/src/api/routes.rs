@@ -1,6 +1,7 @@
 use axum::{
     extract::DefaultBodyLimit,
     http::StatusCode,
+    response::IntoResponse,
     routing::{get, get_service, post, put},
     Router,
 };
@@ -138,6 +139,7 @@ pub fn create_router() -> anyhow::Result<Router> {
         .route("/taxation/detailed", get(taxation_detailed))
         .route("/taxation/transactions", get(taxation_transactions))
         .route("/auth_state", get(auth_state))
+        .merge(super::handlers::trading::router())
         .layer(axum::middleware::from_fn(check_auth));
 
     let cors_layer = CorsLayer::new()
@@ -168,7 +170,11 @@ pub fn create_router() -> anyhow::Result<Router> {
 
     let app = public_router
         .merge(protected_router)
+        .merge(crate::services::trading::mcp::router())
         .merge(SwaggerUi::new("/api/docs").url("/api/openapi.json", ApiDoc::openapi()))
+        .route("/login", get(spa_index))
+        .route("/dashboard", get(spa_index))
+        .route("/dashboard/{*path}", get(spa_index))
         .merge(static_router)
         .layer(session_layer)
         .layer(cors_layer)
@@ -176,3 +182,52 @@ pub fn create_router() -> anyhow::Result<Router> {
 
     Ok(app)
 }
+
+async fn spa_index() -> impl IntoResponse {
+    match tokio::fs::read("./dist/index.html").await {
+        Ok(body) => (
+            [
+                (axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8"),
+                (axum::http::header::CACHE_CONTROL, "no-cache"),
+            ],
+            body,
+        )
+            .into_response(),
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use tower::ServiceExt;
+
+    async fn status(path: &str) -> StatusCode {
+        create_router()
+            .unwrap()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(path)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+    }
+
+    #[tokio::test]
+    async fn approval_links_reach_the_spa_without_swallowing_api_routes() {
+        assert_eq!(status("/api/not-a-route").await, StatusCode::NOT_FOUND);
+        if !std::path::Path::new("dist/index.html").is_file() {
+            return;
+        }
+        assert_eq!(
+            status("/dashboard/trading?proposal=11111111-1111-4111-8111-111111111111").await,
+            StatusCode::OK
+        );
+        assert_eq!(status("/login?next=%2Fdashboard%2Ftrading").await, StatusCode::OK);
+    }
+}
+

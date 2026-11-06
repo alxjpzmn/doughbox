@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use chrono::{DateTime, Utc};
 use reqwest::Client;
 
@@ -39,14 +37,14 @@ pub(super) fn parse(
     feed: Feed,
     file: &SourceFile,
     bytes: &[u8],
-    tracked: &HashSet<String>,
     now: DateTime<Utc>,
-) -> anyhow::Result<Vec<PriceReport>> {
+    emit: impl FnMut(PriceReport) -> anyhow::Result<()>,
+) -> anyhow::Result<usize> {
     match feed {
         Feed::Xetra | Feed::Tradegate | Feed::Frankfurt => {
-            deutsche_boerse::parse_gzip(feed, bytes, tracked, now)
+            deutsche_boerse::parse_gzip(feed, bytes, now, emit)
         }
-        Feed::Cboe => cboe::parse(file, bytes, tracked, now),
-        Feed::Euronext => euronext::parse(file, bytes, tracked, now),
+        Feed::Cboe => cboe::parse(file, bytes, now, emit),
+        Feed::Euronext => euronext::parse(file, bytes, now, emit),
     }
 }

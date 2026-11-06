@@ -5,7 +5,7 @@
 //! https://cdn.cboe.com/resources/participant_resources/Cboe_Titanium_Europe_Aggregated_Depth_Feed_Specification.pdf
 //! Equities/trade selectors BXE, CXE and DXE include exchange off-book and BIDS
 //! executions; TRF is APA reporting and is deliberately not requested.
-use std::{collections::HashSet, str::FromStr, sync::LazyLock};
+use std::{str::FromStr, sync::LazyLock};
 
 use anyhow::{bail, ensure, Context};
 use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, Utc};
@@ -261,9 +261,9 @@ fn exchange(stream: &str, publisher: &str, venue: &str) -> bool {
 pub fn parse(
     file: &SourceFile,
     bytes: &[u8],
-    tracked: &HashSet<String>,
     now: DateTime<Utc>,
-) -> anyhow::Result<Vec<PriceReport>> {
+    mut emit: impl FnMut(PriceReport) -> anyhow::Result<()>,
+) -> anyhow::Result<usize> {
     let coverage = bucket(&file.key)?;
     ensure!(
         bytes.len() <= MAX_FILE_BYTES,
@@ -271,7 +271,7 @@ pub fn parse(
     );
     let text = std::str::from_utf8(bytes).context("Cboe file is not UTF-8")?;
     let cutoff = now - Duration::hours(48);
-    let mut reports = Vec::new();
+    let mut count = 0;
     let mut first = true;
     for (index, raw) in text.lines().enumerate() {
         ensure!(index < MAX_ROWS, "Cboe file exceeds row limit");
@@ -305,9 +305,6 @@ pub fn parse(
             row[..11].iter().all(|v| !v.contains('"')),
             "Invalid Cboe equity CSV schema"
         );
-        if !tracked.contains(row[1]) {
-            continue;
-        }
         ensure!(
             row[1].len() == 12 && row[1].bytes().all(|b| b.is_ascii_alphanumeric()),
             "Invalid Cboe ISIN"
@@ -356,15 +353,14 @@ pub fn parse(
         } else {
             Some(Decimal::from_str(row[5]).context("Invalid Cboe quantity")?)
         };
-        let eligible = revision != 2 && row[3] == "EUR" && row[4] == "MONE"
+        let eligible = revision != 2
+            && row[3].len() == 3 && row[3].bytes().all(|b| b.is_ascii_uppercase())
+            && row[4] == "MONE"
             && price > Decimal::ZERO && quantity.is_some_and(|q| q >= Decimal::ZERO)
             && executed <= now && exchange(coverage.stream, row[9], row[6])
             && matches!(row[7], "CLOB" | "PATS" | "QDTS" | "RFQT" | "HYBR" | "OTHR")
             // Unknown conditions are not silently treated as price forming.
             && flags.split(',').all(|flag| matches!(flag, "" | "ALGO" | "AMND"));
-        if revision == 0 && !eligible {
-            continue;
-        }
         // The original execution date, not the publication/file date, keeps late
         // amendments/cancellations on the original transaction's identity.
         let identity = format!(
@@ -374,7 +370,7 @@ pub fn parse(
             executed.date_naive(),
             row[10]
         );
-        reports.push(PriceReport {
+        emit(PriceReport {
             id: blake3::hash(identity.as_bytes()).to_hex().to_string(),
             isin: row[1].to_owned(),
             transaction_id: row[10].to_owned(),
@@ -391,14 +387,16 @@ pub fn parse(
             revision_hash: blake3::hash(line.as_bytes()).to_hex().to_string(),
             price,
             currency: row[3].to_owned(),
+            quantity,
             eligible,
-        });
+        })?;
+        count += 1;
     }
     ensure!(
         !first || !coverage.daily,
         "Cboe daily file is missing the required schema header"
     );
-    Ok(reports)
+    Ok(count)
 }
 
 #[cfg(test)]
@@ -417,14 +415,17 @@ mod tests {
         SourceFile { timestamp: coverage.end,
             url: Url::parse(&format!("https://cdn.cboe.com/data/europe/equities/delayed_data/eqt_trade_CEUX/9d8b5bc6b9/{}/{key}", if daily { "daily" } else { "minute" })).unwrap(), key }
     }
+    fn collected(file: &SourceFile, bytes: &[u8]) -> anyhow::Result<Vec<PriceReport>> {
+        let mut reports = Vec::new();
+        let count = parse(file, bytes, now(), |report| {
+            reports.push(report);
+            Ok(())
+        })?;
+        assert_eq!(count, reports.len());
+        Ok(reports)
+    }
     fn parsed(line: &str) -> Vec<PriceReport> {
-        parse(
-            &file(false),
-            line.as_bytes(),
-            &HashSet::from(["IT0005239360".to_owned()]),
-            now(),
-        )
-        .unwrap()
+        collected(&file(false), line.as_bytes()).unwrap()
     }
     fn row(
         price: &str,
@@ -442,6 +443,7 @@ mod tests {
         let reports = parsed(&row("72.0356", "EUR", "MONE", "0", "CEUX", "ALGO"));
         assert_eq!(reports[0].price, Decimal::from_str("72.0356").unwrap());
         assert!(reports[0].eligible);
+        assert_eq!(reports[0].quantity, Some(Decimal::ZERO));
         assert_eq!(
             reports[0].executed_ns,
             timestamp("2026-10-23 15:17:40.937")
@@ -451,12 +453,12 @@ mod tests {
         );
         for (price, currency, notation, quantity) in [
             ("0", "EUR", "MONE", "1"),
-            ("1", "USD", "MONE", "1"),
+            ("1", "", "MONE", "1"),
             ("1", "EUR", "PERC", "1"),
             ("1", "EUR", "MONE", "-1"),
             ("1", "EUR", "MONE", ""),
         ] {
-            assert!(parsed(&row(price, currency, notation, quantity, "CEUX", "")).is_empty());
+            assert!(!parsed(&row(price, currency, notation, quantity, "CEUX", ""))[0].eligible);
         }
     }
 
@@ -466,13 +468,13 @@ mod tests {
             assert!(parsed(&row("1", "EUR", "MONE", "1", venue, ""))[0].eligible);
         }
         for venue in ["XOFF", "SINT", "CAPA", "BOTC", "XXXX"] {
-            assert!(parsed(&row("1", "EUR", "MONE", "1", venue, "")).is_empty());
+            assert!(!parsed(&row("1", "EUR", "MONE", "1", venue, ""))[0].eligible);
         }
         for flag in [
             "BENC", "NPFT", "TNCP", "SDIV", "NETW", "PRIC", "NEGO", "NLIQ", "OILQ", "LRGS", "DEFF",
             "ZZZZ",
         ] {
-            assert!(parsed(&row("1", "EUR", "MONE", "1", "CEUX", flag)).is_empty());
+            assert!(!parsed(&row("1", "EUR", "MONE", "1", "CEUX", flag))[0].eligible);
         }
     }
 
@@ -490,13 +492,7 @@ mod tests {
         assert!(!cancelled[0].eligible);
         assert_ne!(original[0].revision_hash, amendment[0].revision_hash);
         let line = row("71.5600", "EUR", "MONE", "1600", "CEUO", "");
-        let daily = parse(
-            &file(true),
-            format!("{HEADER}\n{line}").as_bytes(),
-            &HashSet::from(["IT0005239360".to_owned()]),
-            now(),
-        )
-        .unwrap();
+        let daily = collected(&file(true), format!("{HEADER}\n{line}").as_bytes()).unwrap();
         assert_eq!(original[0].revision_hash, daily[0].revision_hash);
     }
 
@@ -531,15 +527,14 @@ mod tests {
 
     #[test]
     fn schemas_sizes_and_transport_urls_fail_closed() {
-        let tracked = HashSet::from(["IT0005239360".to_owned()]);
-        assert!(parse(&file(true), b"", &tracked, now()).is_err());
-        assert!(parse(&file(true), b"wrong,header\n", &tracked, now()).is_err());
-        assert!(parse(&file(false), b"a,b,c\n", &tracked, now()).is_err());
+        assert!(parse(&file(true), b"", now(), |_| Ok(())).is_err());
+        assert!(parse(&file(true), b"wrong,header\n", now(), |_| Ok(())).is_err());
+        assert!(parse(&file(false), b"a,b,c\n", now(), |_| Ok(())).is_err());
         assert!(parse(
             &file(false),
             "x".repeat(MAX_LINE_BYTES + 1).as_bytes(),
-            &tracked,
-            now()
+            now(),
+            |_| Ok(())
         )
         .is_err());
         let coverage = bucket(&file(false).key).unwrap();
@@ -550,5 +545,31 @@ mod tests {
         }
         assert!(bucket("eqt_trade_CAPA_20261023_1536.csv").is_err());
         assert!(bucket("eqt_trade_CEUX_20261023_2560.csv").is_err());
+    }
+
+    #[test]
+    fn all_instruments_and_monetary_currencies_reach_the_visitor_exactly() {
+        let foreign = row("123.456789012345678901", "GBX", "MONE", "12.75", "CEUX", "")
+            .replace("IT0005239360", "GB0002634946");
+        let reports = parsed(&format!("{}{}", row("72.0356", "EUR", "MONE", "1", "CEUX", ""), foreign));
+        assert_eq!(reports.len(), 2);
+        assert_eq!(reports[1].isin, "GB0002634946");
+        assert_eq!(reports[1].currency, "GBX");
+        assert_eq!(reports[1].price, Decimal::from_str("123.456789012345678901").unwrap());
+        assert_eq!(reports[1].quantity, Some(Decimal::from_str("12.75").unwrap()));
+        assert!(reports[1].eligible);
+        assert!(parsed(&row("1", "USD", "MONE", "1", "CEUX", ""))[0].eligible);
+    }
+
+    #[test]
+    fn visitor_errors_stop_before_later_rows() {
+        let text = row("1", "EUR", "MONE", "1", "CEUX", "").repeat(2);
+        let mut calls = 0;
+        let error = parse(&file(false), text.as_bytes(), now(), |_| {
+            calls += 1;
+            anyhow::bail!("consumer stopped")
+        }).unwrap_err();
+        assert_eq!(calls, 1);
+        assert_eq!(error.to_string(), "consumer stopped");
     }
 }

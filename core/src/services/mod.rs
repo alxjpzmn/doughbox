@@ -17,3 +17,4 @@ pub mod shared;
 pub mod statement_imports;
 pub mod taxation;
 pub mod telegram_reports;
+pub mod trading;
