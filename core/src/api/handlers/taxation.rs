@@ -1,4 +1,4 @@
-use axum::{extract::{rejection::JsonRejection, Query}, http::StatusCode, response::IntoResponse, Json};
+use axum::{extract::{rejection::JsonRejection, Query}, http::StatusCode, response::IntoResponse, Extension, Json};
 use chrono::{DateTime, Duration, Utc};
 use serde::Deserialize;
 use serde_json::Value;
@@ -7,9 +7,10 @@ use utoipa::IntoParams;
 
 use crate::{
     api::errors::ErrorResponse,
+    database::models::auth::{CurrentUser, UserId},
     services::{
         calculations::{self, CalculationSchedulerSettings, CalculationStatus},
-        shared::constants::OUT_DIR,
+        files::user_output_dir,
         taxation::detailed_taxation_filename,
     },
 };
@@ -58,6 +59,7 @@ fn cached_range_matches(
 }
 
 async fn cached_taxation(
+    user_id: &UserId,
     query: TaxationQuery,
     field: Option<&str>,
 ) -> Result<Json<Value>, ErrorResponse> {
@@ -66,7 +68,7 @@ async fn cached_taxation(
         from.map(|date| date.date_naive()),
         until.map(|date| date.date_naive()),
     );
-    let data = fs::read(format!("{OUT_DIR}/{filename}.json"))
+    let data = fs::read(user_output_dir(user_id).join(format!("{filename}.json")))
         .await
         .map_err(|error| {
             if error.kind() == std::io::ErrorKind::NotFound {
@@ -123,9 +125,10 @@ async fn cached_taxation(
     security(("api_token" = []))
 )]
 pub async fn taxation(
+    Extension(current): Extension<CurrentUser>,
     Query(query): Query<TaxationQuery>,
 ) -> Result<impl IntoResponse, ErrorResponse> {
-    cached_taxation(query, Some("report")).await
+    cached_taxation(&current.id, query, Some("report")).await
 }
 
 #[utoipa::path(
@@ -143,9 +146,10 @@ pub async fn taxation(
     security(("api_token" = []))
 )]
 pub async fn taxation_detailed(
+    Extension(current): Extension<CurrentUser>,
     Query(query): Query<TaxationQuery>,
 ) -> Result<impl IntoResponse, ErrorResponse> {
-    cached_taxation(query, None).await
+    cached_taxation(&current.id, query, None).await
 }
 
 #[utoipa::path(
@@ -163,9 +167,10 @@ pub async fn taxation_detailed(
     security(("api_token" = []))
 )]
 pub async fn taxation_transactions(
+    Extension(current): Extension<CurrentUser>,
     Query(query): Query<TaxationQuery>,
 ) -> Result<impl IntoResponse, ErrorResponse> {
-    cached_taxation(query, Some("transaction_impacts")).await
+    cached_taxation(&current.id, query, Some("transaction_impacts")).await
 }
 
 #[utoipa::path(
@@ -179,8 +184,8 @@ pub async fn taxation_transactions(
     ),
     security(("api_token" = []))
 )]
-pub async fn get_taxation_status() -> Result<impl IntoResponse, ErrorResponse> {
-    let status = calculations::status("taxation").await.map_err(|_| {
+pub async fn get_taxation_status(Extension(current): Extension<CurrentUser>) -> Result<impl IntoResponse, ErrorResponse> {
+    let status = calculations::status(&current.id, "taxation").await.map_err(|_| {
         internal_error("TaxationStatusError", "Could not read taxation calculation status.")
     })?;
     Ok(Json(status))
@@ -200,10 +205,11 @@ pub async fn get_taxation_status() -> Result<impl IntoResponse, ErrorResponse> {
     security(("api_token" = []))
 )]
 pub async fn refresh_taxation(
+    Extension(current): Extension<CurrentUser>,
     Query(query): Query<TaxationQuery>,
 ) -> Result<impl IntoResponse, ErrorResponse> {
     let (from, until) = query.date_range()?;
-    let status = calculations::refresh("taxation", from, until)
+    let status = calculations::refresh(&current.id, "taxation", from, until)
         .await
         .map_err(|_| {
             internal_error("TaxationRefreshError", "Could not start taxation calculation.")
@@ -225,6 +231,7 @@ pub async fn refresh_taxation(
     security(("api_token" = []))
 )]
 pub async fn save_taxation_scheduler(
+    Extension(current): Extension<CurrentUser>,
     payload: Result<Json<CalculationSchedulerSettings>, JsonRejection>,
 ) -> Result<impl IntoResponse, ErrorResponse> {
     let Json(settings) = payload.map_err(|rejection| {
@@ -235,7 +242,7 @@ pub async fn save_taxation_scheduler(
             None,
         )
     })?;
-    let status = calculations::save_schedule("taxation", settings)
+    let status = calculations::save_schedule(&current.id, "taxation", settings)
         .await
         .map_err(|_| internal_error("TaxationScheduleError", "Could not save taxation schedule"))?;
     Ok(Json(status))
@@ -265,7 +272,14 @@ mod tests {
             }
             let request = request.body(Body::from(body)).unwrap();
             let payload = Json::<CalculationSchedulerSettings>::from_request(request, &()).await;
-            let result = save_taxation_scheduler(payload).await;
+            let current = CurrentUser {
+                id: UserId::new(),
+                username: "taxation-test".into(),
+                role: crate::database::models::auth::Role::Member,
+                auth_version: 1,
+                credential: crate::database::models::auth::CredentialKind::BrowserSession,
+            };
+            let result = save_taxation_scheduler(Extension(current), payload).await;
             assert_eq!(result.err().unwrap().into_response().status(), expected);
         }
     }

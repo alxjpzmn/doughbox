@@ -1,17 +1,19 @@
 use utoipa::{
-    openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme},
+    openapi::security::{ApiKey, ApiKeyValue, HttpAuthScheme, HttpBuilder, SecurityRequirement, SecurityScheme},
     Modify, OpenApi,
 };
 
 use super::handlers::{
+    admin, api_tokens,
     assets,
-    auth::{self, LoginRequestData},
+    auth,
     data_imports, market, performance, portfolio, settings, statement_imports, taxation, timeline, trades,
     trading,
 };
 use crate::{
     api::errors::{ErrorDetails, ErrorResponse},
     database::models::{
+        auth::{AuthState, AuthUserView, SessionStage, Role, AccountStatus, AccountLinkKind, AccountLinkView, SessionSummary, UserSummary, ApiTokenScope, ApiTokenSummary},
         asset::{
             Asset, AssetActivity, AssetBalanceSnapshot, AssetBalanceSnapshotKind, AssetClass,
             AssetDetailRecord, AssetListRecord, AssetTrade, AssetTradeDirection, AssetTransaction,
@@ -36,6 +38,8 @@ use crate::{
         trade::Trade,
     },
     services::{
+        auth::{challenges::{LoginRequest, VerificationRequest, ReauthRequest, CodeType}, credential_changes::{EmptyRequest, TotpStartResponse, TotpConfirmRequest, PendingTotpRequest, PasswordChangeRequest}, links::{InspectLinkRequest, RegisterRequest, PasswordResetRequest, RecoverRequest, IssuedAccountLink}},
+        auth::{admin::{UserPatchRequest, UsersResponse, InviteSummary, InvitesResponse}, api_tokens::{CreateApiTokenRequest, IssuedApiToken, ApiTokensResponse}},
         calculations::{CalculationFrequency, CalculationSchedulerSettings, CalculationStatus},
         data_imports::{
             DataImportFrequency, DataImportSchedulerSettings, DataImportStatus, DataImportsStatus,
@@ -61,14 +65,29 @@ impl Modify for SecurityAddon {
                 SecurityScheme::Http(
                     HttpBuilder::new()
                         .scheme(HttpAuthScheme::Bearer)
-                        .bearer_format("API_TOKEN")
+                        .bearer_format("doughbox_api_")
                         .description(Some(
-                            "Set the `API_TOKEN` environment variable and send `Authorization: Bearer <token>`. \
-                             Browser sessions from POST /api/login are also accepted.",
+                            "Personal read/write token for the owner's private financial routes only; expires after 90 days. Never authorizes account administration, global controls or broker approval.",
                         ))
                         .build(),
                 ),
             );
+            components.add_security_scheme("browser_session", SecurityScheme::ApiKey(ApiKey::Cookie(ApiKeyValue::new("doughbox_session"))));
+        }
+        for (path,item) in &mut openapi.paths.paths {
+            let administrator = path.starts_with("/api/admin/") || path.starts_with("/api/data-imports")
+                || path == "/api/prices/scheduler" || path == "/api/prices/refresh" || path.starts_with("/api/prices/feeds/");
+            for operation in [&mut item.get,&mut item.post,&mut item.put,&mut item.patch,&mut item.delete,&mut item.head,&mut item.options].into_iter().flatten() {
+                if administrator || path.starts_with("/api/trading") {
+                    operation.security=Some(vec![SecurityRequirement::new("browser_session",Vec::<String>::new())]);
+                    operation.description.get_or_insert_default().push_str(if administrator {
+                        " Requires an administrator's full browser session; account-management mutations also require recent reauthentication."
+                    } else { " Requires the owner's full browser session. Agent credentials do not authorize this endpoint." });
+                } else if !path.starts_with("/api/auth/") {
+                    operation.security=Some(vec![SecurityRequirement::new("browser_session",Vec::<String>::new()),SecurityRequirement::new("api_token",Vec::<String>::new())]);
+                    operation.description.get_or_insert_default().push_str(" Reads and changes only the authenticated owner's portfolio. Personal read tokens permit GET; private writes require write scope.");
+                }
+            }
         }
     }
 }
@@ -78,13 +97,36 @@ impl Modify for SecurityAddon {
     info(
         title = "Doughbox API",
         description = "REST API for portfolio allocations, custom assets, trades, buy-ins, performance, Austrian tax reports, instrument names and manual EUR price pins, automatic price feeds, and application settings.\n\n\
-            Authenticate with a session cookie from `POST /api/login` or `Authorization: Bearer $API_TOKEN`.",
+            Authenticate with username/password and mandatory TOTP or an unused recovery code. Password-only sessions are restricted. Browser mutations require same-origin Origin and X-CSRF-Token from GET /api/auth/state; cookie and bearer credentials must not be mixed. Account/admin mutations require browser credentials; sensitive actions require password plus factor proof within five minutes.",
         version = "0.1.0"
     ),
     paths(
         auth::login,
         auth::logout,
         auth::auth_state,
+        auth::mfa_verify,
+        auth::totp_start,
+        auth::totp_confirm,
+        auth::totp_cancel,
+        auth::reauth,
+        auth::change_password,
+        auth::regenerate_recovery_codes,
+        auth::sessions,
+        auth::revoke_session,
+        auth::inspect_link,
+        auth::register,
+        auth::reset_password,
+        auth::recover_account,
+        admin::list_users,
+        admin::update_user,
+        admin::revoke_user_sessions,
+        admin::password_reset_link,
+        admin::list_invites,
+        admin::create_invite,
+        admin::revoke_invite,
+        api_tokens::list,
+        api_tokens::create,
+        api_tokens::revoke,
         assets::list_assets,
         assets::create_asset,
         assets::get_asset,
@@ -141,6 +183,8 @@ impl Modify for SecurityAddon {
         statement_imports::get_statement_imports,
         statement_imports::upload_statement_imports,
         settings::get_settings,
+        settings::get_admin_settings,
+        settings::save_telegram,
         settings::save_settings,
         settings::save_telegram_scheduler,
         taxation::taxation,
@@ -157,7 +201,13 @@ impl Modify for SecurityAddon {
         trading::discard,
     ),
     components(schemas(
-        LoginRequestData,
+        LoginRequest, VerificationRequest, ReauthRequest, CodeType, EmptyRequest,
+        TotpStartResponse, TotpConfirmRequest, PendingTotpRequest, PasswordChangeRequest,
+        AuthState, AuthUserView, SessionStage, Role, AccountStatus, AccountLinkKind, AccountLinkView, SessionSummary,
+        auth::EnrollmentConfirmed, auth::RecoveryCodesResponse, auth::SessionsResponse,
+        InspectLinkRequest, RegisterRequest, PasswordResetRequest, RecoverRequest, IssuedAccountLink,
+        UserSummary, UserPatchRequest, UsersResponse, InviteSummary, InvitesResponse,
+        ApiTokenScope, ApiTokenSummary, CreateApiTokenRequest, IssuedApiToken, ApiTokensResponse,
         ErrorResponse,
         ErrorDetails,
         PortfolioOverview,
@@ -241,7 +291,7 @@ impl Modify for SecurityAddon {
         CreateLinkedInterestRequest,
     )),
     tags(
-        (name = "auth", description = "Session login and logout"),
+        (name = "auth", description = "Username/password accounts, mandatory authenticator TOTP, durable browser sessions and offline recovery"),
         (name = "portfolio", description = "Allocations, holdings, and timeline"),
         (name = "trades", description = "Trades, buy-ins, dividends, interest, and FX"),
         (name = "performance", description = "Live and precomputed performance"),

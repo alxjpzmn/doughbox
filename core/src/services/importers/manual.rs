@@ -39,7 +39,7 @@ fn detect_record_type(record: &ManualRecord) -> RecordType {
     RecordType::Unmatched
 }
 
-pub async fn extract_manual_record(file_content: &[u8]) -> anyhow::Result<()> {
+pub async fn extract_manual_record(user_id: &crate::database::models::auth::UserId, file_content: &[u8]) -> anyhow::Result<()> {
     let cursor = Cursor::new(file_content);
 
     let mut rdr = ReaderBuilder::new().has_headers(false).from_reader(cursor);
@@ -79,7 +79,7 @@ pub async fn extract_manual_record(file_content: &[u8]) -> anyhow::Result<()> {
                         .unwrap_or(dec!(0.0)),
                     withholding_tax_currency: record.withholding_tax_currency,
                 };
-                add_trade_to_db(trade, None).await?;
+                add_trade_to_db(user_id, trade, None).await?;
             }
             RecordType::Unmatched => continue,
         }

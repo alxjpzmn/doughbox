@@ -23,10 +23,10 @@ async fn pricing_database_bulk_latest_prices_cover_all_feeds_without_creating_po
         if index == 2 {
             row.quantity = Some(Decimal::ZERO);
         }
-        let tracked = price::tracked_isins(&db).await.unwrap();
+        let tracked = price::tracked_isins_all_users(&db).await.unwrap();
         assert!(tracked.is_empty());
-        let scope_hash = price::portfolio_scope_hash(&tracked);
-        let mut writer = price::begin_file(&mut db, &job, "bulk", &tracked, &scope_hash).await.unwrap();
+        let (eligible, scope_hash) = (fixture_pairs(&tracked), price::portfolio_scope_hash(&tracked));
+        let mut writer = price::begin_file(&mut db, &job, "bulk", &tracked, &eligible, &scope_hash).await.unwrap();
         writer.push(std::slice::from_ref(&row)).await.unwrap();
         writer.finish("hash", None).await.unwrap();
         let quotes = price::latest_prices(&db, &["unheld".into(), "missing".into(), "unheld".into()]).await.unwrap();
@@ -57,7 +57,7 @@ async fn pricing_database_bulk_latest_winner_uses_execution_time_across_batches_
     jobs::enqueue(&mut db, &[Feed::Xetra]).await.unwrap();
     let job = jobs::claim(&db, &[Feed::Xetra]).await.unwrap().unwrap();
     let tracked = HashSet::new();
-    let scope_hash = price::portfolio_scope_hash(&tracked);
+    let (eligible, scope_hash) = (fixture_pairs(&tracked), price::portfolio_scope_hash(&tracked));
     let event = Utc::now() - ChronoDuration::minutes(10);
     let older = event_report("older", "unheld", event, dec!(99));
     let newer = event_report("newer", "unheld", event + ChronoDuration::minutes(1), dec!(123.4567890123456789));
@@ -65,7 +65,7 @@ async fn pricing_database_bulk_latest_winner_uses_execution_time_across_batches_
     usd.id = "usd".into();
     usd.currency = "USD".into();
     usd.price = dec!(130.25);
-    let mut writer = price::begin_file(&mut db, &job, "batches", &tracked, &scope_hash).await.unwrap();
+    let mut writer = price::begin_file(&mut db, &job, "batches", &tracked, &eligible, &scope_hash).await.unwrap();
     writer.push(&[newer.clone(), usd.clone()]).await.unwrap();
     writer.push(std::slice::from_ref(&older)).await.unwrap();
     writer.finish("hash", None).await.unwrap();
@@ -110,8 +110,8 @@ async fn pricing_database_bulk_amended_execution_retains_runner_up_across_batch_
             write_file(&mut db, &job, "revisions", "b", None, reports.clone()).await.unwrap();
         } else {
             let tracked = HashSet::new();
-            let scope_hash = price::portfolio_scope_hash(&tracked);
-            let mut writer = price::begin_file(&mut db, &job, "revisions", &tracked, &scope_hash).await.unwrap();
+            let (eligible, scope_hash) = (fixture_pairs(&tracked), price::portfolio_scope_hash(&tracked));
+            let mut writer = price::begin_file(&mut db, &job, "revisions", &tracked, &eligible, &scope_hash).await.unwrap();
             let mut offset = 0;
             for &size in partition {
                 writer.push(&reports[offset..offset + size]).await.unwrap();
@@ -297,8 +297,8 @@ async fn pricing_database_bulk_cancelled_and_moved_winners_retain_next_heads_acr
             write_file(&mut db, &job, "revisions", "b", None, reports.clone()).await.unwrap();
         } else {
             let tracked = HashSet::new();
-            let scope_hash = price::portfolio_scope_hash(&tracked);
-            let mut writer = price::begin_file(&mut db, &job, "revisions", &tracked, &scope_hash).await.unwrap();
+            let (eligible, scope_hash) = (fixture_pairs(&tracked), price::portfolio_scope_hash(&tracked));
+            let mut writer = price::begin_file(&mut db, &job, "revisions", &tracked, &eligible, &scope_hash).await.unwrap();
             let mut offset = 0;
             for &size in partition {
                 writer.push(&reports[offset..offset + size]).await.unwrap();
@@ -381,8 +381,8 @@ async fn pricing_database_bulk_identity_revisions_move_heads_and_prevent_cancell
     cancellation.eligible = false;
     cancellation.published_ns += 1000;
     let tracked = HashSet::new();
-    let scope_hash = price::portfolio_scope_hash(&tracked);
-    let mut writer = price::begin_file(&mut db, &job, "cancel-first", &tracked, &scope_hash).await.unwrap();
+    let (eligible, scope_hash) = (fixture_pairs(&tracked), price::portfolio_scope_hash(&tracked));
+    let mut writer = price::begin_file(&mut db, &job, "cancel-first", &tracked, &eligible, &scope_hash).await.unwrap();
     writer.push(&[cancellation]).await.unwrap();
     writer.push(std::slice::from_ref(&unseen)).await.unwrap();
     writer.finish("d", None).await.unwrap();
@@ -451,7 +451,7 @@ async fn pricing_database_bulk_finish_failure_rolls_back_heads_revision_guards_c
     let job = jobs::claim(&db, &[Feed::Xetra]).await.unwrap().unwrap();
     let original = event_report("rollback", "rollback-held", Utc::now() - ChronoDuration::minutes(5), dec!(123));
     let tracked = HashSet::from([original.isin.clone()]);
-    price::ensure_instruments(&db, &tracked).await.unwrap();
+    price::ensure_instruments(&db, &fixture_pairs(&tracked)).await.unwrap();
     write_file(&mut db, &job, "original", "a", None, vec![original.clone()]).await.unwrap();
     db.batch_execute(
         "CREATE FUNCTION reject_bulk_checkpoint() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -466,8 +466,8 @@ async fn pricing_database_bulk_finish_failure_rolls_back_heads_revision_guards_c
     row.executed_ns -= 1;
     row.executed_at -= ChronoDuration::nanoseconds(1);
     row.price = dec!(50);
-    let scope_hash = price::portfolio_scope_hash(&tracked);
-    let mut writer = price::begin_file(&mut db, &job, "failed", &tracked, &scope_hash).await.unwrap();
+    let (eligible, scope_hash) = (fixture_pairs(&tracked), price::portfolio_scope_hash(&tracked));
+    let mut writer = price::begin_file(&mut db, &job, "failed", &tracked, &eligible, &scope_hash).await.unwrap();
     writer.push(&[row]).await.unwrap();
     assert!(writer.finish("hash", None).await.is_err());
     let quote = price::latest_prices(&db, &[original.isin.clone()]).await.unwrap().remove(0);
@@ -478,7 +478,7 @@ async fn pricing_database_bulk_finish_failure_rolls_back_heads_revision_guards_c
     ).await.unwrap();
     assert_eq!(source.get::<_, i32>(0), original.revision);
     assert_eq!(source.get::<_, Decimal>(1), original.price);
-    assert_eq!(price::quotes(&db, &[original.isin.clone()]).await.unwrap()[0].price, Some(original.price));
+    assert_eq!(price::quotes(&owner(), &db, &[original.isin.clone()]).await.unwrap()[0].price, Some(original.price));
     let state = db.query_one(
         "SELECT (SELECT count(*) FROM mifid_latest_price), (SELECT count(*) FROM mifid_price_revision),
          (SELECT count(*) FROM market_data_file), (SELECT count(*) FROM mifid_price_floor),

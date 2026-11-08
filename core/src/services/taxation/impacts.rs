@@ -2,17 +2,19 @@ use anyhow::Result;
 use chrono::{DateTime, Datelike, NaiveDate, Utc};
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::database::models::auth::UserId;
 use crate::services::files::export_json;
 use super::process::{calculate_report, in_range, tax_rates};
 use super::types::{DetailedTaxationReport, TaxReportMetadata};
 
 pub async fn get_detailed_capital_gains_tax_report(
+    user_id: &UserId,
     from_date: Option<DateTime<Utc>>,
     until_date: Option<DateTime<Utc>>,
 ) -> Result<DetailedTaxationReport> {
     // One historical replay supplies both annual values and transaction impacts.
     // Failures propagate: an incomplete report is never replaced with zero-valued impacts.
-    let (report, events, transaction_impacts) = calculate_report(from_date, until_date).await?;
+    let (report, events, transaction_impacts) = calculate_report(user_id, from_date, until_date).await?;
     let mut events_by_year = BTreeMap::new();
     let mut securities = BTreeSet::new();
     let mut currencies = BTreeSet::new();
@@ -55,24 +57,25 @@ pub fn detailed_taxation_filename(
     format!("taxation_detailed_from_{}_until_{}", bound(from_date), bound(until_date))
 }
 
-/// Publish every cached view from the same replay. Ranged reports never replace
-/// the all-history summary or detailed bundle.
-pub fn publish_taxation_report(report: &DetailedTaxationReport) -> Result<()> {
+/// Publish every cached view from the same replay in this owner's private output
+/// directory. Ranged reports never replace their all-history summary or bundle.
+pub fn publish_taxation_report(user_id: &UserId, report: &DetailedTaxationReport) -> Result<()> {
     let from_date = report.report.from_date.map(|date| date.date_naive());
     let until_date = report.report.until_date.map(|date| date.date_naive());
-    export_json(report, &detailed_taxation_filename(from_date, until_date))?;
+    export_json(user_id, report, &detailed_taxation_filename(from_date, until_date))?;
     if from_date.is_none() && until_date.is_none() {
-        export_json(&report.report, "taxation")?;
+        export_json(user_id, &report.report, "taxation")?;
     }
     Ok(())
 }
 
 pub async fn export_detailed_capital_gains_tax_report(
+    user_id: &UserId,
     from_date: Option<DateTime<Utc>>,
     until_date: Option<DateTime<Utc>>,
 ) -> Result<()> {
-    let report = get_detailed_capital_gains_tax_report(from_date, until_date).await?;
-    publish_taxation_report(&report)
+    let report = get_detailed_capital_gains_tax_report(user_id, from_date, until_date).await?;
+    publish_taxation_report(user_id, &report)
 }
 
 #[cfg(test)]

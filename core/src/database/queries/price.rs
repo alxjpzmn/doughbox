@@ -6,6 +6,7 @@ use rust_decimal::Decimal;
 use tokio_postgres::{Client, Transaction};
 
 use crate::{
+    database::models::auth::UserId,
     database::queries::listing_change::get_listing_changes_with_client,
     services::{
         instruments::identifiers::get_changed_identifier,
@@ -30,25 +31,39 @@ pub struct FileCheckpoint {
     pub etag: Option<String>,
 }
 
-pub async fn tracked_isins(client: &Client) -> anyhow::Result<HashSet<String>> {
-    // Include closed positions so later corrections remain replayable. Never price a
-    // known bond/derivative as an equity merely because a feed reports MONE.
+/// Sorted private projection targets. Classification is evaluated within an owner,
+/// so another portfolio's bond classification cannot suppress an equity holding.
+pub(crate) async fn eligible_pairs_all_users(client: &Client) -> anyhow::Result<BTreeSet<(UserId, String)>> {
     let changes = get_listing_changes_with_client(client).await?;
     let mut eligible = HashMap::new();
-    for row in client
-        .query("SELECT DISTINCT isin, security_type FROM trade", &[])
-        .await?
-    {
-        let isin: String = row.get(0);
-        let security_type: String = row.get(1);
+    for row in client.query("SELECT DISTINCT user_id, isin, security_type FROM trade", &[]).await? {
+        let user_id = UserId::from_database(row.get("user_id"));
+        let isin: String = row.get("isin");
+        let security_type: String = row.get("security_type");
         let isin = get_changed_identifier(&isin, changes.clone());
-        let entry = eligible.entry(isin).or_insert(true);
-        *entry &= security_type == "Equity";
+        *eligible.entry((user_id, isin)).or_insert(true) &= security_type == "Equity";
     }
-    Ok(eligible
-        .into_iter()
-        .filter_map(|(isin, equity)| equity.then_some(isin))
-        .collect())
+    Ok(eligible.into_iter().filter_map(|(pair, equity)| equity.then_some(pair)).collect())
+}
+
+pub(crate) async fn tracked_isins_all_users(client: &Client) -> anyhow::Result<HashSet<String>> {
+    Ok(eligible_pairs_all_users(client).await?.into_iter().map(|(_, isin)| isin).collect())
+}
+
+/// Admission for an individual portfolio never reads another owner's trades.
+pub(crate) async fn tracked_isins_for_user(user_id: &UserId, client: &Client) -> anyhow::Result<HashSet<String>> {
+    let changes = get_listing_changes_with_client(client).await?;
+    let mut eligible = HashMap::new();
+    for row in client.query(
+        "SELECT DISTINCT isin, security_type FROM trade WHERE user_id = $1",
+        &[&user_id.as_str()],
+    ).await? {
+        let isin: String = row.get("isin");
+        let security_type: String = row.get("security_type");
+        let isin = get_changed_identifier(&isin, changes.clone());
+        *eligible.entry(isin).or_insert(true) &= security_type == "Equity";
+    }
+    Ok(eligible.into_iter().filter_map(|(isin, equity)| equity.then_some(isin)).collect())
 }
 
 /// A checkpoint is reusable only for the exact portfolio universe pinned by its job.
@@ -129,11 +144,13 @@ pub async fn checkpoints(
         &[&feed, &PARSER_VERSION, &scope_hash]).await?.into_iter().map(|row| (row.get(0), FileCheckpoint { content_hash: row.get(1), etag: row.get(2) })).collect())
 }
 
-pub async fn ensure_instruments(client: &Client, tracked: &HashSet<String>) -> anyhow::Result<()> {
-    let isins: Vec<_> = tracked.iter().collect();
-    client.execute("INSERT INTO instrument(id, name, price, last_price_update, fallback_price, fallback_at)
-        SELECT isin, isin, 0, '1970-01-01'::timestamptz, 0, '1970-01-01'::timestamptz FROM unnest($1::text[]) AS isin
-        ON CONFLICT(id) DO NOTHING", &[&isins]).await?;
+pub async fn ensure_instruments(client: &Client, eligible: &BTreeSet<(UserId, String)>) -> anyhow::Result<()> {
+    let owners: Vec<_> = eligible.iter().map(|(owner, _)| owner.as_str()).collect();
+    let isins: Vec<_> = eligible.iter().map(|(_, isin)| isin.as_str()).collect();
+    client.execute("INSERT INTO instrument(user_id, id, name, price, last_price_update, fallback_price, fallback_at)
+        SELECT user_id, isin, isin, 0, '1970-01-01'::timestamptz, 0, '1970-01-01'::timestamptz
+        FROM unnest($1::text[], $2::text[]) AS targets(user_id, isin) ORDER BY user_id, isin
+        ON CONFLICT(user_id, id) DO NOTHING", &[&owners, &isins]).await?;
     Ok(())
 }
 
@@ -143,6 +160,7 @@ pub struct FileWriter<'a> {
     job: &'a PriceJob,
     file_key: &'a str,
     tracked: &'a HashSet<String>,
+    eligible: &'a BTreeSet<(UserId, String)>,
     scope_hash: &'a str,
     reports_processed: usize,
 }
@@ -152,6 +170,7 @@ pub async fn begin_file<'a>(
     job: &'a PriceJob,
     file_key: &'a str,
     tracked: &'a HashSet<String>,
+    eligible: &'a BTreeSet<(UserId, String)>,
     scope_hash: &'a str,
 ) -> anyhow::Result<FileWriter<'a>> {
     let tx = client.transaction().await?;
@@ -168,6 +187,7 @@ pub async fn begin_file<'a>(
         job,
         file_key,
         tracked,
+        eligible,
         scope_hash,
         reports_processed: 0,
     };
@@ -263,13 +283,12 @@ impl FileWriter<'_> {
         self.tx.query_one("SELECT pg_advisory_xact_lock($1)", &[&PROJECTION_LOCK]).await?;
         self.renew_lease().await?;
         latest::apply(&self.tx).await?;
-        for row in self.tx.query(
-            "SELECT isin FROM pg_temp.portfolio_price_isins ORDER BY isin",
-            &[],
-        ).await? {
-            let isin: &str = row.get("isin");
-            if self.tracked.contains(isin) {
-                select_quote(&self.tx, isin).await?;
+        let affected: HashSet<String> = self.tx.query(
+            "SELECT isin FROM pg_temp.portfolio_price_isins", &[],
+        ).await?.into_iter().map(|row| row.get("isin")).collect();
+        for (user_id, isin) in self.eligible {
+            if affected.contains(isin) {
+                select_quote(user_id, &self.tx, isin).await?;
             }
         }
         self.tx.execute(
@@ -290,12 +309,21 @@ impl FileWriter<'_> {
     }
 }
 
-pub async fn select_quote(tx: &Transaction<'_>, isin: &str) -> anyhow::Result<()> {
+pub async fn select_quote(user_id: &UserId, tx: &Transaction<'_>, isin: &str) -> anyhow::Result<()> {
+    select_quote_from_sources(user_id, tx, isin, true).await
+}
+
+async fn select_quote_from_sources(
+    user_id: &UserId,
+    tx: &Transaction<'_>,
+    isin: &str,
+    admit_shared: bool,
+) -> anyhow::Result<()> {
     let Some(instrument) = tx
         .query_opt(
             "SELECT price_pinned, fallback_price, fallback_at, fallback_source
-        FROM instrument WHERE id = $1 FOR UPDATE",
-            &[&isin],
+        FROM instrument WHERE id = $1 AND user_id = $2 FOR UPDATE",
+            &[&isin, &user_id.as_str()],
         )
         .await?
     else {
@@ -317,38 +345,38 @@ pub async fn select_quote(tx: &Transaction<'_>, isin: &str) -> anyhow::Result<()
         .get(0);
     let fallback_valid =
         fallback_price.is_some_and(|price| price > Decimal::ZERO) && !split_after_fallback;
-    let candidate = tx.query_opt("SELECT id, price, executed_at, venue, received_at, feed FROM market_price_report r
+    let candidate = if admit_shared { tx.query_opt("SELECT id, price, executed_at, venue, received_at, feed FROM market_price_report r
         WHERE isin = $1 AND eligible AND revision <> 2 AND currency = 'EUR' AND price > 0 AND executed_at <= now()
         AND NOT EXISTS (SELECT 1 FROM stock_split s WHERE s.isin = r.isin AND s.ex_date > r.executed_at AND s.ex_date <= now())
         ORDER BY (executed_at >= now() - interval '1 hour') DESC,
             CASE feed WHEN 'DETR-posttrade' THEN 0 WHEN 'DGAT-posttrade' THEN 1
                 WHEN 'DFRA-posttrade' THEN 2 WHEN 'CBOE-posttrade' THEN 3
                 WHEN 'EURONEXT-posttrade' THEN 4 ELSE 5 END,
-            executed_ns DESC, published_ns DESC, id DESC LIMIT 1", &[&isin]).await?;
+            executed_ns DESC, published_ns DESC, id DESC LIMIT 1", &[&isin]).await? } else { None };
     if let Some(candidate) = candidate {
         let as_of: DateTime<Utc> = candidate.get("executed_at");
         if !fallback_valid || fallback_at.is_none_or(|date| date <= as_of) {
             let source = Feed::from_key(candidate.get("feed"))?.source();
             tx.execute("UPDATE instrument SET price = $2, last_price_update = $3,
-                price_source = $7, price_venue = $4, price_received_at = $5, price_report_id = $6 WHERE id = $1",
+                price_source = $7, price_venue = $4, price_received_at = $5, price_report_id = $6 WHERE id = $1 AND user_id = $8",
                 &[&isin, &candidate.get::<_, Decimal>("price"), &as_of, &candidate.get::<_, String>("venue"),
-                    &candidate.get::<_, DateTime<Utc>>("received_at"), &candidate.get::<_, String>("id"), &source]).await?;
+                    &candidate.get::<_, DateTime<Utc>>("received_at"), &candidate.get::<_, String>("id"), &source, &user_id.as_str()]).await?;
             return Ok(());
         }
     }
     if fallback_valid {
         tx.execute(
             "UPDATE instrument SET price = $2, last_price_update = $3, price_source = $4,
-            price_venue = NULL, price_received_at = NULL, price_report_id = NULL WHERE id = $1",
-            &[&isin, &fallback_price, &fallback_at, &fallback_source],
+            price_venue = NULL, price_received_at = NULL, price_report_id = NULL WHERE id = $1 AND user_id = $5",
+            &[&isin, &fallback_price, &fallback_at, &fallback_source, &user_id.as_str()],
         )
         .await?;
     } else {
         // Preserve the numerical value for audit, but exclude it from valuations.
         tx.execute(
             "UPDATE instrument SET price_source = 'unavailable', price_report_id = NULL,
-            price_venue = NULL, price_received_at = NULL WHERE id = $1",
-            &[&isin],
+            price_venue = NULL, price_received_at = NULL WHERE id = $1 AND user_id = $2",
+            &[&isin, &user_id.as_str()],
         )
         .await?;
     }
@@ -358,13 +386,13 @@ pub async fn select_quote(tx: &Transaction<'_>, isin: &str) -> anyhow::Result<()
 pub async fn reselect_all(
     client: &mut Client,
     job: &PriceJob,
-    tracked: &HashSet<String>,
+    eligible: &BTreeSet<(UserId, String)>,
 ) -> anyhow::Result<()> {
     let tx = client.transaction().await?;
     lock_lease(&tx, job).await?;
     tx.query_one("SELECT pg_advisory_xact_lock($1)", &[&PROJECTION_LOCK]).await?;
-    for isin in tracked.iter().collect::<BTreeSet<_>>() {
-        select_quote(&tx, isin).await?;
+    for (user_id, isin) in eligible {
+        select_quote(user_id, &tx, isin).await?;
     }
     lock_lease(&tx, job).await?;
     tx.commit().await?;
@@ -372,6 +400,7 @@ pub async fn reselect_all(
 }
 
 pub async fn set_manual(
+    user_id: &UserId,
     client: &mut Client,
     isin: &str,
     price: Decimal,
@@ -384,36 +413,37 @@ pub async fn set_manual(
     );
     let tx = client.transaction().await?;
     let changed = tx.execute("UPDATE instrument SET price = $2, last_price_update = $3, price_pinned = TRUE,
-        price_source = 'manual', price_venue = NULL, price_report_id = NULL, price_received_at = now() WHERE id = $1",
-        &[&isin, &price, &as_of]).await?;
+        price_source = 'manual', price_venue = NULL, price_report_id = NULL, price_received_at = now() WHERE id = $1 AND user_id = $4",
+        &[&isin, &price, &as_of, &user_id.as_str()]).await?;
     ensure!(changed == 1, "Unknown instrument {isin}; import it first");
     tx.commit().await?;
     Ok(())
 }
 
-pub async fn unpin(client: &mut Client, isin: &str) -> anyhow::Result<()> {
+pub async fn unpin(user_id: &UserId, client: &mut Client, isin: &str) -> anyhow::Result<()> {
+    let admit_shared = tracked_isins_for_user(user_id, client).await?.contains(isin);
     let tx = client.transaction().await?;
     let changed = tx
         .execute(
-            "UPDATE instrument SET price_pinned = FALSE WHERE id = $1",
-            &[&isin],
+            "UPDATE instrument SET price_pinned = FALSE WHERE id = $1 AND user_id = $2",
+            &[&isin, &user_id.as_str()],
         )
         .await?;
     ensure!(changed == 1, "Unknown instrument {isin}");
-    select_quote(&tx, isin).await?;
+    select_quote_from_sources(user_id, &tx, isin, admit_shared).await?;
     tx.commit().await?;
     Ok(())
 }
 
-pub async fn quotes(client: &Client, isins: &[String]) -> anyhow::Result<Vec<PriceQuote>> {
+pub async fn quotes(user_id: &UserId, client: &Client, isins: &[String]) -> anyhow::Result<Vec<PriceQuote>> {
     let rows = client
         .query(
             "SELECT i.id, i.price, last_price_update, price_source, price_venue, price_received_at,
          price_pinned, r.quantity, (NOT price_pinned AND EXISTS(SELECT 1 FROM stock_split s WHERE s.isin = i.id
             AND s.ex_date > i.last_price_update AND s.ex_date <= now())) AS invalid_after_split
          FROM instrument i LEFT JOIN market_price_report r ON r.id = i.price_report_id
-         WHERE i.id = ANY($1)",
-            &[&isins],
+         WHERE i.id = ANY($1) AND i.user_id = $2",
+            &[&isins, &user_id.as_str()],
         )
         .await?;
     let mut quotes = HashMap::new();
@@ -476,7 +506,7 @@ fn ordered_quotes(isins: &[String], quotes: &HashMap<String, PriceQuote>) -> Vec
 
 pub async fn feed_status(client: &Client) -> anyhow::Result<Vec<PriceFeedStatus>> {
     let rows = client.query("SELECT s.feed, s.enabled, s.next_refresh_at, s.last_success_at,
-        COALESCE(j.last_error, s.last_error) AS last_error, j.status, j.attempts, j.files_processed, j.reports_processed,
+        COALESCE(j.last_error, s.last_error) AS last_error, j.status, j.attempts, j.files_processed,
         (s.enabled AND COALESCE(c.enabled, FALSE)) AS scheduled
         FROM price_feed_schedule s LEFT JOIN price_scheduler_settings c ON c.singleton
         LEFT JOIN LATERAL
@@ -490,14 +520,12 @@ pub async fn feed_status(client: &Client) -> anyhow::Result<Vec<PriceFeedStatus>
                 scheduled,
                 next_refresh_at: scheduled.then(|| row.get("next_refresh_at")),
                 last_success_at: row.try_get("last_success_at")?,
-                last_error: row.try_get("last_error")?,
+                last_error: row.try_get::<_, Option<String>>("last_error")?
+                    .map(|_| "Price feed refresh failed; consult the instance operator.".to_string()),
                 job_status: row.try_get("status")?,
                 attempts: row.try_get::<_, Option<i32>>("attempts")?.unwrap_or(0),
                 files_processed: row
                     .try_get::<_, Option<i32>>("files_processed")?
-                    .unwrap_or(0),
-                reports_processed: row
-                    .try_get::<_, Option<i32>>("reports_processed")?
                     .unwrap_or(0),
             })
         })

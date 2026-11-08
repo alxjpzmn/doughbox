@@ -3,13 +3,13 @@ use std::{io::Write, str::FromStr};
 
 async fn seed_streamed_portfolio(db: &Client) -> HashSet<String> {
     db.batch_execute(
-        "INSERT INTO instrument(id, name, price, last_price_update, fallback_price, fallback_at)
-         VALUES('US9999999999', 'Streamed equity', 1, '2020-01-01', 1, '2020-01-01');
-         INSERT INTO trade(hash, broker, date, units, avg_price_per_unit, eur_avg_price_per_unit,
+        "INSERT INTO instrument(user_id, id, name, price, last_price_update, fallback_price, fallback_at)
+         VALUES('pricing-owner', 'US9999999999', 'Streamed equity', 1, '2020-01-01', 1, '2020-01-01');
+         INSERT INTO trade(user_id, hash, broker, date, units, avg_price_per_unit, eur_avg_price_per_unit,
              security_type, direction, currency, isin, date_added)
-         VALUES('streamed-holding', 'Test', now(), 1, 1, 1, 'Equity', 'Buy', 'EUR', 'US9999999999', now())",
+         VALUES('pricing-owner', 'streamed-holding', 'Test', now(), 1, 1, 1, 'Equity', 'Buy', 'EUR', 'US9999999999', now())",
     ).await.unwrap();
-    let tracked = price::tracked_isins(db).await.unwrap();
+    let tracked = price::tracked_isins_all_users(db).await.unwrap();
     assert_eq!(tracked, HashSet::from(["US9999999999".into()]));
     tracked
 }
@@ -100,7 +100,7 @@ async fn dry_run_snapshot(db: &Client) -> Vec<String> {
 async fn malformed_tail_rolls_back_already_streamed_reports_and_checkpoint() {
     let (mut db, schema) = test_database().await;
     let tracked = seed_streamed_portfolio(&db).await;
-    let scope_hash = price::portfolio_scope_hash(&tracked);
+    let (eligible, scope_hash) = (fixture_pairs(&tracked), price::portfolio_scope_hash(&tracked));
     // Sequence increments survive rollback, proving that the first admitted batch
     // actually reached SQL before the malformed tail aborted its transaction.
     db.batch_execute(
@@ -118,14 +118,7 @@ async fn malformed_tail_rolls_back_already_streamed_reports_and_checkpoint() {
         .acquire_owned()
         .await
         .unwrap();
-    let result = super::super::ingest_file(
-        &mut db,
-        Feed::Xetra,
-        super::super::FileIngestion::Persist(&job),
-        streamed_file(true, permit),
-        &tracked,
-        &scope_hash,
-    )
+    let result = super::super::ingest_file(&mut db, Feed::Xetra, super::super::FileIngestion::Persist(&job), streamed_file(true, permit), &tracked, &eligible, &scope_hash)
     .await;
     assert!(result.is_err());
     assert_eq!(
@@ -152,8 +145,8 @@ async fn malformed_tail_rolls_back_already_streamed_reports_and_checkpoint() {
     assert_eq!(db.query_one("SELECT count(*) FROM mifid_latest_price", &[]).await.unwrap().get::<_, i64>(0), 0);
     let selected = db
         .query_one(
-            "SELECT price, price_report_id FROM instrument WHERE id='US9999999999'",
-            &[],
+            "SELECT price, price_report_id FROM instrument WHERE user_id = $1 AND id='US9999999999'",
+            &[&owner().as_str()],
         )
         .await
         .unwrap();
@@ -167,25 +160,18 @@ async fn malformed_tail_rolls_back_already_streamed_reports_and_checkpoint() {
 async fn multiple_streamed_batches_select_latest_portfolio_price_without_losing_precision() {
     let (mut db, schema) = test_database().await;
     let tracked = seed_streamed_portfolio(&db).await;
-    let scope_hash = price::portfolio_scope_hash(&tracked);
+    let (eligible, scope_hash) = (fixture_pairs(&tracked), price::portfolio_scope_hash(&tracked));
     jobs::enqueue(&mut db, &[Feed::Xetra]).await.unwrap();
     let job = jobs::claim(&db, &[Feed::Xetra]).await.unwrap().unwrap();
     let permit = std::sync::Arc::new(tokio::sync::Semaphore::new(1))
         .acquire_owned()
         .await
         .unwrap();
-    let admitted = super::super::ingest_file(
-        &mut db,
-        Feed::Xetra,
-        super::super::FileIngestion::Persist(&job),
-        streamed_file(false, permit),
-        &tracked,
-        &scope_hash,
-    )
+    let admitted = super::super::ingest_file(&mut db, Feed::Xetra, super::super::FileIngestion::Persist(&job), streamed_file(false, permit), &tracked, &eligible, &scope_hash)
     .await
     .unwrap();
     assert_eq!(admitted, 4100);
-    let quote = price::quotes(&db, &["US9999999999".into()])
+    let quote = price::quotes(&owner(), &db, &["US9999999999".into()])
         .await
         .unwrap()
         .remove(0);
@@ -229,7 +215,7 @@ async fn multiple_streamed_batches_select_latest_portfolio_price_without_losing_
 async fn dry_run_matches_persistence_for_off_scope_amendments_across_streamed_batches() {
     let (mut db, schema) = test_database().await;
     let tracked = seed_streamed_portfolio(&db).await;
-    let scope_hash = price::portfolio_scope_hash(&tracked);
+    let (eligible, scope_hash) = (fixture_pairs(&tracked), price::portfolio_scope_hash(&tracked));
     jobs::enqueue(&mut db, &[Feed::Xetra]).await.unwrap();
     let job = jobs::claim(&db, &[Feed::Xetra]).await.unwrap().unwrap();
     let before = dry_run_snapshot(&db).await;
@@ -238,25 +224,11 @@ async fn dry_run_matches_persistence_for_off_scope_amendments_across_streamed_ba
     let mut state = Some(price::DryRunAdmissions::default());
     // The first 4096-row batch admits only stream-0. The next batch has two
     // revisions of that identity, both moved off scope, and must count only one.
-    let dry_run = super::super::ingest_file(
-        &mut db,
-        Feed::Xetra,
-        super::super::FileIngestion::DryRun(&mut state),
-        amendment_file("amended-batches", 0..4098, start, downloads.clone().acquire_owned().await.unwrap()),
-        &tracked,
-        &scope_hash,
-    ).await.unwrap();
+    let dry_run = super::super::ingest_file(&mut db, Feed::Xetra, super::super::FileIngestion::DryRun(&mut state), amendment_file("amended-batches", 0..4098, start, downloads.clone().acquire_owned().await.unwrap()), &tracked, &eligible, &scope_hash).await.unwrap();
     assert_eq!(dry_run, 2);
     assert!(state.is_some());
     assert_eq!(dry_run_snapshot(&db).await, before);
-    let persisted = super::super::ingest_file(
-        &mut db,
-        Feed::Xetra,
-        super::super::FileIngestion::Persist(&job),
-        amendment_file("amended-batches", 0..4098, start, downloads.acquire_owned().await.unwrap()),
-        &tracked,
-        &scope_hash,
-    ).await.unwrap();
+    let persisted = super::super::ingest_file(&mut db, Feed::Xetra, super::super::FileIngestion::Persist(&job), amendment_file("amended-batches", 0..4098, start, downloads.acquire_owned().await.unwrap()), &tracked, &eligible, &scope_hash).await.unwrap();
     assert_eq!(dry_run, persisted);
     let report = db.query_one("SELECT isin, revision FROM market_price_report", &[]).await.unwrap();
     assert_eq!(report.get::<_, String>(0), "US8888888888");
@@ -269,7 +241,7 @@ async fn dry_run_matches_persistence_for_off_scope_amendments_across_streamed_ba
 async fn dry_run_carries_admissions_across_consecutive_streamed_files_without_writes() {
     let (mut db, schema) = test_database().await;
     let tracked = seed_streamed_portfolio(&db).await;
-    let scope_hash = price::portfolio_scope_hash(&tracked);
+    let (eligible, scope_hash) = (fixture_pairs(&tracked), price::portfolio_scope_hash(&tracked));
     jobs::enqueue(&mut db, &[Feed::Xetra]).await.unwrap();
     let job = jobs::claim(&db, &[Feed::Xetra]).await.unwrap().unwrap();
     let before = dry_run_snapshot(&db).await;
@@ -278,28 +250,14 @@ async fn dry_run_carries_admissions_across_consecutive_streamed_files_without_wr
     let mut state = Some(price::DryRunAdmissions::default());
     let mut dry_run_counts = Vec::new();
     for (key, indices) in [("original-file", 0..4096), ("amendment-file", 4096..4098)] {
-        let admitted = super::super::ingest_file(
-            &mut db,
-            Feed::Xetra,
-            super::super::FileIngestion::DryRun(&mut state),
-            amendment_file(key, indices, start, downloads.clone().acquire_owned().await.unwrap()),
-            &tracked,
-            &scope_hash,
-        ).await.unwrap();
+        let admitted = super::super::ingest_file(&mut db, Feed::Xetra, super::super::FileIngestion::DryRun(&mut state), amendment_file(key, indices, start, downloads.clone().acquire_owned().await.unwrap()), &tracked, &eligible, &scope_hash).await.unwrap();
         dry_run_counts.push(admitted);
         assert_eq!(dry_run_snapshot(&db).await, before);
     }
     assert_eq!(dry_run_counts, [1, 1]);
     let mut persisted_counts = Vec::new();
     for (key, indices) in [("original-file", 0..4096), ("amendment-file", 4096..4098)] {
-        persisted_counts.push(super::super::ingest_file(
-            &mut db,
-            Feed::Xetra,
-            super::super::FileIngestion::Persist(&job),
-            amendment_file(key, indices, start, downloads.clone().acquire_owned().await.unwrap()),
-            &tracked,
-            &scope_hash,
-        ).await.unwrap());
+        persisted_counts.push(super::super::ingest_file(&mut db, Feed::Xetra, super::super::FileIngestion::Persist(&job), amendment_file(key, indices, start, downloads.clone().acquire_owned().await.unwrap()), &tracked, &eligible, &scope_hash).await.unwrap());
     }
     assert_eq!(dry_run_counts, persisted_counts);
     cleanup(&db, &schema).await;
@@ -310,30 +268,16 @@ async fn dry_run_carries_admissions_across_consecutive_streamed_files_without_wr
 async fn malformed_dry_run_file_invalidates_partial_refresh_admissions_without_writes() {
     let (mut db, schema) = test_database().await;
     let tracked = seed_streamed_portfolio(&db).await;
-    let scope_hash = price::portfolio_scope_hash(&tracked);
+    let (eligible, scope_hash) = (fixture_pairs(&tracked), price::portfolio_scope_hash(&tracked));
     jobs::enqueue(&mut db, &[Feed::Xetra]).await.unwrap();
     let before = dry_run_snapshot(&db).await;
     let downloads = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
     let mut state = Some(price::DryRunAdmissions::default());
-    let result = super::super::ingest_file(
-        &mut db,
-        Feed::Xetra,
-        super::super::FileIngestion::DryRun(&mut state),
-        streamed_file(true, downloads.clone().acquire_owned().await.unwrap()),
-        &tracked,
-        &scope_hash,
-    ).await;
+    let result = super::super::ingest_file(&mut db, Feed::Xetra, super::super::FileIngestion::DryRun(&mut state), streamed_file(true, downloads.clone().acquire_owned().await.unwrap()), &tracked, &eligible, &scope_hash).await;
     assert!(result.unwrap_err().to_string().contains("Parsing streamed-file"));
     assert!(state.is_none());
     assert_eq!(dry_run_snapshot(&db).await, before);
-    let retry = super::super::ingest_file(
-        &mut db,
-        Feed::Xetra,
-        super::super::FileIngestion::DryRun(&mut state),
-        streamed_file(false, downloads.acquire_owned().await.unwrap()),
-        &tracked,
-        &scope_hash,
-    ).await;
+    let retry = super::super::ingest_file(&mut db, Feed::Xetra, super::super::FileIngestion::DryRun(&mut state), streamed_file(false, downloads.acquire_owned().await.unwrap()), &tracked, &eligible, &scope_hash).await;
     assert!(retry.unwrap_err().to_string().contains("Dry-run refresh already aborted"));
     assert_eq!(dry_run_snapshot(&db).await, before);
     cleanup(&db, &schema).await;

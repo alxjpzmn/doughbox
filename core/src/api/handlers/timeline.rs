@@ -1,10 +1,10 @@
-use axum::{extract::Query, http::StatusCode, response::IntoResponse};
+use axum::{extract::Query, http::StatusCode, response::IntoResponse, Extension};
 use chrono::Utc;
 use serde::Deserialize;
 use utoipa::IntoParams;
 
 use crate::{
-    database::{db_client, queries::composite::get_monthly_investment_activity},
+    database::{db_client, models::auth::CurrentUser, queries::composite::get_monthly_investment_activity},
     services::events::{get_events, EventType},
 };
 
@@ -34,12 +34,13 @@ pub struct TimelineQuery {
     security(("api_token" = []))
 )]
 pub async fn timeline(
+    Extension(current): Extension<CurrentUser>,
     Query(query): Query<TimelineQuery>,
 ) -> Result<impl IntoResponse, ErrorResponse> {
     let year_start_timestamp = parse_ymd_start(&query.start_date)?;
     let end_date = Utc::now();
 
-    let mut timeline = get_events(year_start_timestamp, end_date)
+    let mut timeline = get_events(&current.id, year_start_timestamp, end_date)
         .await
         .map_err(|e| {
             ErrorResponse::new(
@@ -92,6 +93,7 @@ pub struct InvestmentActivityQuery {
     security(("api_token" = []))
 )]
 pub async fn investment_activity(
+    Extension(current): Extension<CurrentUser>,
     Query(query): Query<InvestmentActivityQuery>,
 ) -> Result<impl IntoResponse, ErrorResponse> {
     let start_date = query
@@ -102,7 +104,7 @@ pub async fn investment_activity(
     let client = db_client()
         .await
         .map_err(|e| internal_error("InvestmentActivityRetrievalError", e))?;
-    let activity = get_monthly_investment_activity(&client, start_date)
+    let activity = get_monthly_investment_activity(&current.id, &client, start_date)
         .await
         .map_err(|e| internal_error("InvestmentActivityRetrievalError", e))?;
     json_response(&activity).map_err(|status| internal_error("SerializationError", status))

@@ -3,23 +3,24 @@ use std::collections::HashMap;
 use chrono::{DateTime, Utc};
 
 use crate::database::{
-    models::position::PositionWithName,
+    models::{auth::UserId, position::PositionWithName},
     queries::{instrument::batch_get_instrument_names, position::get_positions},
 };
 
 pub async fn get_positions_overview(
+    user_id: &UserId,
     date: Option<DateTime<Utc>>,
     isin: Option<&str>,
     broker: Option<&str>,
 ) -> anyhow::Result<Vec<PositionWithName>> {
-    let positions = get_positions(date, isin, broker).await?;
+    let positions = get_positions(user_id, date, isin, broker).await?;
 
     let isins: Vec<_> = positions
         .iter()
         .map(|position| position.isin.clone())
         .collect();
 
-    let names = batch_get_instrument_names(&isins).await?;
+    let names = batch_get_instrument_names(user_id, &isins).await?;
 
     let name_map: HashMap<_, _> = isins.iter().zip(names.iter()).collect();
 

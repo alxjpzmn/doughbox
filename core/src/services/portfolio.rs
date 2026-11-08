@@ -8,7 +8,7 @@ use typeshare::typeshare;
 use utoipa::ToSchema;
 
 use crate::database::{
-    models::{performance::PerformanceComponent, position::PositionWithValueAndAllocation},
+    models::{auth::UserId, performance::PerformanceComponent, position::PositionWithValueAndAllocation},
     queries::{
         composite::{events_exist, EventFilter},
         instrument::batch_get_instrument_names,
@@ -53,17 +53,18 @@ pub struct PortfolioOverview {
     pub unpriced_isins: Vec<String>,
 }
 
-pub async fn get_portfolio_overview() -> anyhow::Result<PortfolioOverview> {
+/// Aggregate only this owner's recorded securities, custom assets and income.
+pub async fn get_portfolio_overview(user_id: &UserId) -> anyhow::Result<PortfolioOverview> {
     let as_of = Utc::now();
     let client = crate::database::db_client().await?;
-    let security_costs = security_costs(as_of).await?;
+    let security_costs = security_costs(user_id, as_of).await?;
     let security_history_gaps: Vec<_> = security_costs.iter()
         .flat_map(|cost| cost.history_gaps.iter().cloned()).collect();
     let realized: Decimal = security_costs.iter().map(|cost| cost.realized).sum();
     let dividends: Decimal = security_costs.iter().map(|cost| cost.income).sum();
-    let unlinked_interest = unlinked_interest_total(&client, as_of).await?;
-    let current_positions = get_positions(Some(as_of), None, None).await?;
-    let custom_holdings = calculate_custom_holdings_as_of(as_of).await?;
+    let unlinked_interest = unlinked_interest_total(user_id, &client, as_of).await?;
+    let current_positions = get_positions(user_id, Some(as_of), None, None).await?;
+    let custom_holdings = calculate_custom_holdings_as_of(user_id, as_of).await?;
     let custom_summary = summarize_custom_holdings(&custom_holdings);
 
     let mut total_position = dec!(0.0);
@@ -73,13 +74,13 @@ pub async fn get_portfolio_overview() -> anyhow::Result<PortfolioOverview> {
         .map(|position| position.isin.clone())
         .collect();
 
-    let price_quotes = quotes(&client, &isins).await?;
+    let price_quotes = quotes(user_id, &client, &isins).await?;
     let unpriced_isins: Vec<_> = price_quotes
         .iter()
         .filter(|quote| quote.price.is_none())
         .map(|quote| quote.isin.clone())
         .collect();
-    let names = batch_get_instrument_names(&isins).await?;
+    let names = batch_get_instrument_names(user_id, &isins).await?;
 
     let name_map: HashMap<_, _> = isins.iter().zip(names.iter()).collect();
 
@@ -181,7 +182,7 @@ pub async fn get_portfolio_overview() -> anyhow::Result<PortfolioOverview> {
 
     if current_positions.is_empty()
         && custom_holdings.is_empty()
-        && !events_exist(EventFilter::All).await?
+        && !events_exist(user_id, EventFilter::All).await?
     {
         return Ok(PortfolioOverview {
             generated_at: Utc::now().timestamp(),

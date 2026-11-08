@@ -14,7 +14,9 @@ use utoipa::ToSchema;
 use crate::{
     database::{
         db_client,
+        models::{auth::UserId, listing_change::ListingChange},
         queries::{
+            composite::get_used_isins,
             fx_rate::get_exchange_rate, instrument::batch_get_instrument_names,
             listing_change::get_listing_changes, stock_split::get_stock_splits,
         },
@@ -72,11 +74,17 @@ pub struct PortfolioEvent {
     pub tax_supported: bool,
 }
 
+/// Build an owner's timeline; shared OeKB cache rows enter only for that
+/// portfolio's canonical used ISINs, while retaining upstream report IDs.
 pub async fn get_events(
+    user_id: &UserId,
     start_date: DateTime<Utc>,
     end_date: DateTime<Utc>,
 ) -> anyhow::Result<Vec<PortfolioEvent>> {
     let client = db_client().await?;
+    let listing_changes = get_listing_changes().await?;
+    // The scoped discovery query applies the shared listing-change canonicalization.
+    let used_isins: HashSet<_> = get_used_isins(user_id).await?.into_iter().collect();
 
     let (
         interest_rows,
@@ -89,22 +97,22 @@ pub async fn get_events(
         asset_snapshot_rows,
         asset_valuation_rows,
     ) = try_join!(
-        query_interest(&client, &start_date, &end_date),
-        query_fund_reports(&client, &start_date, &end_date),
-        query_dividends(&client, &start_date, &end_date),
-        query_trades(&client, &start_date, &end_date),
-        query_fx_conversions(&client, &start_date, &end_date),
-        query_asset_trades(&client, &start_date, &end_date),
-        query_asset_transactions(&client, &start_date, &end_date),
-        query_asset_snapshots(&client, &start_date, &end_date),
-        query_asset_valuations(&client, &start_date, &end_date)
+        query_interest(user_id, &client, &start_date, &end_date),
+        query_fund_reports(&client, &used_isins, &listing_changes, &start_date, &end_date),
+        query_dividends(user_id, &client, &start_date, &end_date),
+        query_trades(user_id, &client, &start_date, &end_date),
+        query_fx_conversions(user_id, &client, &start_date, &end_date),
+        query_asset_trades(user_id, &client, &start_date, &end_date),
+        query_asset_transactions(user_id, &client, &start_date, &end_date),
+        query_asset_snapshots(user_id, &client, &start_date, &end_date),
+        query_asset_valuations(user_id, &client, &start_date, &end_date)
     )?;
 
     let mut events = Vec::new();
     events.extend(process_interest_rows(interest_rows).await?);
     events.extend(process_fund_report_rows(fund_report_rows)?);
-    events.extend(process_dividend_rows(dividend_rows).await?);
-    events.extend(process_trade_rows(trade_rows).await?);
+    events.extend(process_dividend_rows(user_id, dividend_rows).await?);
+    events.extend(process_trade_rows(user_id, trade_rows).await?);
     events.extend(process_fx_conversion_rows(fx_conversion_rows)?);
     events.extend(process_asset_trade_rows(asset_trade_rows)?);
     events.extend(process_asset_transaction_rows(asset_transaction_rows)?);
@@ -117,6 +125,7 @@ pub async fn get_events(
 }
 
 async fn query_interest(
+    user_id: &UserId,
     client: &Client,
     start_date: &DateTime<Utc>,
     end_date: &DateTime<Utc>,
@@ -125,14 +134,15 @@ async fn query_interest(
         .query(
             "SELECT i.date, i.amount, i.currency, i.principal, i.withholding_tax, \
              i.withholding_tax_currency, i.amount_eur, i.broker, i.asset_id, \
-              i.tax_treatment, a.name, a.unit_label, i.id FROM interest i LEFT JOIN asset a ON a.id = i.asset_id \
-             WHERE i.date >= $1 AND i.date < $2",
-            &[start_date, end_date],
+              i.tax_treatment, a.name, a.unit_label, i.id FROM interest i LEFT JOIN asset a ON a.user_id = i.user_id AND a.id = i.asset_id \
+             WHERE i.user_id = $1 AND i.date >= $2 AND i.date < $3",
+            &[&user_id.as_str(), start_date, end_date],
         )
         .await?)
 }
 
 async fn query_asset_trades(
+    user_id: &UserId,
     client: &Client,
     start_date: &DateTime<Utc>,
     end_date: &DateTime<Utc>,
@@ -141,13 +151,14 @@ async fn query_asset_trades(
         .query(
             "SELECT t.id AS event_id, t.date, t.units, t.price_per_unit, t.eur_price_per_unit, t.currency, \
               t.direction, t.broker, a.id AS asset_id, a.name, a.unit_label FROM asset_trade t \
-             JOIN asset a ON a.id = t.asset_id WHERE t.date >= $1 AND t.date < $2",
-            &[start_date, end_date],
+             JOIN asset a ON a.user_id = t.user_id AND a.id = t.asset_id WHERE t.user_id = $1 AND t.date >= $2 AND t.date < $3",
+            &[&user_id.as_str(), start_date, end_date],
         )
         .await?)
 }
 
 async fn query_asset_transactions(
+    user_id: &UserId,
     client: &Client,
     start_date: &DateTime<Utc>,
     end_date: &DateTime<Utc>,
@@ -156,14 +167,15 @@ async fn query_asset_transactions(
         .query(
             "SELECT t.id AS event_id, t.date, t.kind, t.amount, t.amount_eur, t.currency, \
               a.id AS asset_id, a.name, a.unit_label \
-             FROM asset_transaction t JOIN asset a ON a.id = t.asset_id \
-             WHERE t.date >= $1 AND t.date < $2",
-            &[start_date, end_date],
+             FROM asset_transaction t JOIN asset a ON a.user_id = t.user_id AND a.id = t.asset_id \
+             WHERE t.user_id = $1 AND t.date >= $2 AND t.date < $3",
+            &[&user_id.as_str(), start_date, end_date],
         )
         .await?)
 }
 
 async fn query_asset_snapshots(
+    user_id: &UserId,
     client: &Client,
     start_date: &DateTime<Utc>,
     end_date: &DateTime<Utc>,
@@ -172,14 +184,15 @@ async fn query_asset_snapshots(
         .query(
             "SELECT s.id AS event_id, s.date, s.kind, s.balance, s.balance_eur, a.currency, \
               a.id AS asset_id, a.name, a.unit_label \
-             FROM asset_balance_snapshot s JOIN asset a ON a.id = s.asset_id \
-             WHERE s.date >= $1 AND s.date < $2",
-            &[start_date, end_date],
+             FROM asset_balance_snapshot s JOIN asset a ON a.user_id = s.user_id AND a.id = s.asset_id \
+             WHERE s.user_id = $1 AND s.date >= $2 AND s.date < $3",
+            &[&user_id.as_str(), start_date, end_date],
         )
         .await?)
 }
 
 async fn query_asset_valuations(
+    user_id: &UserId,
     client: &Client,
     start_date: &DateTime<Utc>,
     end_date: &DateTime<Utc>,
@@ -188,27 +201,39 @@ async fn query_asset_valuations(
         .query(
             "SELECT v.id AS event_id, v.date, v.price_per_unit, v.eur_price_per_unit, \
               v.currency, a.id AS asset_id, a.name, a.unit_label FROM asset_valuation v \
-             JOIN asset a ON a.id = v.asset_id WHERE v.source = 'Manual' \
-             AND v.date >= $1 AND v.date < $2",
-            &[start_date, end_date],
+             JOIN asset a ON a.user_id = v.user_id AND a.id = v.asset_id WHERE v.source = 'Manual' \
+             AND v.user_id = $1 AND v.date >= $2 AND v.date < $3",
+            &[&user_id.as_str(), start_date, end_date],
         )
         .await?)
 }
 
 async fn query_fund_reports(
     client: &Client,
+    used_isins: &HashSet<String>,
+    listing_changes: &[ListingChange],
     start_date: &DateTime<Utc>,
     end_date: &DateTime<Utc>,
 ) -> anyhow::Result<Vec<Row>> {
-    Ok(client
-        .query(
-            "select date, id, currency FROM fund_report_oekb WHERE date >= $1 AND date < $2",
-            &[start_date, end_date],
-        )
-        .await?)
+    if used_isins.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows = client.query(
+        "SELECT date, id, currency, isin FROM fund_report_oekb WHERE date >= $1 AND date < $2",
+        &[start_date, end_date],
+    ).await?;
+    let mut relevant = Vec::new();
+    for row in rows {
+        let isin: String = row.try_get("isin")?;
+        if used_isins.contains(&get_changed_identifier(&isin, listing_changes.to_vec())) {
+            relevant.push(row);
+        }
+    }
+    Ok(relevant)
 }
 
 async fn query_dividends(
+    user_id: &UserId,
     client: &Client,
     start_date: &DateTime<Utc>,
     end_date: &DateTime<Utc>,
@@ -216,13 +241,14 @@ async fn query_dividends(
     Ok(client
         .query(
             "select date, amount, currency, isin, withholding_tax, withholding_tax_currency, \
-             amount_eur, broker, id FROM dividend WHERE date >= $1 AND date < $2",
-            &[start_date, end_date],
+             amount_eur, broker, id FROM dividend WHERE user_id = $1 AND date >= $2 AND date < $3",
+            &[&user_id.as_str(), start_date, end_date],
         )
         .await?)
 }
 
 async fn query_trades(
+    user_id: &UserId,
     client: &Client,
     start_date: &DateTime<Utc>,
     end_date: &DateTime<Utc>,
@@ -231,13 +257,14 @@ async fn query_trades(
         .query(
             "select date, units, avg_price_per_unit, currency, isin, direction, withholding_tax, \
              withholding_tax_currency, eur_avg_price_per_unit, broker, hash FROM trade \
-             WHERE date >= $1 AND date < $2",
-            &[start_date, end_date],
+             WHERE user_id = $1 AND date >= $2 AND date < $3",
+            &[&user_id.as_str(), start_date, end_date],
         )
         .await?)
 }
 
 async fn query_fx_conversions(
+    user_id: &UserId,
     client: &Client,
     start_date: &DateTime<Utc>,
     end_date: &DateTime<Utc>,
@@ -245,8 +272,8 @@ async fn query_fx_conversions(
     Ok(client
         .query(
             "select date, from_amount, to_amount, from_currency, to_currency, broker, id \
-             FROM fx_conversion WHERE date >= $1 AND date < $2",
-            &[start_date, end_date],
+             FROM fx_conversion WHERE user_id = $1 AND date >= $2 AND date < $3",
+            &[&user_id.as_str(), start_date, end_date],
         )
         .await?)
 }
@@ -385,7 +412,7 @@ fn process_fund_report_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent
     Ok(events)
 }
 
-async fn process_dividend_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent>> {
+async fn process_dividend_rows(user_id: &UserId, rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent>> {
     let mut events = Vec::new();
 
     let listing_changes = get_listing_changes().await?;
@@ -401,7 +428,7 @@ async fn process_dividend_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEv
         .collect::<HashSet<_>>()
         .into_iter()
         .collect();
-    let names = batch_get_instrument_names(&isins).await?;
+    let names = batch_get_instrument_names(user_id, &isins).await?;
     let name_map: HashMap<_, _> = isins.iter().zip(names.iter()).collect();
 
     for (idx, row) in rows.iter().enumerate() {
@@ -448,7 +475,7 @@ async fn process_dividend_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEv
     Ok(events)
 }
 
-async fn process_trade_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent>> {
+async fn process_trade_rows(user_id: &UserId, rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent>> {
     let mut stock_split_information = get_stock_splits().await?;
     let listing_changes = get_listing_changes().await?;
 
@@ -464,7 +491,7 @@ async fn process_trade_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent
         .collect::<HashSet<_>>()
         .into_iter()
         .collect();
-    let names = batch_get_instrument_names(&isins).await?;
+    let names = batch_get_instrument_names(user_id, &isins).await?;
     let name_map: HashMap<_, _> = isins.iter().zip(names.iter()).collect();
 
     let mut events = Vec::new();
@@ -791,6 +818,94 @@ fn process_asset_valuation_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioE
 mod tax_event_tests {
     use super::*;
     use chrono::TimeZone;
+
+    #[tokio::test]
+    #[ignore = "Requires an isolated TEST_POSTGRES_URL; also run in CI"]
+    async fn tenant_isolation_database_events_filter_private_rows_and_shared_fund_cache() {
+        let url = std::env::var("TEST_POSTGRES_URL")
+            .expect("Set TEST_POSTGRES_URL to an isolated PostgreSQL instance");
+        let (mut client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+            .await.unwrap();
+        let connection_task = tokio::spawn(async move { connection.await.unwrap() });
+        let schema = format!("events_tenant_test_{}", uuid::Uuid::new_v4().simple());
+        client.batch_execute(&format!(
+            "CREATE SCHEMA {schema}; SET search_path TO {schema}"
+        )).await.unwrap();
+        refinery::embed_migrations!("migrations");
+        migrations::runner().run_async(&mut client).await.unwrap();
+        let owner_a = UserId::from_database(client.query_one(
+            "SELECT legacy_owner_user_id FROM auth_instance", &[],
+        ).await.unwrap().get(0));
+        let owner_b = UserId::new();
+        let empty_owner = UserId::new();
+        for owner in [&owner_b, &empty_owner] {
+            client.execute(
+                "INSERT INTO auth_users (id, role, status) VALUES ($1, 'member', 'pending')",
+                &[&owner.as_str()],
+            ).await.unwrap();
+        }
+        let start = Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap();
+        let end = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        for (owner, isin, units) in [
+            (&owner_a, "old-fund-a", dec!(1)),
+            (&owner_b, "fund-b", dec!(2)),
+        ] {
+            client.execute(
+                "INSERT INTO trade (user_id, hash, broker, date, units, avg_price_per_unit, \
+                 eur_avg_price_per_unit, security_type, direction, currency, isin, date_added, fees) \
+                 VALUES ($1, 'same-import-hash', 'Test', $2, $3, 10, 10, 'Fund', 'Buy', 'EUR', $4, $2, 0)",
+                &[&owner.as_str(), &start, &units, &isin],
+            ).await.unwrap();
+        }
+        client.batch_execute(
+            "INSERT INTO fund_report_oekb (id, date, isin, currency) VALUES
+             (101, '2025-06-01T00:00:00Z', 'old-fund-a', 'EUR'),
+             (102, '2025-06-02T00:00:00Z', 'fund-a', 'EUR'),
+             (103, '2025-06-03T00:00:00Z', 'fund-b', 'EUR'),
+             (104, '2025-06-04T00:00:00Z', 'unrelated-cache', 'EUR'),
+             (105, '2026-01-01T00:00:00Z', 'fund-a', 'EUR')",
+        ).await.unwrap();
+        let changes = vec![ListingChange {
+            id: "fund-renaming".into(), ex_date: start,
+            from_factor: dec!(1), to_factor: dec!(1),
+            from_identifier: "old-fund-a".into(), to_identifier: "fund-a".into(),
+        }];
+        let mut canonical_sets = Vec::new();
+        for (owner, expected_units) in [
+            (&owner_a, Some(dec!(1))), (&owner_b, Some(dec!(2))), (&empty_owner, None),
+        ] {
+            let rows = query_trades(owner, &client, &start, &end).await.unwrap();
+            assert_eq!(rows.first().map(|row| row.get::<_, Decimal>("units")), expected_units);
+            assert_eq!(rows.len(), usize::from(expected_units.is_some()));
+            canonical_sets.push(rows.iter().map(|row| {
+                get_changed_identifier(row.get::<_, &str>("isin"), changes.clone())
+            }).collect::<HashSet<_>>());
+        }
+        for (used_isins, expected_ids) in canonical_sets.iter().zip([
+            vec!["fund-report-101", "fund-report-102"],
+            vec!["fund-report-103"],
+            Vec::new(),
+        ]) {
+            let rows = query_fund_reports(&client, used_isins, &changes, &start, &end)
+                .await.unwrap();
+            let events = process_fund_report_rows(rows).unwrap();
+            let mut ids: Vec<_> = events.iter()
+                .map(|event| event.event_id.as_deref().unwrap()).collect();
+            ids.sort_unstable();
+            assert_eq!(ids, expected_ids);
+            for event in events {
+                let id = event.identifier.unwrap().parse::<i32>().unwrap();
+                assert_eq!(event.event_id.unwrap(), format!("fund-report-{id}"));
+            }
+        }
+        // Portfolio admission never changes or deletes shared upstream storage.
+        assert_eq!(client.query_one("SELECT count(*) FROM fund_report_oekb", &[])
+            .await.unwrap().get::<_, i64>(0), 5);
+        client.batch_execute(&format!("SET search_path TO public; DROP SCHEMA {schema} CASCADE"))
+            .await.unwrap();
+        drop(client);
+        connection_task.await.unwrap();
+    }
 
     #[tokio::test]
     async fn income_preserves_gross_and_actual_withholding_before_treaty_cap() {

@@ -165,7 +165,7 @@ fn extract_dividend_details(text: &str) -> Option<(String, String, String)> {
     }
 }
 
-pub async fn extract_scalable_record(text: &str) -> anyhow::Result<()> {
+pub async fn extract_scalable_record(user_id: &crate::database::models::auth::UserId, text: &str) -> anyhow::Result<()> {
     let broker = "Scalable".to_string();
 
     match detect_record_type(text) {
@@ -191,7 +191,7 @@ pub async fn extract_scalable_record(text: &str) -> anyhow::Result<()> {
                     withholding_tax: dec!(0.0),
                     withholding_tax_currency: "EUR".to_string(),
                 };
-                add_trade_to_db(trade, Some(id)).await?;
+                add_trade_to_db(user_id, trade, Some(id)).await?;
             } else {
                 return Err(anyhow::anyhow!("Missing required fields in Scalable trade PDF"));
             }
@@ -208,7 +208,7 @@ pub async fn extract_scalable_record(text: &str) -> anyhow::Result<()> {
                     withholding_tax: dec!(0.0),
                     withholding_tax_currency: "EUR".to_string(),
                 };
-                if add_dividend_to_db(dividend.clone(), None).await? {
+                if add_dividend_to_db(user_id, dividend.clone(), None).await? {
                     println!("💵 Dividend added: {:?}", dividend);
                 }
             } else {

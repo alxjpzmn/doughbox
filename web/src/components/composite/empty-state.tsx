@@ -1,4 +1,5 @@
 import { Card, CardContent } from '@/components/ui/card'
+import useAuth from '@/hooks/useAuth'
 
 export enum EmptyStateVariants {
   Default,
@@ -10,10 +11,11 @@ export enum EmptyStateVariants {
 
 interface EmptyStateProps { variant?: EmptyStateVariants, docker?: boolean }
 
-const command = (docker: boolean, rest: string) =>
-  `${docker ? 'docker container exec -it container_name ' : ''}./doughbox ${rest}`
+const command = (docker: boolean, username: string, rest: string) =>
+  `${docker ? 'docker container exec -it container_name ' : ''}./doughbox --user ${username} ${rest}`
 
 const EmptyState = ({ variant = EmptyStateVariants.Default, docker = false }: EmptyStateProps) => {
+  const username = useAuth().auth?.user?.username ?? 'your-username'
   const copy = {
     [EmptyStateVariants.Default]: {
       text: 'No events found. Try changing your filter or import events.',
@@ -21,19 +23,19 @@ const EmptyState = ({ variant = EmptyStateVariants.Default, docker = false }: Em
     },
     [EmptyStateVariants.WithCliInstructionImport]: {
       text: "You haven't imported any events (e.g. trades, dividends) yet. Please run:",
-      cli: command(docker, 'import folder-with-your-brokerage-statements'),
+      cli: command(docker, username, 'import folder-with-your-brokerage-statements'),
     },
     [EmptyStateVariants.WithCliInstructionImportTrades]: {
       text: "You haven't imported any trades yet. Please run:",
-      cli: command(docker, 'import folder-with-your-brokerage-statements'),
+      cli: command(docker, username, 'import folder-with-your-brokerage-statements'),
     },
     [EmptyStateVariants.WithCliInstructionPerformance]: {
       text: "You haven't run a performance calculation yet. Please run:",
-      cli: command(docker, 'performance'),
+      cli: command(docker, username, 'performance'),
     },
     [EmptyStateVariants.WithCliInstructionTaxation]: {
       text: "You haven't run a taxation calculation yet. Please run:",
-      cli: command(docker, 'taxation'),
+      cli: command(docker, username, 'taxation'),
     },
   }[variant]
 

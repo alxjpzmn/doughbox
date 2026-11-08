@@ -3,7 +3,7 @@ use clap::Subcommand;
 use rust_decimal::Decimal;
 
 use crate::{
-    database::{db_client, queries::price},
+    database::{db_client, models::auth::UserId, queries::price},
     services::market_data::prices::{
         self,
         config::{Feed, PriceConfig},
@@ -38,7 +38,10 @@ pub enum PricesCommand {
     Unpin { isin: String },
 }
 
-pub async fn run(command: PricesCommand) -> anyhow::Result<()> {
+pub async fn run(user_id: Option<&UserId>, command: PricesCommand) -> anyhow::Result<()> {
+    let private = matches!(&command, PricesCommand::Status | PricesCommand::Set { .. } | PricesCommand::Unpin { .. });
+    anyhow::ensure!(!private || user_id.is_some(), "--user is required for private price commands");
+    anyhow::ensure!(private || user_id.is_none(), "--user is not accepted for shared price refresh/worker commands");
     let config = prices::configuration().await?;
     match command {
         PricesCommand::Refresh { feed, dry_run } => {
@@ -49,7 +52,7 @@ pub async fn run(command: PricesCommand) -> anyhow::Result<()> {
         }
         PricesCommand::Status => println!(
             "{}",
-            serde_json::to_string_pretty(&prices::status().await?)?
+            serde_json::to_string_pretty(&prices::status(user_id.expect("Private price command requires owner")).await?)?
         ),
         PricesCommand::Worker => {
             let runtime = PriceRuntime::start(
@@ -69,6 +72,7 @@ pub async fn run(command: PricesCommand) -> anyhow::Result<()> {
             as_of,
         } => {
             price::set_manual(
+                user_id.expect("Private price command requires owner"),
                 &mut db_client().await?,
                 &isin,
                 value,
@@ -78,7 +82,7 @@ pub async fn run(command: PricesCommand) -> anyhow::Result<()> {
             println!("Pinned {isin} at {value} EUR per unit");
         }
         PricesCommand::Unpin { isin } => {
-            price::unpin(&mut db_client().await?, &isin).await?;
+            price::unpin(user_id.expect("Private price command requires owner"), &mut db_client().await?, &isin).await?;
             println!("Removed manual pin for {isin}");
         }
     }

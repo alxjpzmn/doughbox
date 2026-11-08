@@ -5,7 +5,7 @@ use num_format::{Buffer, Locale};
 use rust_decimal::Decimal;
 
 use crate::database::{
-    models::performance::PerformanceSignal,
+    models::{auth::UserId, performance::PerformanceSignal},
     queries::performance::get_latest_performance_signal,
 };
 use super::{notifications::Notification, portfolio::PortfolioOverview};
@@ -84,9 +84,9 @@ pub fn format_report(current: &PerformanceSignal, previous: Option<&PerformanceS
 
 /// The first report still sends current values; historical deltas are optional.
 /// Callers persist the snapshot only after a successful send, as in the CLI.
-pub async fn send_report(current: &PerformanceSignal) -> anyhow::Result<()> {
-    let previous = get_latest_performance_signal().await?;
-    Notification { content: format_report(current, previous.as_ref()) }.send().await
+pub async fn send_report(user_id: &UserId, current: &PerformanceSignal) -> anyhow::Result<()> {
+    let previous = get_latest_performance_signal(user_id).await?;
+    Notification { content: format_report(current, previous.as_ref()) }.send(user_id).await
 }
 
 #[cfg(test)]

@@ -21,39 +21,35 @@ use chrono::prelude::*;
 use rust_decimal::Decimal;
 
 // Check if trade with exact same transaction ID already exists
-async fn trade_with_transaction_id_exists(id: &str) -> anyhow::Result<bool> {
-    let client = db_client().await?;
-    let hash = hash_string(&format!("Trade Republic{}", id));
+async fn trade_with_transaction_id_exists(user_id: &crate::database::models::auth::UserId, id: &str) -> anyhow::Result<bool> { let client = db_client().await?;
+let hash = hash_string(&format!("Trade Republic{}", id));
 
-    let row = client
-        .query_opt("SELECT 1 FROM trade WHERE hash = $1", &[&hash])
-        .await?;
+let row = client
+    .query_opt("SELECT 1 FROM trade WHERE user_id = $1 AND hash = $2", &[&user_id.as_str(), &hash])
+    .await?;
 
-    Ok(row.is_some())
-}
+Ok(row.is_some()) }
 
 // Non-interactive version for CSV imports - uses exact transaction_id match
-async fn add_csv_trade_with_duplicate_check(trade: Trade, id: String) -> anyhow::Result<bool> {
-    // Check for exact duplicate by transaction_id
-    if trade_with_transaction_id_exists(&id).await? {
-        return Ok(false);
-    }
-
-    // Also check for similar trade (same ISIN, date, units, price) as extra safety
-    if let Some(ref existing) = find_similar_trade(&trade).await? {
-        log::debug!(
-            "Skipping duplicate trade (similar found - hash: {}): ISIN {} date {}",
-            existing.hash,
-            trade.isin,
-            trade.date
-        );
-        return Ok(false);
-    }
-
-    // No duplicate found, add the trade
-    add_trade_to_db(trade, Some(id)).await?;
-    Ok(true)
+async fn add_csv_trade_with_duplicate_check(user_id: &crate::database::models::auth::UserId, trade: Trade, id: String) -> anyhow::Result<bool> { // Check for exact duplicate by transaction_id
+if trade_with_transaction_id_exists(user_id, &id).await? {
+    return Ok(false);
 }
+
+// Also check for similar trade (same ISIN, date, units, price) as extra safety
+if let Some(ref existing) = find_similar_trade(user_id, &trade).await? {
+    log::debug!(
+        "Skipping duplicate trade (similar found - hash: {}): ISIN {} date {}",
+        existing.hash,
+        trade.isin,
+        trade.date
+    );
+    return Ok(false);
+}
+
+// No duplicate found, add the trade
+add_trade_to_db(user_id, trade, Some(id)).await?;
+Ok(true) }
 
 // CSV Import Functions
 
@@ -186,7 +182,7 @@ impl RowFailures {
     }
 }
 
-pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::Result<()> {
+pub async fn extract_trade_republic_csv_record(user_id: &crate::database::models::auth::UserId, file_content: &[u8]) -> anyhow::Result<()> {
     let broker = "Trade Republic".to_string();
     let cursor = Cursor::new(file_content);
     let mut rdr = ReaderBuilder::new().has_headers(true).from_reader(cursor);
@@ -397,7 +393,7 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
                 };
 
                 trade_insert_attempted += 1;
-                match add_csv_trade_with_duplicate_check(trade, transaction_id).await {
+                match add_csv_trade_with_duplicate_check(user_id, trade, transaction_id).await {
                     Ok(true) => {
                         trade_insert_succeeded += 1;
                     }
@@ -497,7 +493,7 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
                 };
 
                 let transaction_id = record[transaction_id_idx].to_string();
-                match add_dividend_to_db(dividend, Some(&transaction_id)).await {
+                match add_dividend_to_db(user_id, dividend, Some(&transaction_id)).await {
                     Ok(true) => {
                         dividend_inserted += 1;
                         println!("💵 Dividend added: ISIN {} on {}", isin, date);
@@ -585,7 +581,7 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
                 };
 
                 let transaction_id = record[transaction_id_idx].to_string();
-                match add_interest_to_db(interest_payment, Some(&transaction_id)).await {
+                match add_interest_to_db(user_id, interest_payment, Some(&transaction_id)).await {
                     Ok(true) => {
                         interest_inserted += 1;
                         println!(
@@ -687,7 +683,7 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
                 };
 
                 let transaction_id = record[transaction_id_idx].to_string();
-                match add_csv_trade_with_duplicate_check(trade, transaction_id).await {
+                match add_csv_trade_with_duplicate_check(user_id, trade, transaction_id).await {
                     Ok(true) => {
                         liquidation_inserted += 1;
                         println!(
@@ -774,7 +770,7 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
                     transaction_id: Some(transaction_id.clone()),
                 };
 
-                match add_tax_optimization_to_db(tax_optimization).await {
+                match add_tax_optimization_to_db(user_id, tax_optimization).await {
                     Ok(true) => {
                         tax_opt_inserted += 1;
                         println!(
@@ -842,7 +838,7 @@ pub async fn extract_trade_republic_csv_record(file_content: &[u8]) -> anyhow::R
                     transaction_id: Some(transaction_id.clone()),
                 };
 
-                match add_tax_optimization_to_db(tax_optimization).await {
+                match add_tax_optimization_to_db(user_id, tax_optimization).await {
                     Ok(true) => {
                         tax_opt_inserted += 1;
                         println!(
@@ -906,6 +902,8 @@ mod tests {
 
     #[tokio::test]
     async fn upload_csv_aggregates_failed_rows_and_preserves_intentional_skips() {
+    let owner = crate::database::models::auth::UserId::from_database("parser-test-owner".to_owned());
+    let user_id = &owner;
         let file = concat!(
             "datetime,type,category,symbol,amount,fee,tax,transaction_id\n",
             "invalid,BUY,TRADING,US0378331005,-1,0,0,buy-1\n",
@@ -913,7 +911,7 @@ mod tests {
             "invalid,CUSTOMER_INBOUND,CASH,,100,0,0,transfer-1\n",
             "short,row\n",
         );
-        let error = extract_trade_republic_csv_record(file.as_bytes()).await.unwrap_err();
+        let error = extract_trade_republic_csv_record(user_id, file.as_bytes()).await.unwrap_err();
         let message = error.to_string();
         assert!(message.contains("3 Trade Republic CSV row(s) failed"));
         assert!(message.contains("record 1: Unable to parse timestamp"));

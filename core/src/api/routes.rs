@@ -1,3 +1,7 @@
+use std::sync::Arc;
+
+use crate::services::auth::AuthService;
+
 use axum::{
     extract::DefaultBodyLimit,
     http::StatusCode,
@@ -5,13 +9,8 @@ use axum::{
     routing::{get, get_service, post, put},
     Router,
 };
-use tower_cookies::cookie::time::Duration;
-use tower_http::{
-    cors::{Any, CorsLayer},
-    services::ServeDir,
-    trace::TraceLayer,
-};
-use tower_sessions::{Expiry, MemoryStore, SessionManagerLayer};
+use tower_cookies::CookieManagerLayer;
+use tower_http::{services::ServeDir, trace::TraceLayer};
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
@@ -23,8 +22,8 @@ use super::handlers::{
         restore_asset, unlink_interest, update_asset, update_balance_snapshot, update_interest,
         update_trade, update_transaction, update_valuation,
     },
-    auth::{auth_state, login, logout},
-    check_auth,
+    auth,
+    check_auth, response_policy,
     data_imports::{get_data_imports, refresh_data_import, save_data_import_scheduler},
     market::{
         brokers, instrument, instruments, prices, refresh_price_feed, refresh_prices, rename,
@@ -32,7 +31,7 @@ use super::handlers::{
     },
     performance::{get_performance_status, live_performance, past_performance, performance_overview, refresh_performance, save_performance_scheduler},
     portfolio::{portfolio, positions},
-    settings::{get_settings, save_settings, save_telegram_scheduler},
+    settings::{get_settings, get_admin_settings, save_settings, save_telegram, save_telegram_scheduler},
     statement_imports::{get_statement_imports, upload_statement_imports, MAX_BODY_BYTES},
     taxation::{get_taxation_status, refresh_taxation, save_taxation_scheduler, taxation, taxation_detailed, taxation_transactions},
     timeline::{investment_activity, timeline},
@@ -40,17 +39,31 @@ use super::handlers::{
 };
 use super::openapi::ApiDoc;
 
-pub fn create_router() -> anyhow::Result<Router> {
-    let session_store = MemoryStore::default();
-    let session_layer = SessionManagerLayer::new(session_store)
-        .with_secure(false)
-        .with_http_only(true)
-        // 90 days validity
-        .with_expiry(Expiry::OnInactivity(Duration::hours(24 * 90)));
+#[derive(Clone)]
+pub struct AppState {
+    pub auth: Arc<AuthService>,
+}
 
-    let public_routes = Router::new()
-        .route("/login", post(login))
-        .route("/logout", post(logout));
+pub fn create_router(auth: Arc<AuthService>) -> anyhow::Result<Router> {
+    let state = AppState { auth };
+    let auth_routes = super::handlers::api_tokens::router()
+        .route("/auth/state", get(auth::auth_state))
+        .route("/auth/login", post(auth::login))
+        .route("/auth/mfa/verify", post(auth::mfa_verify))
+        .route("/auth/totp/start", post(auth::totp_start))
+        .route("/auth/totp/confirm", post(auth::totp_confirm))
+        .route("/auth/totp/pending", axum::routing::delete(auth::totp_cancel))
+        .route("/auth/reauth", post(auth::reauth))
+        .route("/auth/password/change", post(auth::change_password))
+        .route("/auth/recovery-codes/regenerate", post(auth::regenerate_recovery_codes))
+        .route("/auth/logout", post(auth::logout))
+        .route("/auth/sessions", get(auth::sessions))
+        .route("/auth/sessions/{id}", axum::routing::delete(auth::revoke_session))
+        .route("/auth/links/inspect", post(auth::inspect_link))
+        .route("/auth/register", post(auth::register))
+        .route("/auth/password/reset", post(auth::reset_password))
+        .route("/auth/recover", post(auth::recover_account))
+        .layer(DefaultBodyLimit::max(16 * 1024));
 
     let protected_routes = Router::new()
         .route("/portfolio", get(portfolio))
@@ -129,7 +142,9 @@ pub fn create_router() -> anyhow::Result<Router> {
             "/data-imports/{source}/scheduler",
             put(save_data_import_scheduler),
         )
-        .route("/settings", get(get_settings).put(save_settings))
+        .route("/settings", get(get_settings))
+        .route("/settings/telegram", put(save_telegram))
+        .route("/admin/settings", get(get_admin_settings).put(save_settings).layer(DefaultBodyLimit::max(16 * 1024)))
         .route("/settings/telegram-scheduler", put(save_telegram_scheduler))
         .route("/brokers", get(brokers))
         .route("/taxation/status", get(get_taxation_status))
@@ -138,26 +153,12 @@ pub fn create_router() -> anyhow::Result<Router> {
         .route("/taxation", get(taxation))
         .route("/taxation/detailed", get(taxation_detailed))
         .route("/taxation/transactions", get(taxation_transactions))
-        .route("/auth_state", get(auth_state))
-        .merge(super::handlers::trading::router())
-        .layer(axum::middleware::from_fn(check_auth));
+        .merge(super::handlers::trading::router().with_state::<AppState>(()))
+        .merge(super::handlers::admin::router());
 
-    let cors_layer = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods([
-            axum::http::Method::GET,
-            axum::http::Method::POST,
-            axum::http::Method::PATCH,
-            axum::http::Method::PUT,
-            axum::http::Method::DELETE,
-        ])
-        .allow_headers([
-            axum::http::header::CONTENT_TYPE,
-            axum::http::header::AUTHORIZATION,
-        ]);
-
-    let public_router = Router::new().nest("/api", public_routes);
-    let protected_router = Router::new().nest("/api", protected_routes);
+    let api_router = Router::new().nest("/api",
+        auth_routes.merge(protected_routes)
+            .route_layer(axum::middleware::from_fn_with_state(state.clone(), check_auth)));
     let static_service =
         get_service(ServeDir::new("./dist").precompressed_gzip()).handle_error(|_| async move {
             (
@@ -168,17 +169,20 @@ pub fn create_router() -> anyhow::Result<Router> {
 
     let static_router = Router::new().fallback_service(static_service);
 
-    let app = public_router
-        .merge(protected_router)
-        .merge(crate::services::trading::mcp::router())
+    let app = api_router
+        .merge(crate::services::trading::mcp::router(&state.auth.config.public_origin)?.with_state::<AppState>(()))
         .merge(SwaggerUi::new("/api/docs").url("/api/openapi.json", ApiDoc::openapi()))
         .route("/login", get(spa_index))
+        .route("/register", get(spa_index))
+        .route("/recover", get(spa_index))
+        .route("/enroll", get(spa_index))
         .route("/dashboard", get(spa_index))
         .route("/dashboard/{*path}", get(spa_index))
         .merge(static_router)
-        .layer(session_layer)
-        .layer(cors_layer)
-        .layer(TraceLayer::new_for_http());
+        .layer(CookieManagerLayer::new())
+        .layer(TraceLayer::new_for_http())
+        .layer(axum::middleware::from_fn(response_policy))
+        .with_state(state);
 
     Ok(app)
 }
@@ -204,7 +208,8 @@ mod tests {
     use tower::ServiceExt;
 
     async fn status(path: &str) -> StatusCode {
-        create_router()
+        let config = crate::services::auth::AuthConfig::parse("http://127.0.0.1:8084", &"17".repeat(32), true).unwrap();
+        create_router(AuthService::new(config))
             .unwrap()
             .oneshot(
                 axum::http::Request::builder()

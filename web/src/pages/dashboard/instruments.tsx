@@ -3,7 +3,6 @@ import useSwr, { useSWRConfig } from 'swr';
 import { InstrumentDetails, PricingStatus } from '@/types/core';
 import { BASE_URL, fetcher, sendMutateRequest } from '@/lib/http';
 import { PriceStatus } from '@/components/composite/price-status';
-import { DataImportStatusPanel } from '@/components/composite/data-import-status';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -207,16 +206,12 @@ const Instruments = () => {
       <TabsList dock className="mb-6 h-auto sm:w-fit sm:justify-start" aria-label="Data sections">
         <TabsTrigger value="price-feeds" className="min-h-11">Price Feeds</TabsTrigger>
         <TabsTrigger value="instrument-management" className="min-h-11">Instruments</TabsTrigger>
-        <TabsTrigger value="reference-data" className="min-h-11">Reference Data</TabsTrigger>
       </TabsList>
 
       <TabsContent value="price-feeds" forceMount className="data-[state=inactive]:hidden">
         <PriceStatus />
       </TabsContent>
 
-      <TabsContent value="reference-data" forceMount className="data-[state=inactive]:hidden">
-        <DataImportStatusPanel />
-      </TabsContent>
 
       <TabsContent value="instrument-management" forceMount className="space-y-6 data-[state=inactive]:hidden">
         <Card>

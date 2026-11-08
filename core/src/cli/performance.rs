@@ -6,6 +6,7 @@ use spinners_rs::{Spinner, Spinners};
 use tabled::{Table, Tabled};
 
 use crate::{
+    database::models::auth::UserId,
     services::{performance::get_performance, shared::util::{format_currency, round_to_decimals}},
 };
 
@@ -23,11 +24,11 @@ struct StringifiedPositionPerformance {
     total_return: String,
 }
 
-pub async fn performance() -> anyhow::Result<()> {
+pub async fn performance(user_id: &UserId) -> anyhow::Result<()> {
     let mut sp = Spinner::new(Spinners::Point, "Calculating EUR P&L including recorded dividends...");
     sp.start();
 
-    let performance_overview = get_performance().await?;
+    let performance_overview = get_performance(user_id).await?;
 
     let negative_change_style = Style::new().red().bold();
     let positive_change_style = Style::new().green().bold();

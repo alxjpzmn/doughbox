@@ -114,98 +114,94 @@ pub fn extract_pdf_text(file: &[u8]) -> anyhow::Result<String> {
     Ok(re.replace_all(&cleaned_text, " ").to_string())
 }
 
-pub async fn parse_file_for_import(file: &[u8], file_path: &Path) -> anyhow::Result<()> {
-    parse_file(file, file_path, InteractionMode::Interactive).await
+pub async fn parse_file_for_import(user_id: &crate::database::models::auth::UserId, file: &[u8], file_path: &Path) -> anyhow::Result<()> {
+    parse_file(user_id, file, file_path, InteractionMode::Interactive).await
 }
 
 /// Imports uploaded statements without ever prompting on standard input.
-pub async fn parse_file_for_upload(file: &[u8], file_path: &Path) -> anyhow::Result<()> {
-    parse_file(file, file_path, InteractionMode::NonInteractive).await
+pub async fn parse_file_for_upload(user_id: &crate::database::models::auth::UserId, file: &[u8], file_path: &Path) -> anyhow::Result<()> {
+    parse_file(user_id, file, file_path, InteractionMode::NonInteractive).await
 }
 
-async fn parse_file(
-    file: &[u8],
-    file_path: &Path,
-    interaction: InteractionMode,
-) -> anyhow::Result<()> {
-    // File extensions accepted by uploads are case-insensitive.
-    let format_path = match file_path.extension().and_then(|extension| extension.to_str()) {
-        Some(extension) if extension.eq_ignore_ascii_case("pdf") => Path::new("statement.pdf"),
-        Some(extension) if extension.eq_ignore_ascii_case("csv") => Path::new("statement.csv"),
-        _ => file_path,
-    };
-    let file_format = detect_file_format(file, format_path);
+async fn parse_file(user_id: &crate::database::models::auth::UserId, file: &[u8],
+file_path: &Path,
+interaction: InteractionMode,) -> anyhow::Result<()> { // File extensions accepted by uploads are case-insensitive.
+let format_path = match file_path.extension().and_then(|extension| extension.to_str()) {
+    Some(extension) if extension.eq_ignore_ascii_case("pdf") => Path::new("statement.pdf"),
+    Some(extension) if extension.eq_ignore_ascii_case("csv") => Path::new("statement.csv"),
+    _ => file_path,
+};
+let file_format = detect_file_format(file, format_path);
 
-    match file_format {
-        ImportFileFormat::Pdf => {
-            let text = extract_pdf_text(file)?;
+match file_format {
+    ImportFileFormat::Pdf => {
+        let text = extract_pdf_text(file)?;
 
-            let broker = detect_broker_from_pdf_text(&text);
-            if interaction == InteractionMode::NonInteractive {
-                // Allow the queue to cancel after synchronous extraction if its lock was lost.
-                tokio::task::yield_now().await;
-            }
-
-            match broker {
-                Some(Broker::TradeRepublic) => {
-                    info!("Statement from Trade Republic detected.");
-                    extract_trade_republic_record(&text, interaction).await?;
-                }
-                Some(Broker::Scalable) => {
-                    info!("Statement from Scalable detected.");
-                    extract_scalable_record(&text).await?;
-                }
-                Some(Broker::ErsteBank) => {
-                    info!("Statement from Erste Bank detected.");
-                    extract_erste_bank_record(&text).await?;
-                }
-                Some(_) => return Err(anyhow!("Unsupported PDF broker")),
-                None => return Err(anyhow!("No recognized broker found in PDF statement")),
-            }
+        let broker = detect_broker_from_pdf_text(&text);
+        if interaction == InteractionMode::NonInteractive {
+            // Allow the queue to cancel after synchronous extraction if its lock was lost.
+            tokio::task::yield_now().await;
         }
-        ImportFileFormat::Csv => {
-            let file_content = file;
 
-            let cursor = Cursor::new(file_content);
-
-            let mut rdr = ReaderBuilder::new().has_headers(false).from_reader(cursor);
-
-            let broker = detect_broker_from_csv_header(rdr.headers()?)?;
-            if interaction == InteractionMode::NonInteractive {
-                tokio::task::yield_now().await;
+        match broker {
+            Some(Broker::TradeRepublic) => {
+                info!("Statement from Trade Republic detected.");
+                extract_trade_republic_record(user_id, &text, interaction).await?;
             }
-
-            match broker {
-                Some(Broker::Trading212) => {
-                    extract_trading212_record(file_content).await?;
-                }
-                Some(Broker::Revolut) => {
-                    extract_revolut_record(file_content).await?;
-                }
-                Some(Broker::Lightyear) => {
-                    extract_lightyear_record(file_content).await?;
-                }
-                Some(Broker::InteractiveBrokers) => {
-                    extract_ibkr_record(file_content).await?;
-                }
-                Some(Broker::Wise) => {
-                    extract_wise_record(file_content).await?;
-                }
-                Some(Broker::Manual) => {
-                    extract_manual_record(file_content).await?;
-                }
-                Some(Broker::TradeRepublic) => {
-                    info!("Trade Republic CSV detected.");
-                    extract_trade_republic_csv_record(file_content).await?;
-                }
-                Some(_) => return Err(anyhow!("Unsupported CSV broker")),
-                None => return Err(anyhow!("No recognized broker found in CSV header")),
+            Some(Broker::Scalable) => {
+                info!("Statement from Scalable detected.");
+                extract_scalable_record(user_id, &text).await?;
             }
+            Some(Broker::ErsteBank) => {
+                info!("Statement from Erste Bank detected.");
+                extract_erste_bank_record(user_id, &text).await?;
+            }
+            Some(_) => return Err(anyhow!("Unsupported PDF broker")),
+            None => return Err(anyhow!("No recognized broker found in PDF statement")),
         }
-        ImportFileFormat::Unsupported => return Err(anyhow!("Unsupported or empty statement file")),
     }
-    Ok(())
+    ImportFileFormat::Csv => {
+        let file_content = file;
+
+        let cursor = Cursor::new(file_content);
+
+        let mut rdr = ReaderBuilder::new().has_headers(false).from_reader(cursor);
+
+        let broker = detect_broker_from_csv_header(rdr.headers()?)?;
+        if interaction == InteractionMode::NonInteractive {
+            tokio::task::yield_now().await;
+        }
+
+        match broker {
+            Some(Broker::Trading212) => {
+                extract_trading212_record(user_id, file_content).await?;
+            }
+            Some(Broker::Revolut) => {
+                extract_revolut_record(user_id, file_content).await?;
+            }
+            Some(Broker::Lightyear) => {
+                extract_lightyear_record(user_id, file_content).await?;
+            }
+            Some(Broker::InteractiveBrokers) => {
+                extract_ibkr_record(user_id, file_content).await?;
+            }
+            Some(Broker::Wise) => {
+                extract_wise_record(user_id, file_content).await?;
+            }
+            Some(Broker::Manual) => {
+                extract_manual_record(user_id, file_content).await?;
+            }
+            Some(Broker::TradeRepublic) => {
+                info!("Trade Republic CSV detected.");
+                extract_trade_republic_csv_record(user_id, file_content).await?;
+            }
+            Some(_) => return Err(anyhow!("Unsupported CSV broker")),
+            None => return Err(anyhow!("No recognized broker found in CSV header")),
+        }
+    }
+    ImportFileFormat::Unsupported => return Err(anyhow!("Unsupported or empty statement file")),
 }
+Ok(()) }
 
 pub fn does_match_exist(regex_pattern: &str, text: &str) -> bool {
     let regex = Regex::new(regex_pattern).unwrap();
@@ -275,6 +271,8 @@ mod tests {
 
     #[tokio::test]
     async fn upload_rejects_unsupported_empty_and_unknown_content() {
+    let owner = crate::database::models::auth::UserId::from_database("parser-test-owner".to_owned());
+    let user_id = &owner;
         for (file, filename) in [
             (b"plain text".as_slice(), "statement.txt"),
             (b"".as_slice(), "statement.csv"),
@@ -282,13 +280,15 @@ mod tests {
             (b"%PDF-1.7\nmalformed".as_slice(), "statement.PDF"),
             (b"unknown,header\nsome,value\n".as_slice(), "statement.CSV"),
         ] {
-            assert!(parse_file_for_upload(file, Path::new(filename)).await.is_err());
+            assert!(parse_file_for_upload(user_id, file, Path::new(filename)).await.is_err());
         }
     }
 
     #[tokio::test]
     async fn upload_recognizes_case_insensitive_csv_extension() {
-        let error = parse_file_for_upload(b"unknown,header\n", Path::new("statement.CSV"))
+    let owner = crate::database::models::auth::UserId::from_database("parser-test-owner".to_owned());
+    let user_id = &owner;
+        let error = parse_file_for_upload(user_id, b"unknown,header\n", Path::new("statement.CSV"))
             .await
             .unwrap_err();
         assert!(error.to_string().contains("No recognized broker"));
@@ -296,18 +296,20 @@ mod tests {
 
     #[tokio::test]
     async fn upload_rejects_other_brokers_unsupported_and_malformed_pdf_records() {
+    let owner = crate::database::models::auth::UserId::from_database("parser-test-owner".to_owned());
+    let user_id = &owner;
         for text in [
             "Scalable unsupported statement",
             "Scalable Wertpapierabrechnung without required trade fields",
             "Scalable Dividendenabrechnung without required dividend fields",
         ] {
-            assert!(extract_scalable_record(text).await.is_err());
+            assert!(extract_scalable_record(user_id, text).await.is_err());
         }
         for text in [
             "Erste Bank unsupported statement",
             "Erste Bank Kauf Marktplatz without required trade fields",
         ] {
-            assert!(extract_erste_bank_record(text).await.is_err());
+            assert!(extract_erste_bank_record(user_id, text).await.is_err());
         }
         assert_eq!(detect_broker_from_pdf_text("unrecognized statement"), None);
     }

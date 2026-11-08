@@ -113,7 +113,7 @@ fn detect_record_type(record: &IBRKRecord) -> RecordType {
     RecordType::Unmatched
 }
 
-pub async fn extract_ibkr_record(file_content: &[u8]) -> anyhow::Result<()> {
+pub async fn extract_ibkr_record(user_id: &crate::database::models::auth::UserId, file_content: &[u8]) -> anyhow::Result<()> {
     let broker = "Interactive Brokers".to_string();
 
     let cursor = Cursor::new(file_content);
@@ -154,7 +154,7 @@ pub async fn extract_ibkr_record(file_content: &[u8]) -> anyhow::Result<()> {
                     withholding_tax: record.taxes.parse::<Decimal>()?,
                     withholding_tax_currency: record.currency_primary,
                 };
-                add_trade_to_db(trade, Some(record.trade_id)).await?;
+                add_trade_to_db(user_id, trade, Some(record.trade_id)).await?;
             }
             RecordType::FxConversion => {
                 let currencies = record._symbol.split('.').collect_vec();
@@ -203,7 +203,7 @@ pub async fn extract_ibkr_record(file_content: &[u8]) -> anyhow::Result<()> {
                             * record.fx_rate_to_base.parse::<Decimal>()?
                     },
                 };
-                add_fx_conversion_to_db(fx_conversion).await?;
+                add_fx_conversion_to_db(user_id, fx_conversion).await?;
             }
             RecordType::Unmatched => continue,
         }

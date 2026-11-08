@@ -9,14 +9,13 @@ use serde::Deserialize;
 use crate::{
     database::{
         db_client,
-        queries::{composite::get_used_currencies, fx_rate::get_exchange_rate},
+        queries::{composite::get_used_currencies_all_users, fx_rate::get_exchange_rate},
     },
     services::shared::util::hash_string,
 };
 
 pub async fn fetch_historic_ecb_rates(currency: Option<&str>) -> anyhow::Result<()> {
     let db = db_client().await?;
-    let used_currencies = get_used_currencies().await?;
 
     let currencies_to_fetch: Vec<_> = if let Some(currency) = currency {
         vec![currency.to_string()]
@@ -24,7 +23,7 @@ pub async fn fetch_historic_ecb_rates(currency: Option<&str>) -> anyhow::Result<
             .filter(|c| c != "EUR" && c != "GBX")
             .collect()
     } else {
-        background_import_currencies(&db, used_currencies).await?
+        background_import_currencies(&db, get_used_currencies_all_users().await?).await?
     };
 
     let client = Client::builder()

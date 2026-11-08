@@ -5,16 +5,18 @@ use crate::services::taxation::{
     detailed_taxation_filename, export_detailed_capital_gains_tax_report,
     get_detailed_capital_gains_tax_report, publish_taxation_report,
 };
+use crate::{database::models::auth::UserId, services::files::user_output_dir};
 
 pub async fn calculate_taxes(
+    user_id: &UserId,
     from_date: Option<NaiveDate>,
     until_date: Option<NaiveDate>,
 ) -> anyhow::Result<()> {
     let from = from_date.map(|d| Utc.from_utc_datetime(&d.and_hms_opt(0, 0, 0).unwrap()));
     let until = until_date.map(|d| Utc.from_utc_datetime(&d.and_hms_nano_opt(23, 59, 59, 999_999_999).unwrap()));
 
-    let detailed_report = get_detailed_capital_gains_tax_report(from, until).await?;
-    publish_taxation_report(&detailed_report)?;
+    let detailed_report = get_detailed_capital_gains_tax_report(user_id, from, until).await?;
+    publish_taxation_report(user_id, &detailed_report)?;
     let taxation_report = &detailed_report.report;
 
     let taxable_amounts_table = Table::new(&taxation_report.taxable_amounts).to_string();
@@ -38,24 +40,25 @@ pub async fn calculate_taxes(
     println!("Treaty credits are estimates for supported sources; unknown source receives no assumed credit.");
     println!("     Per-transaction DTT details are included in the detailed JSON export.");
     println!(
-        "Detailed taxation report with events exported to output/{}.json",
-        detailed_taxation_filename(from_date, until_date)
+        "Detailed taxation report with events exported to {}",
+        user_output_dir(user_id).join(format!("{}.json", detailed_taxation_filename(from_date, until_date))).display()
     );
     Ok(())
 }
 
 pub async fn calculate_taxes_detailed(
+    user_id: &UserId,
     from_date: Option<NaiveDate>,
     until_date: Option<NaiveDate>,
 ) -> anyhow::Result<()> {
     let from = from_date.map(|d| Utc.from_utc_datetime(&d.and_hms_opt(0, 0, 0).unwrap()));
     let until = until_date.map(|d| Utc.from_utc_datetime(&d.and_hms_nano_opt(23, 59, 59, 999_999_999).unwrap()));
 
-    export_detailed_capital_gains_tax_report(from, until).await?;
+    export_detailed_capital_gains_tax_report(user_id, from, until).await?;
 
     println!(
-        "Detailed taxation report with events exported to output/{}.json",
-        detailed_taxation_filename(from_date, until_date)
+        "Detailed taxation report with events exported to {}",
+        user_output_dir(user_id).join(format!("{}.json", detailed_taxation_filename(from_date, until_date))).display()
     );
 
     Ok(())

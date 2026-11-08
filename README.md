@@ -22,10 +22,10 @@ If you need to take care of capital gains taxes in Austria, you can use Doughbox
 - Go back in time and view your past portfolio's holdings.
 - With a FRED token, compare securities P&L including recorded dividends against a nominal S&P 500 price-index proxy using the same gross purchase budget and sold units; the benchmark has no simulated fees, taxes, currency returns or dividend reinvestment.
 - Fetches stock split data from polygon.io (hence, you will need an API token from Polygon).
-- (Naive, optional) password authentication for login to the web interface. Multi-user support is not planned for now.
-- Each transaction is assigned an ID either based on the ID from the broker or, if that isn't available, a combination of transaction characteristics. Thus, reimporting the same brokerage statement will not cause duplicate entries.
+- Username/password accounts with mandatory authenticator-app two-factor authentication, private portfolios, administrator-issued invitations, and email-free recovery.
+- Transactions receive an ID from the broker or a combination of transaction characteristics. Reimporting a statement deduplicates within the same account; different users can import identical statements independently.
 - Austrian tax preparation with fee-exclusive moving-average EUR security costs per broker/ISIN, separate gross income and estimated withholding credits.
-- Set `TG_TOKEN` and `TG_CHAT_ID` to receive daily Telegram portfolio summaries on a schedule configured in **Settings**, or send one manually with `portfolio -n`.
+- Instance-operated Telegram bot with private per-user destinations and daily report schedules; manual reports use `--user <username> portfolio --notify`.
 
 ## (Known) Limitations
 
@@ -61,7 +61,7 @@ If you need to take care of capital gains taxes in Austria, you can use Doughbox
 | Cboe Europe     | BXE, CXE and DXE exchange streams; APA/TRF reporting excluded                                              | `CBOE-posttrade`     |
 | Euronext        | Equities and ETFs/funds across Amsterdam, Brussels, Dublin, Lisbon, Milan, Oslo and Paris, where available | `EURONEXT-posttrade` |
 
-Select exchanges in **Data → Price Feeds → Manage scheduler**; refresh and reset controls are available per exchange. All five bulk feeds maintain one compact latest reference per `(ISIN, currency, feed)` across the market, including unheld instruments and an empty portfolio. This does not create unrelated instruments, trades or accounting records. `market_price_report` history is restricted to portfolio equity/ETF reports.
+Administrators select exchanges and manage refresh/reset schedules in the instance controls. Members can read shared feed status and their own quotes, but cannot control public workers. All five bulk feeds maintain one compact latest reference per `(ISIN, currency, feed)` across the market, including unheld instruments and empty portfolios. This does not create unrelated instruments, trades or accounting records. Portfolio source-report history is admitted from the equity/ETF ISIN union, while instrument names, pins, execution fallbacks and selected quote projections remain private to each owner.
 
 Compact storage keeps only current `mifid_latest_price` heads, not market-wide original-report history. `mifid_price_revision` keeps amendment/cancellation identity guards, so late originals cannot resurrect revoked references. Invalidating a persisted head also saves its full ordering boundary in `mifid_price_floor`. Until a candidate reaches that boundary, MCP returns unavailable rather than selecting a lower runner-up or backdated amendment: discarded competitors from earlier files cannot be reconstructed, even by replaying the original head. Fresh-file amendments/cancellations are still resolved against all per-file candidates before selecting a head.
 
@@ -82,34 +82,63 @@ Doughbox is scratching my own itch: I have lots of different brokerage accounts 
 
 ## Get Started
 
-In order for Doughbox to run, you need a running Postgres instance. A polygon.io API key is needed for stock-split housekeeping, but not for the API or price refreshes.
+Doughbox requires PostgreSQL **15 or newer** (CI uses 17). Accounts use an immutable canonical username, password and mandatory authenticator-app TOTP; no email service is required. Each account owns a private portfolio. Administrator status permits account and instance operations, not access to another user's financial data. A polygon.io API key is needed for stock-split housekeeping, but not for the API or price refreshes.
 
 ### Environment variables
 
-| Variable                  | Required         | Purpose                                                                                                                       |
-| ------------------------- | ---------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `POSTGRES_URL`            | yes              | Postgres connection string                                                                                                    |
-| `POLYGON_TOKEN`           | for stock splits | Stock-split data from polygon.io                                                                                              |
-| `FRED_TOKEN`              | no               | S&P 500 benchmark via FRED                                                                                                    |
-| `PASSWORD`                | for trading      | Web UI login password; optional when trading is not used                                                                      |
-| `API_TOKEN`               | no               | Bearer token for the HTTP API                                                                                                 |
-| `TRADING_MASTER_KEY`      | for trading      | Persistent 32-byte key encoded as 64 hex characters; encrypts broker credentials                                              |
-| `TRADING_MCP_HOSTS`       | for remote MCP   | Comma-separated allowed MCP hostnames; defaults to `localhost,127.0.0.1,::1`                                                  |
-| `TG_TOKEN` / `TG_CHAT_ID` | no               | Scheduled Telegram portfolio reports, manual notifications (`portfolio -n`), and trading-proposal approval alerts             |
-| `DOUGHBOX_PUBLIC_URL`     | no               | Browser origin for proposal approval links, e.g. `https://doughbox.example.com`. If unset, links use the allowlisted MCP Host |
-| `RUST_ENV`                | no               | Loads `.env.dev` when `development` (default), `.env.prod` when `production`                                                  |
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `POSTGRES_URL` | database commands/API | PostgreSQL connection string; `--help` needs no database |
+| `AUTH_MASTER_KEY` | API and `users` commands | Persistent 32-byte auth encryption key, exactly 64 hexadecimal characters |
+| `DOUGHBOX_PUBLIC_URL` | API and `users` commands | Canonical browser origin, e.g. `https://doughbox.example.com`; no credentials, path, query or fragment |
+| `AUTH_ALLOW_INSECURE_HTTP` | no | Set exactly `true` only for local/trusted-network HTTP; HTTPS is otherwise required |
+| `DOUGHBOX_DATA_DIR` | no | Persistent data root; defaults to `.` relative to the process working directory |
+| `POLYGON_TOKEN` | for stock splits | Stock-split data from polygon.io |
+| `FRED_TOKEN` | no | S&P 500 benchmark via FRED |
+| `TRADING_MASTER_KEY` | for trading | Separate persistent 32-byte broker encryption key, encoded as 64 hexadecimal characters |
+| `TRADING_MCP_HOSTS` | for remote MCP | Comma-separated allowed MCP hosts; defaults to `localhost,127.0.0.1,::1`; an explicitly empty value is rejected |
+| `TG_TOKEN` | no | Instance-operated Telegram bot credential; each user configures their own chat destination in Settings |
+| `TG_CHAT_ID` | legacy upgrade only | Imported once into the reserved legacy owner's destination; never a runtime fallback |
+| `RUST_ENV` | no | Loads `.env.dev` for `development` (default), `.env.prod` for `production` |
 
-The **Settings** page shows whether `TG_TOKEN` and `TG_CHAT_ID` are set on the server. Set values use the same green check-circle badges as successful imports; missing, empty, or whitespace-only values use a muted **Not set** badge. This read-only status never exposes the values and does not validate them with Telegram.
+Generate each encryption key once with `openssl rand -hex 32` and keep the value in persistent secret configuration. Never generate keys during container startup. `PASSWORD`, `API_TOKEN` and `SESSION_TOKEN_KEY` are retired and never authorize requests.
+Missing/malformed keys fail startup. A changed/lost auth key requires deliberate console recovery and authenticator re-enrollment; it never enables password-only login. When changing Docker mounts, keep the existing output directory at `<DOUGHBOX_DATA_DIR>/output` so recognized legacy artifacts are migrated.
+
+### Accounts, setup and offline recovery
+
+1. Start the configured API. An uninitialized installation displays a setup-needed login screen; the first visitor cannot claim it.
+2. On the trusted server console, run `./doughbox users bootstrap` (Docker: `docker exec -it doughbox ./doughbox users bootstrap`). It prints a single-use, 24-hour setup URL once. Share/open it manually; normal API startup prints no setup credential.
+3. Choose a username and password, then enroll an authenticator using the locally generated QR or manual secret. Save the ten one-time recovery codes before continuing. Password success alone never grants portfolio access.
+4. Administrators issue seven-day member invitations in **Users** and share the one-time links manually. There is no open signup or portfolio impersonation. New members start empty, with private schedules paused and broker/notification settings unconfigured.
+
+Usernames are lowercased ASCII, 3–32 characters, starting with a letter/digit and otherwise allowing letters, digits, `_`, `.` and `-`. They cannot be renamed. Passwords contain 12–128 Unicode scalar values and at most 512 UTF-8 bytes; whitespace, case and Unicode are preserved.
+
+**Security** manages passwords, authenticator replacement, recovery codes, sessions and personal tokens. Sensitive account/admin operations require password plus a second factor verified within five minutes. TOTP uses six digits and 30-second periods with a ±1-step window and replay protection: a code accepted for enrollment/login/reauthentication cannot be reused. Keep server/device clocks synchronized. Recovery codes replace the OTP factor, never the password. There is no active-2FA-off control.
+
+Same-user reauthentication preserves financial caches and form drafts. Authentication errors from requests dispatched under superseded credentials cannot invalidate the newly verified session or dismiss newly issued recovery codes.
+
+A web-admin password-reset link lasts one hour and still requires the account's existing authenticator or an unused recovery code. If both password/factors are lost, a trusted operator runs `./doughbox users recover --username alice`; add `--enable` explicitly for a disabled account. This revokes old credentials and prints a single-use, 30-minute recovery link requiring a new password and fresh TOTP enrollment. Financial history and notification destinations are retained. An interrupted enrollment resumes with the chosen username/password.
+
+Registration and recovery forms stay bound to the link inspected in that tab. Reload resumes only the same binding; only its non-secret ID is kept in the history entry. If another tab changes the shared session's link, the original form clears its sensitive draft and requires reopening the original full link instead of adopting the other account or invitation.
+
+### Upgrading an existing installation
+
+Back up PostgreSQL, `DOUGHBOX_DATA_DIR`, `AUTH_MASTER_KEY` and, if used, `TRADING_MASTER_KEY` separately. Stop all old API/CLI workers before starting the cutover binary; never mix old unscoped writers with the new schema. V33 preserves V1–V32 and assigns existing private rows to a reserved pending administrator, which only the console bootstrap link can activate.
+
+Before serving or starting workers, recognized legacy reports in `<data-dir>/output` move to `<data-dir>/output/users/<server-generated-user-id>/`. Only `performance.csv`, `performance.json`, `taxation.json` and valid generated detailed-tax report names are migrated; unknown files and CLI input directories are untouched. Interrupted migration resumes safely; differing source/destination files stop startup without overwriting either. Existing `TG_CHAT_ID` is imported once for this reserved owner. Bootstrap/enrollment do not reset migrated schedules, broker ciphertext or history.
+
+All new saved reports use that per-user directory. Missing own saved reports return `404`, never another account's or the old root artifact. Multiple report-serving replicas require the same mounted `DOUGHBOX_DATA_DIR`; PostgreSQL shares sessions and identities, not local files. Without a shared volume, use one report-serving process. Server/database operators remain trusted; account roles do not cryptographically prevent operator access.
+
 
 ### Agent-assisted trading
 
 Trading has two sections: **Orders** for pending approvals and recent order history, and **Setup** for the Trading 212 connection and agent access. Orders is listed first and opens by default when setup is complete or proposals/history already exist; a new account starts in Setup. Approval links open Orders directly; signed-out users on mobile and desktop are sent through login with the proposal return target preserved. Switching tabs preserves unsaved setup inputs and does not submit orders or change the connection.
 
-1. Set a non-empty `PASSWORD` and a persistent `TRADING_MASTER_KEY` on the server, then restart. Generate the encryption key once with `openssl rand -hex 32`; keep it in your server's secret configuration and back it up separately from PostgreSQL. Losing or changing it makes saved broker credentials unreadable.
+1. Sign in to your fully enrolled account and set a persistent `TRADING_MASTER_KEY` on the server, then restart. Generate the broker encryption key once with `openssl rand -hex 32`; keep it separately from `AUTH_MASTER_KEY` and back it up independently of PostgreSQL. Losing or changing it makes saved broker credentials unreadable.
 2. Open **Trading → Setup**, select **Demo** initially, and enter the Trading 212 **API key ID** and **Secret Key**. Only Trading 212 is supported for now. Create the key pair with the [API key setup](https://helpcentre.trading212.com/hc/en-us/articles/14584770928157-Trading-212-API-key) and see the [API docs](https://docs.trading212.com/api). Trading 212 uses HTTP Basic authentication with both fields. Grant account/metadata read and order-placement permissions. Doughbox verifies account access and saves a stock/ETF instrument catalog before connecting; missing order permission will cause approval submissions to fail.
-3. In **Setup**, create an agent token and copy it immediately. Only its hash is stored; the plaintext is displayed once in the tab and is not persisted in browser storage. Rotation immediately revokes the old token.
-4. Add the displayed **Streamable HTTP MCP endpoint**, `/api/trading/mcp`, to the external agent with `Authorization: Bearer <agent token>` on every request. Never give the agent your broker credentials, Doughbox password, or the owner-level `API_TOKEN`.
-5. Review incoming proposals in **Trading → Orders**. **Approve order / Approve entire batch** submits the reviewed limit orders immediately; **Discard** sends nothing to the broker. Live mode is explicitly labelled. `submit_trades` and `get_proposal` include `approval_url`. Show that exact URL to the user. Opening it only opens this page for that proposal; it does not approve or submit the order. If `TG_TOKEN` and `TG_CHAT_ID` are set, a newly saved proposal also sends that link to Telegram. The daily report schedule is not required for the alert.
+3. In **Setup**, create an agent token after recent password-plus-factor reauthentication and copy it immediately. Only its hash and captured account version are stored; plaintext is displayed once in the tab, never browser storage. Rotation immediately revokes the old token.
+4. Add the displayed **Streamable HTTP MCP endpoint**, `/api/trading/mcp`, to the external agent with `Authorization: Bearer <agent token>` on every request. Never give the agent broker credentials, your password, authenticator secret, recovery codes or a personal API token. Agent credentials authorize search/quote/propose/read tools only, not owner approval, account administration or portfolio REST routes.
+5. Review incoming proposals in **Trading → Orders**. **Approve order / Approve entire batch** submits the reviewed limit orders immediately; **Discard** sends nothing to the broker. Live mode is explicitly labelled. `submit_trades` and `get_proposal` return an owned proposal's `approval_url` using configured `DOUGHBOX_PUBLIC_URL`, never request Host/forwarded headers. Opening it only focuses the proposal; it does not approve or submit. With `TG_TOKEN` and your own chat destination configured, a newly saved proposal sends that link to your Telegram chat; no daily schedule is required for this alert. Connections, catalogs, replays, history and execution locks are per user.
 
 A typical agent-client configuration is:
 
@@ -182,26 +211,32 @@ Replacing/disconnecting the broker discards pending proposals and revokes agent 
 ### Docker
 
 ```bash
-  docker run -d \
+  docker run -d --name doughbox \
+  -e RUST_ENV=production \
   -e POSTGRES_URL="your_postgres_url_here" \
-  -e POLYGON_TOKEN="your_polygon_token_here" \
+  -e AUTH_MASTER_KEY="your_persistent_64_hex_auth_key" \
+  -e DOUGHBOX_PUBLIC_URL="https://doughbox.example.com" \
+  -e DOUGHBOX_DATA_DIR="/data" \
   -p 8084:8084 \
   -v /path/to/your/input-directory:/app/input \
-  -v /path/to/your/output-directory:/app/output \
+  -v /path/to/your/persistent-data:/data \
   ghcr.io/alxjpzmn/doughbox:latest
 ```
 
-Once the app runs, the Web UI will be available. Interactive API docs are at `/api/docs` (OpenAPI spec at `/api/openapi.json`). If you've also set `API_TOKEN`, you can call the API with `Authorization: Bearer $API_TOKEN`.
+Serve the configured public origin through HTTPS/reverse proxy, then bootstrap the administrator as described above. Interactive API docs are at `/api/docs` (spec at `/api/openapi.json`). Browser traffic is same-origin; wildcard CORS is not enabled. Explicit insecure HTTP is only for local/trusted networks and cannot protect credentials on an untrusted plaintext connection.
 
-First, import your brokerage statements (PDF or CSV, depending on the broker) using **Portfolio → Timeline → Import**. Drop multiple files into the upload area or use **Choose files**, then select **Upload and queue**. Alternatively, place the statements in a folder and run `./doughbox import foldername`.
+Import statements through **Portfolio → Timeline → Import**, or run `./doughbox --user alice import foldername` from the trusted console after Alice is active and fully enrolled. CLI ownership is always explicit, even on single-account installations.
 
-If you run Dougbox inside Docker, the directory path needs to correspond to to the path inside the container, so `./input`. The full command for importing then becomes: `docker container exec -i doughbox ./doughbox import ./input`. The first import will likely be a bit slower than subsequent ones, since Doughbox will fetch historic FX rates.
+Inside Docker, the input path is the mounted container path: `docker exec -i doughbox ./doughbox --user alice import ./input`. Initial non-EUR imports may fetch historical FX rates.
 
 After the first import, you will be prompted to run housekeeping and some portfolio and PL calculations, unless you called the import command with `--silent`. Especially on the first run it's highly recommended to run at least `housekeeping` (which will e.g. fetch data on past stock splits based on your holdings).
 
 The web interface will be available per default on port `8084`.
 
 You can run the following commands in the CLI:
+
+Financial commands `import`, `portfolio`, `performance`, `taxation`, `housekeeping`, and `prices set|unpin|status` all require `--user <canonical-username>`. The CLI resolves one active, fully enrolled owner and passes it through follow-on work; it does not perform remote password/TOTP login or infer the first account. `api`, `users`, `debug-pdf`, `prices refresh` and `prices worker` are instance/operator commands and reject irrelevant `--user`.
+
 
 `housekeeping`: for fetching stock split data, tax data for funds and ETFs from the Austrian Control Bank (OeKB) and updated FX rates from the ECB.
 
@@ -217,15 +252,15 @@ You can run the following commands in the CLI:
 
 `prices refresh [--feed xetra|tradegate|frankfurt|cboe|euronext] [--dry-run]`: enqueue the persisted feed selection (or one explicitly named feed) and wait for completion, or parse and validate available last-48-hour bulk files without writing reports/prices/checkpoints/jobs. Parsing includes an empty portfolio. Dry-run counts are **portfolio source-report admissions** (holdings/existing identities), not estimates of market-wide retained heads. In-memory admission state spans batches and files within each feed refresh, so later off-scope amendments/cancellations of an earlier admission remain countable without database writes. Persistent ingestion additionally reduces all reports into compact global latest references. Shows queue status and portfolio-report processing progress; does not prompt for FX updates. With no selected feeds, choose a feed explicitly or update the UI selection.
 
-`prices status`: JSON summary of the schedule, queue and current holdings' price sources/timestamps.
+`--user alice prices status`: JSON summary of shared feed status plus only Alice's current holdings' price sources/timestamps.
 
 `prices worker`: run queue consumers for all supported feeds without the HTTP server or scheduler. Useful for a separate worker container; automatic scheduling requires an `api` process and the persisted scheduler enabled. Each process applies the worker limit saved in the web UI.
 
-`prices set <ISIN> --price 123.45 [--as-of 2026-10-15T12:00:00Z]`: pin a positive manual **EUR per-unit** price. `prices unpin <ISIN>` removes the override and reselects stored market data or an execution fallback.
+`--user alice prices set <ISIN> --price 123.45 [--as-of 2026-10-15T12:00:00Z]`: pin Alice's positive manual **EUR per-unit** price. `--user alice prices unpin <ISIN>` removes only her override and reselects her eligible market quote or execution fallback.
 
 ### Telegram portfolio reports
 
-Open **Settings → Telegram notifications** to enable **Daily portfolio reports**, choose the **Daily send time (UTC)**, and **Save report schedule**. The schedule starts paused with **18:00 UTC** preselected. It persists across restarts and applies without restarting; the API must be running, but the browser need not be open.
+Set the instance bot's `TG_TOKEN`, then connect your own chat ID in **Settings → Telegram notifications**. Disconnecting sets the destination to null; another user's destination and legacy `TG_CHAT_ID` are never implicit fallbacks. Missing bot/destination means unconfigured and no automatic delivery. Enable **Daily portfolio reports**, choose the UTC send time, and save. Each user's schedule starts paused at **18:00 UTC**, survives restarts and runs without a browser; pending/disabled users start no private scheduled work. Already claimed imports/calculations may finish under their original owner, and account disable does not cancel approved broker executions.
 
 ### Brokerage statement imports
 
@@ -234,16 +269,20 @@ Open **Portfolio → Timeline** and tap **Import** to import brokerage transacti
 API clients can use `POST /api/statement-imports` with repeated multipart fields named `files`, then poll `GET /api/statement-imports`. Both return `{"jobs":[...]}`; POST returns `202` after the whole batch is persisted. Job IDs are strings; each job includes its filename, byte size, status, queued/started/finished timestamps, and error when failed.
 
 ```bash
-curl -H "Authorization: Bearer $API_TOKEN" \
+curl -H "Authorization: Bearer $DOUGHBOX_PERSONAL_WRITE_TOKEN" \
   -F 'files=@statement.csv' -F 'files=@statement.pdf' \
   http://localhost:8084/api/statement-imports
 ```
 
 ### REST API
 
-The API provides portfolio/tax reads, custom-asset management, instrument name/manual-price management, scheduler/import controls, and non-sensitive application settings. Browser sessions from `POST /api/login` and `Authorization: Bearer $API_TOKEN` are both accepted; all writes use the same authentication.
+Financial REST routes always select the authenticated owner's portfolio; request bodies/query parameters cannot choose an owner, and administrators have no financial bypass. **Security** issues personal read/write tokens lasting 90 days. Read permits own financial GETs; write additionally permits own private portfolio/import/calculation/notification mutations. Neither authorizes `/auth/*`, `/admin/*`, global worker controls or broker approval. Password/factor changes, console recovery, disabling and role changes revoke old browser/automation authority.
 
-Sessions are stored in memory and are lost when the API restarts; separate API replicas do not share session records. A browser retaining an old cookie can then produce `record not found in store` warnings and must sign in again. These session lookups are independent of price-worker jobs.
+Browser authentication uses `GET /api/auth/state`, username/password `POST /api/auth/login`, then mandatory `/api/auth/mfa/verify` or enrollment. Sessions are durable PostgreSQL records shared across API replicas, with 30-minute authenticated inactivity and a 12-hour absolute deadline. Cookies are HttpOnly/SameSite=Lax, Secure for the configured HTTPS origin. Every API response is `Cache-Control: no-store`.
+
+Initial auth-state reads are coalesced within a browser tab. A supplied expired, revoked or rotated cookie returns `409 AuthenticationStateChanged` without a replacement cookie, so a delayed read cannot overwrite a newer session. Recheck the session with **Try again**; if the cookie is genuinely invalid, explicitly **Sign out** to clear it before starting a fresh anonymous session.
+
+Every unsafe request using a valid cookie session, including empty-body and multipart requests, must send matching `Origin` and `X-CSRF-Token` from auth state. Keep CSRF in memory. Explicit `POST /api/auth/logout` may clear an absent/invalid session without CSRF, but still requires the configured Origin and rejects cross-site requests; valid-session logout retains normal CSRF checks. Token-only requests are CSRF-exempt; combining a bearer token with the session cookie is rejected. A stale session/CSRF transition must be revalidated, never automatically replayed—especially broker approval. Login/factor/link budgets are persisted across processes; failures return structured errors and `Retry-After` when throttled/unavailable. The retired `/api/login`, `/api/logout` and `/api/auth_state` routes are removed.
 
 | Method               | Path                                                          | Purpose                                                                                                                                                               |
 | -------------------- | ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -254,13 +293,13 @@ Sessions are stored in memory and are lost when the API restarts; separate API r
 | `GET`                | `/api/trades?isin=&broker=&direction=&from_date=&until_date=` | Trades                                                                                                                                                                |
 | `GET`                | `/api/buy-ins?isin=&broker=`                                  | Economic WAC per instrument/broker; `422 IncompleteSecurityHistory` when recorded acquisitions cannot cover a sale                                                    |
 | `GET`                | `/api/performance?isin=&broker=`                              | Live performance without file writes; `422 IncompleteSecurityHistory` rather than a fabricated cost basis                                                             |
-| `GET`                | `/api/performance_overview`                                   | Precomputed `output/performance.json`                                                                                                                                 |
+| `GET`                | `/api/performance_overview`                                   | Own saved `performance.json` beneath the private output directory; `404` before calculation |
 | `GET`                | `/api/past_performance`                                       | Historical value snapshots                                                                                                                                            |
 | `GET`                | `/api/performance/status`                                     | Persisted manual calculation status, timestamps and last error                                                                                                        |
 | `POST`               | `/api/performance/refresh`                                    | Rebuild performance exports and save a history snapshot in the background; returns `202`, coalescing an already-running request                                       |
 | `GET`                | `/api/timeline?start_date=&isin=&broker=&event_type=`         | Unified event timeline                                                                                                                                                |
 | `GET`                | `/api/timeline/investment-activity?start_date=`               | Monthly net purchases, net cash added, and dividends & interest (EUR), optionally filtered from an inclusive UTC start date                                           |
-| `GET`                | `/api/statement-imports`                                      | All active and latest 100 completed statement uploads with per-file timestamps and errors; newest ID first                                                            |
+| `GET`                | `/api/statement-imports`                                      | Your active and newest 100 completed uploads with per-file timestamps/errors; newest ID first |
 | `POST`               | `/api/statement-imports`                                      | Atomically queue repeated multipart `files` fields (PDF/CSV); returns `202` with accepted jobs; 100 files, 25 MiB each, 100 MiB total request                         |
 | `GET`                | `/api/instruments` / `/api/instruments/{isin}`                | All known instruments with safe `quote` valuation/provenance metadata; existing top-level fields remain available                                                     |
 | `PATCH`              | `/api/instruments/{isin}`                                     | Rename an existing instrument with `{"name":"Display name"}`; trims/rejects blank names without changing prices                                                       |
@@ -274,7 +313,9 @@ Sessions are stored in memory and are lost when the API restarts; separate API r
 | `GET`                | `/api/data-imports`                                           | Polygon/ECB availability, persisted per-source schedules, next runs, import status, timestamps, errors, stored counts and latest dates                                |
 | `POST`               | `/api/data-imports/{source}/refresh`                          | Start `polygon` or `ecb` in the background; returns `202` with status, or `503` when the Polygon token is missing                                                     |
 | `PUT`                | `/api/data-imports/{source}/scheduler`                        | Persist `{"enabled":true,"frequency":"monthly"}` for `polygon` or `ecb`; frequencies: `daily`, `weekly`, `monthly`; returns all source statuses                       |
-| `GET` / `PUT`        | `/api/settings`                                               | Read/save non-sensitive preferences, e.g. `{"log_level":"DEBUG"}`; responses include read-only `telegram_token_set` / `telegram_chat_id_set` flags, never credentials |
+| `GET`                | `/api/settings`                                               | Own `{telegram_token_set,telegram_chat_id,telegram_schedule}`; no instance log controls |
+| `PUT`                | `/api/settings/telegram`                                      | Set own destination with `{"chat_id":"..."}` or disconnect with `{"chat_id":null}` |
+| `GET` / `PUT`        | `/api/admin/settings`                                         | Administrator browser-only instance `{log_level}`; changes require recent reauthentication |
 | `PUT`                | `/api/settings/telegram-scheduler`                            | Save daily Telegram reports with `{"enabled":true,"send_time_utc":"18:00"}` (strict 24-hour UTC); returns settings including persisted `telegram_schedule` status     |
 | `GET`                | `/api/brokers`                                                | Distinct broker names (use these as filter values)                                                                                                                    |
 | `GET`                | `/api/dividends` / `/api/interest` / `/api/fx-conversions`    | Cash events                                                                                                                                                           |
@@ -299,7 +340,7 @@ Live performance and buy-ins return `422 IncompleteSecurityHistory` until the hi
 
 - **Portfolio → Performance → Refresh performance** rebuilds the CSV/JSON securities exports and saves an income-inclusive, filterable portfolio history point. The saved widgets refresh when the job completes; leaving the page does not cancel the job.
 - **Taxation → Recalculate taxation** saves the summary, transaction impacts and detailed export from one historical replay for the selected inclusive date range. Opening the page, switching tabs, changing dates and pressing **Export Detailed** only read saved results. An uncached range prompts an explicit calculation instead of calculating automatically.
-- Full-history taxation is saved as `output/taxation_detailed.json` plus the summary `output/taxation.json`. Selected ranges use `output/taxation_detailed_from_<YYYY-MM-DD|all>_until_<YYYY-MM-DD|all>.json` and never overwrite full-history results. The summary, transactions and detailed GET endpoints all read the matching bundle; legacy summary-only or mismatched-range exports need one explicit recalculation.
+- Full-history taxation is saved beneath `<data-dir>/output/users/<user-id>/` as `taxation_detailed.json` plus `taxation.json`. Selected ranges use `taxation_detailed_from_<YYYY-MM-DD|all>_until_<YYYY-MM-DD|all>.json` in that same private directory and never overwrite full-history results. Summary, transactions and detailed GETs read only that owner's matching bundle; missing/mismatched cached ranges require explicit recalculation.
 - CSV/JSON files are published individually by atomic rename, so readers do not receive partially written files. A failed job preserves its previous last-success timestamp; publication across multiple files and the history database is not a single transaction.
 
 ### How Doughbox calculates returns
@@ -391,17 +432,17 @@ Cash rates never accrue automatically; record interest when it is credited. An o
 Example:
 
 ```bash
-curl -H "Authorization: Bearer $API_TOKEN" \
+curl -H "Authorization: Bearer $DOUGHBOX_PERSONAL_READ_TOKEN" \
   "http://localhost:8084/api/trades?isin=US0378331005&broker=Trade%20Republic"
 ```
 
 ### Local development
 
-You need [Rust](https://www.rust-lang.org/tools/install) (see `rust-toolchain.toml`), [pnpm](https://pnpm.io), Node 22.12 or newer, and a running Postgres instance.
+You need Rust 1.97.1 (see `rust-toolchain.toml`), pnpm 10, Node 22.12+, typeshare CLI and PostgreSQL 15+.
 
-1. Put credentials/connection details in `core/.env.dev` (`POSTGRES_URL`, `POLYGON_TOKEN` if using stock-split housekeeping, and any optional credentials above). Configure application behavior in the web UI.
+1. Configure `core/.env.dev` with `POSTGRES_URL`, persistent `AUTH_MASTER_KEY`, and `DOUGHBOX_PUBLIC_URL` matching the browser's Vite origin (normally `http://localhost:5173`), plus explicit `AUTH_ALLOW_INSECURE_HTTP=true` for local HTTP. A missing or invalid origin/key fails `pnpm dev` before the API serves requests. Never reuse production portfolio/output data for smoke tests.
 2. From the repo root: `pnpm install`
-3. `pnpm dev` starts the API (`cargo watch` on `:8084`) and the Vite dev server (proxies `/api` to the API).
+3. `pnpm dev` starts the API (`cargo watch` on `:8084`) and same-origin Vite proxy at `http://localhost:5173`. The API requires the database configured by `POSTGRES_URL` to be running. From `core`, run `cargo run -- users bootstrap` with the same configuration to set up the first account; subsequent financial CLI commands need explicit `--user`.
 4. After changing Rust types marked with `#[typeshare]`, run `pnpm typeshare` to regenerate `web/src/types/core.ts`.
 5. `pnpm test` runs `cargo test`. `pnpm typecheck` runs `tsc --noEmit`. `pnpm core lint` runs clippy.
    To match CI's Rust lint coverage, run `cargo clippy --all-targets` from `core`; this checks test code as well as the application.
@@ -421,11 +462,13 @@ Keep `pnpm-lock.yaml`; no `npm install`, lockfile deletion or WASM fallback is n
 
 For dependency refreshes, run `pnpm --recursive update --latest` from the root so both root tooling and web packages are included. Update Rust requirements in `core/Cargo.toml` for new major releases, then run `cargo update` from `core` to refresh transitive dependencies. Keep both lockfiles and verify with `pnpm test`, `pnpm typecheck`, and `pnpm web build:docker`.
 
-Queue/price and investment-activity database integration tests are opt-in locally and run in CI. From `core`, run `TEST_POSTGRES_URL=postgres://... cargo test pricing_database -- --ignored` and `TEST_POSTGRES_URL=postgres://... cargo test investment_activity_database -- --ignored`. Tests create and drop their own uniquely named schemas and never fall back to `POSTGRES_URL` or `.env.dev`.
+The complete isolated database suite runs in CI and is opt-in locally. From `core`, export a dedicated PostgreSQL 17 `TEST_POSTGRES_URL`, then run `cargo test -- --ignored --skip pricing_live_provider_smoke --test-threads=1`. This includes auth, tenant isolation, migration, pricing/streaming, calculation, Telegram, import, income, FX and trading regressions. Tests create/drop unique schemas and never fall back to `POSTGRES_URL` or dotenv databases. Single-threading avoids database-wide advisory-lock fixtures interfering across schemas; the skipped internet/live-provider smoke is optional.
+
+Authentication regressions read persisted creation timestamps directly to verify challenge, full-session, invitation, and recovery-link lifetimes.
 
 ### Database migrations
 
-Applied migration files must keep their original version, name and contents: Refinery validates them against `refinery_schema_history` at startup. V9 is reserved for the historical `custom_assets` migration; automatic pricing is V10. Keep V9 even when its application features are absent so existing databases retain their migration history and asset data.
+Applied migrations must retain their original version, name and contents: Refinery validates `refinery_schema_history` at startup. V1–V32 remain unchanged; V33 adds account ownership and trigger-safe legacy backfill. PostgreSQL below 15 is rejected before its owner-preserving interest foreign key is applied. Always stop old writers and follow the backup/bootstrap upgrade procedure above; no legacy-owner/login compatibility fallback exists.
 
 ## Playbooks
 

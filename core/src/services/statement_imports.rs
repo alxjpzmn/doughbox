@@ -11,7 +11,10 @@ use tokio_postgres::Client;
 use crate::{
     database::{
         db_client, db_connection,
-        models::statement_import::{StatementImportFile, StatementImportsStatus},
+        models::{
+            auth::UserId,
+            statement_import::{StatementImportFile, StatementImportsStatus},
+        },
         queries::statement_import::{self, ClaimedStatementImport},
     },
     services::parsers::parse_file_for_upload,
@@ -20,12 +23,12 @@ use crate::{
 const PARTIAL_IMPORT_WARNING: &str = "Some records may already have been imported; review them before uploading the file again.";
 const PANIC_ERROR: &str = "Statement importer stopped unexpectedly while reading this file. Check the statement format. Some records may already have been imported; review them before uploading the file again.";
 
-pub async fn status() -> anyhow::Result<StatementImportsStatus> {
-    statement_import::list(&db_client().await?).await
+pub async fn status(user_id: &UserId) -> anyhow::Result<StatementImportsStatus> {
+    statement_import::list(user_id, &db_client().await?).await
 }
 
-pub async fn enqueue(files: &[StatementImportFile]) -> anyhow::Result<StatementImportsStatus> {
-    statement_import::enqueue(&mut db_client().await?, files).await
+pub async fn enqueue(user_id: &UserId, files: &[StatementImportFile]) -> anyhow::Result<StatementImportsStatus> {
+    statement_import::enqueue(user_id, &mut db_client().await?, files).await
 }
 
 /// The API owns this worker, not the browser or an individual upload request.
@@ -104,8 +107,9 @@ async fn run_locked_session(
             break;
         };
         let id = file.id;
+        let user_id = file.user_id.clone();
         let outcome = run_import(db, file, stop.clone(), lost.clone()).await?;
-        statement_import::finish_locked(db, id, outcome.error()).await?;
+        statement_import::finish_locked(&user_id, db, id, outcome.error()).await?;
     }
     Ok(())
 }
@@ -168,7 +172,7 @@ fn spawn_parser(file: ClaimedStatementImport) -> ParserTask {
             tokio::select! {
                 biased;
                 _ = cancelled.changed() => ImportOutcome::Interrupted,
-                result = AssertUnwindSafe(parse_file_for_upload(&file.contents, Path::new(&file.filename))).catch_unwind() => {
+                result = AssertUnwindSafe(parse_file_for_upload(&file.user_id, &file.contents, Path::new(&file.filename))).catch_unwind() => {
                     match result {
                         Ok(Ok(())) => ImportOutcome::Succeeded,
                         Ok(Err(error)) => ImportOutcome::Failed(parser_error(error)),

@@ -11,28 +11,28 @@ use crate::{
 };
 
 /// Linked income is already included by its custom holding's cash/debt calculation.
-pub(crate) async fn unlinked_interest_total(
+pub(crate) async fn unlinked_interest_total(user_id: &crate::database::models::auth::UserId, 
     client: &tokio_postgres::Client,
     as_of: chrono::DateTime<chrono::Utc>,
 ) -> anyhow::Result<rust_decimal::Decimal> {
     let row = client.query_one(
-        "SELECT COALESCE(SUM(amount_eur), 0) FROM interest WHERE asset_id IS NULL AND date <= $1",
-        &[&as_of],
+        "SELECT COALESCE(SUM(amount_eur), 0) FROM interest WHERE user_id = $1 AND asset_id IS NULL AND date <= $2",
+        &[&user_id.as_str(), &as_of],
     ).await?;
     Ok(row.get(0))
 }
 
 /// Check if an interest payment with the given hash already exists
-pub async fn interest_exists_by_hash(hash: &str) -> anyhow::Result<bool> {
+pub async fn interest_exists_by_hash(user_id: &crate::database::models::auth::UserId, hash: &str) -> anyhow::Result<bool> {
     let client = db_client().await?;
     let row = client
-        .query_opt("SELECT 1 FROM interest WHERE id = $1", &[&hash])
+        .query_opt("SELECT 1 FROM interest WHERE user_id = $1 AND id = $2", &[&user_id.as_str(), &hash])
         .await?;
     Ok(row.is_some())
 }
 
 /// Add interest payment to database, returns true if inserted, false if duplicate
-pub async fn add_interest_to_db(
+pub async fn add_interest_to_db(user_id: &crate::database::models::auth::UserId, 
     interest_payment: InterestPayment,
     transaction_id: Option<&str>,
 ) -> anyhow::Result<bool> {
@@ -65,13 +65,13 @@ pub async fn add_interest_to_db(
     };
 
     // Check if already exists
-    if interest_exists_by_hash(&hash).await? {
+    if interest_exists_by_hash(user_id, &hash).await? {
         return Ok(false);
     }
 
     let result = client.execute(
-            "INSERT INTO interest (id, date, amount, broker, principal, currency, amount_eur, withholding_tax, withholding_tax_currency) values ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT(id) DO NOTHING",
-            &[&hash, &interest_payment.date, &interest_payment.amount, &interest_payment.broker, &interest_payment.principal, &interest_payment.currency, &interest_payment.amount_eur, &interest_payment.withholding_tax, &interest_payment.withholding_tax_currency],
+            "INSERT INTO interest (user_id, id, date, amount, broker, principal, currency, amount_eur, withholding_tax, withholding_tax_currency) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT(user_id,id) DO NOTHING",
+            &[&user_id.as_str(), &hash, &interest_payment.date, &interest_payment.amount, &interest_payment.broker, &interest_payment.principal, &interest_payment.currency, &interest_payment.amount_eur, &interest_payment.withholding_tax, &interest_payment.withholding_tax_currency],
         )
     .await?;
 
@@ -79,15 +79,16 @@ pub async fn add_interest_to_db(
     Ok(result == 1)
 }
 
-pub async fn get_interest(filter: QueryFilter) -> anyhow::Result<Vec<InterestRecord>> {
+pub async fn get_interest(user_id: &crate::database::models::auth::UserId, filter: QueryFilter) -> anyhow::Result<Vec<InterestRecord>> {
     let client = db_client().await?;
 
     let mut statement = String::from(
         "SELECT id, asset_id, date, amount, broker, principal, currency, amount_eur, \
          withholding_tax, withholding_tax_currency, tax_treatment, origin \
-         FROM interest WHERE 1=1",
+         FROM interest WHERE user_id = $1",
     );
-    let mut params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = vec![];
+    let owner = user_id.as_str();
+    let mut params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = vec![&owner];
     super::append_common_filters(&mut statement, &mut params, &filter);
     statement.push_str(" ORDER BY date DESC");
 
@@ -133,20 +134,22 @@ mod tests {
         client.batch_execute(&format!("CREATE SCHEMA {schema}; SET search_path TO {schema}")).await.unwrap();
         refinery::embed_migrations!("migrations");
         migrations::runner().run_async(&mut client).await.unwrap();
+        let owner = crate::database::models::auth::UserId::from_database(client.query_one("SELECT legacy_owner_user_id FROM auth_instance", &[]).await.unwrap().get(0));
+        let user_id = &owner;
         client.batch_execute(
-            "INSERT INTO asset(id,name,asset_class,currency,unit_label,current_interest_rate_percent)
-             VALUES ('cash','Cash','CashAccount','EUR','EUR',2);
-             INSERT INTO interest(id,asset_id,date,amount,amount_eur,currency,principal,origin,tax_treatment)
-             VALUES ('unlinked',NULL,'2025-01-01',10,10,'EUR','Cash','Imported','Included'),
-                    ('manual',NULL,'2025-01-01',3,3,'EUR','Cash','Manual','Excluded'),
-                    ('correction',NULL,'2025-01-01',-2,-2,'EUR','Cash','Imported','Included'),
-                    ('linked','cash','2025-01-01',20,20,'EUR','Cash','Imported','Included'),
-                    ('future',NULL,'2025-02-01',50,50,'EUR','Cash','Imported','Included')"
+            "INSERT INTO asset(user_id, id,name,asset_class,currency,unit_label,current_interest_rate_percent)
+             VALUES ((SELECT legacy_owner_user_id FROM auth_instance), 'cash','Cash','CashAccount','EUR','EUR',2);
+             INSERT INTO interest(user_id, id,asset_id,date,amount,amount_eur,currency,principal,origin,tax_treatment)
+             VALUES ((SELECT legacy_owner_user_id FROM auth_instance), 'unlinked',NULL,'2025-01-01',10,10,'EUR','Cash','Imported','Included'),
+                    ((SELECT legacy_owner_user_id FROM auth_instance), 'manual',NULL,'2025-01-01',3,3,'EUR','Cash','Manual','Excluded'),
+                    ((SELECT legacy_owner_user_id FROM auth_instance), 'correction',NULL,'2025-01-01',-2,-2,'EUR','Cash','Imported','Included'),
+                    ((SELECT legacy_owner_user_id FROM auth_instance), 'linked','cash','2025-01-01',20,20,'EUR','Cash','Imported','Included'),
+                    ((SELECT legacy_owner_user_id FROM auth_instance), 'future',NULL,'2025-02-01',50,50,'EUR','Cash','Imported','Included')"
         ).await.unwrap();
         let cutoff = Utc.with_ymd_and_hms(2025, 1, 2, 0, 0, 0).unwrap();
-        assert_eq!(unlinked_interest_total(&client, cutoff).await.unwrap(), dec!(11));
-        client.execute("UPDATE interest SET asset_id = NULL WHERE id = 'linked'", &[]).await.unwrap();
-        assert_eq!(unlinked_interest_total(&client, cutoff).await.unwrap(), dec!(31));
+        assert_eq!(unlinked_interest_total(user_id, &client, cutoff).await.unwrap(), dec!(11));
+        client.execute("UPDATE interest SET asset_id = NULL WHERE user_id = $1 AND id = 'linked'", &[&user_id.as_str()]).await.unwrap();
+        assert_eq!(unlinked_interest_total(user_id, &client, cutoff).await.unwrap(), dec!(31));
         client.batch_execute(&format!("SET search_path TO public; DROP SCHEMA {schema} CASCADE")).await.unwrap();
     }
 }

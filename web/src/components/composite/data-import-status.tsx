@@ -2,6 +2,8 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import useSwr, { useSWRConfig } from 'swr';
 import { ArrowClockwiseIcon, CheckCircleIcon, CircleDashedIcon, XCircleIcon, SpinnerGapIcon } from '@phosphor-icons/react';
 import { BASE_URL, fetcher, sendMutateRequest } from '@/lib/http';
+import useAuth from '@/hooks/useAuth';
+import { Role } from '@/types/core';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -46,7 +48,7 @@ const scheduleFrequencies: Record<ScheduleFrequency, string> = {
 const importsUrl = `${BASE_URL}/data-imports`;
 const sources: { source: ImportSource; name: string; description: string }[] = [
   { source: 'polygon', name: 'Polygon stock splits', description: 'Fetch stock-split reference data for imported securities.' },
-  { source: 'ecb', name: 'ECB exchange rates', description: 'Fetch European Central Bank exchange rates for currencies used by your portfolio.' },
+  { source: 'ecb', name: 'ECB exchange rates', description: 'Fetch shared European Central Bank exchange rates for the instance.' },
 ];
 const affectedEndpoints = [
   'instruments', 'prices', 'portfolio', 'positions', 'past_performance',
@@ -253,7 +255,7 @@ const ImportSourceCard = ({ source, name, description, status, stale, onImport, 
   );
 };
 
-export const DataImportStatusPanel = () => {
+const AdminDataImportStatusPanel = () => {
   const { mutate: mutateCache } = useSWRConfig();
   const { data, error, isLoading, mutate } = useSwr<DataImportsResponse>(importsUrl, fetcher, {
     refreshInterval: current => current?.sources.some(source => source.status === 'running') ? 2_000 : 60_000,
@@ -314,7 +316,7 @@ export const DataImportStatusPanel = () => {
     <Card aria-label="Reference data imports">
       <CardHeader>
         <CardTitle>Reference data</CardTitle>
-        <CardDescription>Schedule or manually refresh stock splits and exchange rates for your portfolio.</CardDescription>
+        <CardDescription>Schedule or manually refresh shared stock splits and exchange rates for the instance.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
         <p className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -339,4 +341,9 @@ export const DataImportStatusPanel = () => {
       </CardContent>
     </Card>
   );
+};
+
+export const DataImportStatusPanel = () => {
+  const { auth, status } = useAuth();
+  return status === 'ready' && auth?.stage === 'authenticated' && auth.user?.role === Role.Admin ? <AdminDataImportStatusPanel /> : null;
 };

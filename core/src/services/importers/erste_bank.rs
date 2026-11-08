@@ -28,7 +28,7 @@ fn detect_record_type(text: &str) -> anyhow::Result<RecordType> {
     Ok(RecordType::Unmatched)
 }
 
-pub async fn extract_erste_bank_record(text: &str) -> anyhow::Result<()> {
+pub async fn extract_erste_bank_record(user_id: &crate::database::models::auth::UserId, text: &str) -> anyhow::Result<()> {
     let broker = "Erste Bank".to_string();
     let record_type = detect_record_type(text)?;
 
@@ -118,7 +118,7 @@ pub async fn extract_erste_bank_record(text: &str) -> anyhow::Result<()> {
                 withholding_tax: dec!(0.0),
                 withholding_tax_currency: "EUR".to_string(),
             };
-            add_trade_to_db(trade, Some(id)).await?;
+            add_trade_to_db(user_id, trade, Some(id)).await?;
         }
         RecordType::Dividend => {
             let date_match = return_first_match(r", am \d{2}\.\d{2}\.\d{4}", text)?
@@ -157,7 +157,7 @@ pub async fn extract_erste_bank_record(text: &str) -> anyhow::Result<()> {
                 withholding_tax,
                 withholding_tax_currency: "EUR".to_string(),
             };
-            if add_dividend_to_db(dividend.clone(), None).await? {
+            if add_dividend_to_db(user_id, dividend.clone(), None).await? {
                 println!("💵 Dividend added: {:?}", dividend);
             }
         }

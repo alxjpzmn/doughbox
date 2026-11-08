@@ -73,7 +73,6 @@ pub struct PriceFeedStatus {
     pub job_status: Option<String>,
     pub attempts: i32,
     pub files_processed: i32,
-    pub reports_processed: i32,
 }
 
 #[typeshare]
