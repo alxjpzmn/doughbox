@@ -65,26 +65,22 @@ fn require_import_confirmation(trade: &Trade, interaction: InteractionMode) -> a
     Ok(matches!(input.trim().to_lowercase().as_str(), "y" | "yes"))
 }
 
-async fn add_with_import_confirmation(
-    trade: Trade,
-    id: String,
-    interaction: InteractionMode,
-) -> anyhow::Result<()> {
-    let existing_trade = find_similar_trade(&trade).await?;
+async fn add_with_import_confirmation(user_id: &crate::database::models::auth::UserId, trade: Trade,
+id: String,
+interaction: InteractionMode,) -> anyhow::Result<()> { let existing_trade = find_similar_trade(user_id, &trade).await?;
 
-    if let Some(existing_trade) = existing_trade {
-        if existing_trade.hash != hash_string(&format!("{}{}", &trade.broker, id.as_str()))
-            && require_import_confirmation(&trade, interaction)?
-        {
-            add_trade_to_db(trade, Some(id)).await?;
-        }
-    } else {
-        add_trade_to_db(trade, Some(id)).await?;
+if let Some(existing_trade) = existing_trade {
+    if existing_trade.hash != hash_string(&format!("{}{}", &trade.broker, id.as_str()))
+        && require_import_confirmation(&trade, interaction)?
+    {
+        add_trade_to_db(user_id, trade, Some(id)).await?;
     }
-    Ok(())
+} else {
+    add_trade_to_db(user_id, trade, Some(id)).await?;
 }
+Ok(()) }
 
-pub async fn extract_trade_republic_record(
+pub async fn extract_trade_republic_record(user_id: &crate::database::models::auth::UserId, 
     text: &str,
     interaction: InteractionMode,
 ) -> anyhow::Result<()> {
@@ -142,7 +138,7 @@ pub async fn extract_trade_republic_record(
                 withholding_tax: dec!(0.0),
                 withholding_tax_currency: "EUR".to_string(),
             };
-            add_with_import_confirmation(trade, id, interaction).await?;
+            add_with_import_confirmation(user_id, trade, id, interaction).await?;
         }
         RecordType::Liquidation => {
             let date_match = return_first_match(r"(..\...\.....)", text)?;
@@ -156,7 +152,7 @@ pub async fn extract_trade_republic_record(
 
             let units;
             if is_bond_liquidation {
-                units = get_positions_for_isin(&isin, None).await?;
+                units = get_positions_for_isin(user_id, &isin, None).await?;
                 if units == dec!(0) {
                     return Ok(());
                 }
@@ -196,7 +192,7 @@ pub async fn extract_trade_republic_record(
                 withholding_tax: dec!(0.0),
                 withholding_tax_currency: "EUR".to_string(),
             };
-            add_trade_to_db(trade, None).await?;
+            add_trade_to_db(user_id, trade, None).await?;
         }
         RecordType::BondTrade => {
             let date_match_regex = r"(..\...\.....(?:,)? um ..:..)";
@@ -270,7 +266,7 @@ pub async fn extract_trade_republic_record(
                 withholding_tax: dec!(0.0),
                 withholding_tax_currency: "EUR".to_string(),
             };
-            add_with_import_confirmation(trade, id, interaction).await?;
+            add_with_import_confirmation(user_id, trade, id, interaction).await?;
         }
         RecordType::Dividend => {
             let date_match = return_first_match(r"(..\...\.....)", text)?;
@@ -302,7 +298,7 @@ pub async fn extract_trade_republic_record(
                 withholding_tax_currency: "EUR".to_string(),
             };
 
-            if add_dividend_to_db(dividend.clone(), None).await? {
+            if add_dividend_to_db(user_id, dividend.clone(), None).await? {
                 println!("💵 Dividend added: {:?}", dividend);
             }
         }
@@ -393,7 +389,7 @@ pub async fn extract_trade_republic_record(
                 withholding_tax: dec!(0.0),
                 withholding_tax_currency: "EUR".to_string(),
             };
-            add_with_import_confirmation(trade, id, interaction).await?;
+            add_with_import_confirmation(user_id, trade, id, interaction).await?;
         }
         RecordType::InterestPayment => {
             let date_match = return_first_match(r"zum (..\...\.....)", text)?.replace("zum ", "");
@@ -421,7 +417,7 @@ pub async fn extract_trade_republic_record(
                 withholding_tax_currency: "EUR".to_string(),
             };
 
-            if add_interest_to_db(interest_payment.clone(), None).await? {
+            if add_interest_to_db(user_id, interest_payment.clone(), None).await? {
                 println!("💵 Interest payment added: {:?}", interest_payment);
             }
         }
@@ -441,6 +437,8 @@ mod tests {
 
     #[tokio::test]
     async fn upload_rejects_unsupported_and_malformed_pdf_records() {
+    let owner = crate::database::models::auth::UserId::from_database("parser-test-owner".to_owned());
+    let user_id = &owner;
         for text in [
             "TRADE REPUBLIC BANK GMBH Depotubertrag",
             "TRADE REPUBLIC BANK GMBH unrelated document",
@@ -448,7 +446,7 @@ mod tests {
             "TRADE REPUBLIC BANK GMBH Stuckzinsen without a confirmation date",
             "TRADE REPUBLIC BANK GMBH Dividende without an amount or date",
         ] {
-            assert!(extract_trade_republic_record(text, InteractionMode::NonInteractive)
+            assert!(extract_trade_republic_record(user_id, text, InteractionMode::NonInteractive)
                 .await
                 .is_err());
         }

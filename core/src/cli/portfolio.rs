@@ -5,6 +5,7 @@ use spinners_rs::{Spinner, Spinners};
 use tabled::{Table, Tabled};
 
 use crate::{
+    database::models::auth::UserId,
     services::{
         portfolio::get_portfolio_overview,
         portfolio_reports::{complete_snapshot, send_report},
@@ -25,10 +26,10 @@ pub struct PortfolioArgs {
     pub notify: Option<bool>,
 }
 
-pub async fn portfolio(args: PortfolioArgs) -> anyhow::Result<()> {
+pub async fn portfolio(user_id: &UserId, args: PortfolioArgs) -> anyhow::Result<()> {
     let mut sp = Spinner::new(Spinners::Point, "Getting portfolio positions...");
     sp.start();
-    let position_overview = get_portfolio_overview().await?;
+    let position_overview = get_portfolio_overview(user_id).await?;
     let performance_signal_to_save = complete_snapshot(&position_overview)?;
 
     let mut formatted_positions_with_allocation: Vec<StringifiedPositionWithAllocation> = vec![];
@@ -51,12 +52,12 @@ pub async fn portfolio(args: PortfolioArgs) -> anyhow::Result<()> {
 
 
     if args.notify == Some(true) {
-        send_report(&performance_signal_to_save).await?;
+        send_report(user_id, &performance_signal_to_save).await?;
     } else {
         info!("Notifications not enabled.");
     }
 
-    crate::database::queries::performance::add_performance_signal_to_db(performance_signal_to_save).await?;
+    crate::database::queries::performance::add_performance_signal_to_db(user_id, performance_signal_to_save).await?;
 
     let table = Table::new(&formatted_positions_with_allocation).to_string();
 

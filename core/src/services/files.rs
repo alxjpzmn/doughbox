@@ -1,16 +1,20 @@
 use std::{
     fs::{self, File, OpenOptions},
-    io::{BufWriter, Write},
-    path::Path,
+    io::{BufReader, BufWriter, Read, Write},
+    path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
 
 use csv::Writer;
 use serde::Serialize;
+use tokio_postgres::Client;
+
+use crate::database::{db_client, models::auth::UserId};
 
 use super::{
     parsers::ImportFileFormat,
-    shared::constants::{IN_DIR, OUT_DIR},
+    shared::{constants::IN_DIR, env::get_env_variable},
+    taxation::detailed_taxation_filename,
 };
 
 
@@ -49,16 +53,47 @@ fn create_dir_if_nonexistent(directory_path: &str) {
 }
 
 pub fn create_necessary_directories() {
-    create_dir_if_nonexistent(OUT_DIR);
+    create_dir_if_nonexistent(&data_dir().join("output").to_string_lossy());
     create_dir_if_nonexistent(IN_DIR);
 }
 
-pub fn export_csv<T>(rows: &Vec<T>, file_name: &str) -> anyhow::Result<()>
+fn data_dir() -> PathBuf {
+    get_env_variable("DOUGHBOX_DATA_DIR").map_or_else(|| PathBuf::from("."), PathBuf::from)
+}
+
+fn user_output_dir_in(root: &Path, user_id: &UserId) -> PathBuf {
+    root.join("output").join("users").join(user_id.as_str())
+}
+
+/// The only location for a user's saved reports. No legacy/shared fallback.
+pub fn user_output_dir(user_id: &UserId) -> PathBuf {
+    user_output_dir_in(&data_dir(), user_id)
+}
+
+fn validate_export_filename(file_name: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !file_name.is_empty()
+            && file_name != "."
+            && !file_name.contains("..")
+            && !file_name.contains(['/', '\\', '\0']),
+        "Export requires a filename without path separators or traversal"
+    );
+    Ok(())
+}
+
+fn export_path(user_id: &UserId, file_name: &str, extension: &str) -> anyhow::Result<PathBuf> {
+    validate_export_filename(file_name)?;
+    let directory = user_output_dir(user_id);
+    fs::create_dir_all(&directory)?;
+    Ok(directory.join(format!("{file_name}.{extension}")))
+}
+
+pub fn export_csv<T>(user_id: &UserId, rows: &Vec<T>, file_name: &str) -> anyhow::Result<()>
 where
     T: Serialize,
 {
-    let path = format!("{}/{}.csv", OUT_DIR, file_name);
-    atomic_export(Path::new(&path), |file| {
+    let path = export_path(user_id, file_name, "csv")?;
+    atomic_export(&path, |file| {
         let mut writer = Writer::from_writer(file);
         for row in rows {
             writer.serialize(row)?;
@@ -68,17 +103,115 @@ where
     })
 }
 
-pub fn export_json<T>(data: T, file_name: &str) -> anyhow::Result<()>
+pub fn export_json<T>(user_id: &UserId, data: T, file_name: &str) -> anyhow::Result<()>
 where
     T: Serialize,
 {
-    let path = format!("{}/{}.json", OUT_DIR, file_name);
-    atomic_export(Path::new(&path), |file| {
+    let path = export_path(user_id, file_name, "json")?;
+    atomic_export(&path, |file| {
         let mut writer = BufWriter::new(file);
         serde_json::to_writer(&mut writer, &data)?;
         writer.flush()?;
         Ok(())
     })
+}
+
+fn recognized_legacy_file(name: &str) -> bool {
+    if matches!(name, "performance.csv" | "performance.json" | "taxation.json" | "taxation_detailed.json") {
+        return true;
+    }
+    let Some(bounds) = name.strip_prefix("taxation_detailed_from_")
+        .and_then(|name| name.strip_suffix(".json")) else {
+        return false;
+    };
+    let Some((from, until)) = bounds.split_once("_until_") else {
+        return false;
+    };
+    let parse_bound = |value: &str| -> Option<Option<chrono::NaiveDate>> {
+        if value == "all" { Some(None) } else {
+            let date = chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d").ok()?;
+            (date.format("%Y-%m-%d").to_string() == value).then_some(Some(date))
+        }
+    };
+    let (Some(from), Some(until)) = (parse_bound(from), parse_bound(until)) else {
+        return false;
+    };
+    detailed_taxation_filename(from, until) + ".json" == name
+}
+
+fn files_identical(source: &Path, destination: &Path) -> anyhow::Result<bool> {
+    if fs::metadata(source)?.len() != fs::metadata(destination)?.len() {
+        return Ok(false);
+    }
+    let mut source = BufReader::new(File::open(source)?);
+    let mut destination = BufReader::new(File::open(destination)?);
+    let mut left = [0; 64 * 1024];
+    let mut right = [0; 64 * 1024];
+    loop {
+        let count = source.read(&mut left)?;
+        destination.read_exact(&mut right[..count])?;
+        if left[..count] != right[..count] { return Ok(false); }
+        if count == 0 { return Ok(true); }
+    }
+}
+
+fn migrate_legacy_directory(root: &Path, user_id: &UserId) -> anyhow::Result<()> {
+    let legacy = root.join("output");
+    let entries = match fs::read_dir(&legacy) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    let destination = user_output_dir_in(root, user_id);
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name();
+        if !name.to_str().is_some_and(recognized_legacy_file) { continue; }
+        anyhow::ensure!(entry.file_type()?.is_file(), "Legacy report must be a regular file");
+        fs::create_dir_all(&destination)?;
+        let source = entry.path();
+        let target = destination.join(&name);
+        match fs::symlink_metadata(&target) {
+            Ok(metadata) => {
+                anyhow::ensure!(
+                    metadata.file_type().is_file() && files_identical(&source, &target)?,
+                    "Legacy report conflicts with an existing user report; neither file was overwritten"
+                );
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                // Linking is atomic and cannot overwrite an existing destination.
+                // Removing the source afterwards makes interruption safe to resume.
+                fs::hard_link(&source, &target)?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+        fs::remove_file(source)?;
+    }
+    Ok(())
+}
+
+async fn migrate_legacy_files_in(client: &mut Client, root: &Path) -> anyhow::Result<()> {
+    let transaction = client.transaction().await?;
+    let row = transaction.query_one(
+        "SELECT legacy_owner_user_id, legacy_files_migrated FROM auth_instance WHERE singleton=TRUE FOR UPDATE",
+        &[],
+    ).await?;
+    if row.get::<_, bool>("legacy_files_migrated") { return Ok(()); }
+    transaction.query_one(
+        "SELECT pg_advisory_xact_lock(hashtextextended('doughbox:legacy-files',0))", &[],
+    ).await?;
+    let user_id = UserId::from_database(row.get("legacy_owner_user_id"));
+    let root = root.to_path_buf();
+    tokio::task::spawn_blocking(move || migrate_legacy_directory(&root, &user_id)).await??;
+    transaction.execute("UPDATE auth_instance SET legacy_files_migrated=TRUE WHERE singleton=TRUE", &[]).await?;
+    transaction.commit().await?;
+    Ok(())
+}
+
+/// Run after migrations and before serving reports or starting private workers.
+/// All API replicas must mount the same DOUGHBOX_DATA_DIR.
+pub async fn migrate_legacy_files() -> anyhow::Result<()> {
+    migrate_legacy_files_in(&mut db_client().await?, &data_dir()).await
 }
 
 pub fn detect_file_format(file: &[u8], file_path: &Path) -> ImportFileFormat {
@@ -102,6 +235,122 @@ mod tests {
     use super::*;
     use std::path::Path;
 
+    fn temporary_directory() -> PathBuf {
+        let directory = std::env::temp_dir().join(format!("doughbox_files_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&directory).unwrap();
+        directory
+    }
+
+    #[test]
+    fn private_output_paths_do_not_fall_back_and_reject_traversal() {
+        let root = temporary_directory();
+        let alice = UserId::new();
+        let bob = UserId::new();
+        let alice_dir = user_output_dir_in(&root, &alice);
+        let bob_dir = user_output_dir_in(&root, &bob);
+        assert_eq!(alice_dir, root.join("output/users").join(alice.as_str()));
+        assert_ne!(alice_dir, bob_dir);
+        fs::create_dir_all(&alice_dir).unwrap();
+        fs::write(root.join("output/performance.json"), "legacy").unwrap();
+        atomic_export(&alice_dir.join("performance.json"), |file| {
+            file.write_all(b"alice")?;
+            Ok(())
+        }).unwrap();
+        assert_eq!(fs::read(alice_dir.join("performance.json")).unwrap(), b"alice");
+        assert!(!bob_dir.join("performance.json").exists());
+        for invalid in ["", ".", "..", "../performance", "nested/performance", "nested\\performance", "performance\0"] {
+            assert!(validate_export_filename(invalid).is_err(), "{invalid:?}");
+        }
+        assert!(validate_export_filename("taxation_detailed_from_all_until_2026-12-31").is_ok());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn legacy_report_recognition_validates_dates_and_exact_generated_stems() {
+        for name in [
+            "performance.csv", "performance.json", "taxation.json", "taxation_detailed.json",
+            "taxation_detailed_from_2024-02-29_until_all.json",
+            "taxation_detailed_from_all_until_2026-12-31.json",
+            "taxation_detailed_from_2024-01-01_until_2024-12-31.json",
+        ] {
+            assert!(recognized_legacy_file(name), "{name}");
+        }
+        for name in [
+            "performance.txt", "taxation_detailed_notes.json",
+            "taxation_detailed_from_all_until_all.json",
+            "taxation_detailed_from_2025-02-29_until_all.json",
+            "taxation_detailed_from_2024-2-29_until_all.json",
+            "taxation_detailed_from_2024-02-29_until_all.json.bak",
+            "taxation_detailed_from_all_until_2026-13-01.json",
+        ] {
+            assert!(!recognized_legacy_file(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn legacy_directory_moves_only_known_reports_and_resumes_identical_files() {
+        let root = temporary_directory();
+        let owner = UserId::new();
+        let destination = user_output_dir_in(&root, &owner);
+        fs::create_dir_all(&destination).unwrap();
+        fs::create_dir_all(root.join("input")).unwrap();
+        fs::write(root.join("input/performance.json"), "input").unwrap();
+        fs::write(root.join("output/unknown.json"), "unknown").unwrap();
+        fs::write(root.join("output/taxation_detailed_from_2025-02-29_until_all.json"), "invalid date").unwrap();
+        for name in ["performance.csv", "performance.json", "taxation_detailed_from_all_until_2026-12-31.json"] {
+            fs::write(root.join("output").join(name), name).unwrap();
+        }
+        // This is the exact interrupted state after the destination was linked.
+        fs::write(destination.join("performance.json"), "performance.json").unwrap();
+        migrate_legacy_directory(&root, &owner).unwrap();
+        migrate_legacy_directory(&root, &owner).unwrap();
+        assert_eq!(fs::read(destination.join("performance.csv")).unwrap(), b"performance.csv");
+        assert_eq!(fs::read(destination.join("performance.json")).unwrap(), b"performance.json");
+        assert!(!root.join("output/performance.json").exists());
+        assert!(!root.join("output/performance.csv").exists());
+        assert_eq!(fs::read(root.join("input/performance.json")).unwrap(), b"input");
+        assert_eq!(fs::read(root.join("output/unknown.json")).unwrap(), b"unknown");
+        assert!(root.join("output/taxation_detailed_from_2025-02-29_until_all.json").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires a dedicated TEST_POSTGRES_URL; also run in CI"]
+    async fn tenant_isolation_database_legacy_files_conflicts_preserve_both_and_flags_resume() {
+        use crate::services::auth::tests::{cleanup, second_connection, test_database_at};
+        let (mut db, schema) = test_database_at(refinery::Target::Latest).await;
+        let owner = crate::database::queries::auth::legacy_owner(&db).await.unwrap();
+        let root = temporary_directory();
+        let destination = user_output_dir_in(&root, &owner);
+        fs::create_dir_all(&destination).unwrap();
+        let source = root.join("output/performance.json");
+        let target = destination.join("performance.json");
+        fs::write(&source, "legacy").unwrap();
+        fs::write(&target, "different").unwrap();
+        assert!(migrate_legacy_files_in(&mut db, &root).await.is_err());
+        assert_eq!(fs::read(&source).unwrap(), b"legacy");
+        assert_eq!(fs::read(&target).unwrap(), b"different");
+        assert!(!db.query_one("SELECT legacy_files_migrated FROM auth_instance WHERE singleton=TRUE", &[]).await.unwrap().get::<_, bool>(0));
+        fs::remove_file(&target).unwrap();
+        let mut replica = second_connection(&schema).await;
+        let (first, second) = tokio::join!(
+            migrate_legacy_files_in(&mut db, &root),
+            migrate_legacy_files_in(&mut replica, &root),
+        );
+        first.unwrap();
+        second.unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"legacy");
+        assert!(!source.exists());
+        assert!(db.query_one("SELECT legacy_files_migrated FROM auth_instance WHERE singleton=TRUE", &[]).await.unwrap().get::<_, bool>(0));
+        fs::write(&source, "later file is not adopted").unwrap();
+        migrate_legacy_files_in(&mut db, &root).await.unwrap();
+        assert_eq!(fs::read(&source).unwrap(), b"later file is not adopted");
+        assert_eq!(fs::read(&target).unwrap(), b"legacy");
+        assert!(!user_output_dir_in(&root, &UserId::new()).join("performance.json").exists());
+        fs::remove_dir_all(root).unwrap();
+        drop(replica);
+        cleanup(db, &schema).await;
+    }
 
     #[test]
     fn failed_export_preserves_previous_result_and_cleans_partial_output() {

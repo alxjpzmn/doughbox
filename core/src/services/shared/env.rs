@@ -19,15 +19,11 @@ pub fn check_for_env_variables() {
             )
         }
     };
-    match get_env_variable("PASSWORD") {
-        Some(_) => println!("Password set ✅"),
-        None => println!("No password set. ⚠️"),
-    };
-
-    match get_env_variable("API_TOKEN") {
-        Some(_) => println!("API token set ✅"),
-        None => println!("No API token set, you'll only be able to use the CLI and Web UI. ⚠️"),
-    };
+    for retired in ["PASSWORD", "API_TOKEN", "SESSION_TOKEN_KEY"] {
+        if get_env_variable(retired).is_some() {
+            tracing::warn!("{retired} is obsolete and does not authorize requests");
+        }
+    }
 }
 
 pub fn get_env_variable(variable_to_get: &str) -> Option<String> {

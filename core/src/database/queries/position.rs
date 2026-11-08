@@ -14,7 +14,7 @@ use crate::{
 
 use super::{listing_change::get_listing_changes, stock_split::get_stock_splits, QueryFilter};
 
-pub async fn get_positions_for_isin(
+pub async fn get_positions_for_isin(user_id: &crate::database::models::auth::UserId, 
     isin: &str,
     date: Option<DateTime<Utc>>,
 ) -> anyhow::Result<Decimal> {
@@ -24,14 +24,14 @@ pub async fn get_positions_for_isin(
         Utc::now()
     };
 
-    let positions = get_positions(Some(date), Some(isin), None).await?;
+    let positions = get_positions(user_id, Some(date), Some(isin), None).await?;
 
     let result = positions.first().unwrap().units;
 
     Ok(result)
 }
 
-pub async fn get_positions(
+pub async fn get_positions(user_id: &crate::database::models::auth::UserId, 
     date: Option<DateTime<Utc>>,
     isin: Option<&str>,
     broker: Option<&str>,
@@ -46,8 +46,9 @@ pub async fn get_positions(
         ..QueryFilter::default()
     };
 
-    let mut query = String::from("select isin, direction, units, date, broker from trade where 1=1");
-    let mut params: Vec<&(dyn ToSql + Sync)> = vec![];
+    let mut query = String::from("select isin, direction, units, date, broker from trade WHERE user_id = $1 AND 1=1");
+    let owner = user_id.as_str();
+    let mut params: Vec<&(dyn ToSql + Sync)> = vec![&owner];
     super::append_common_filters(&mut query, &mut params, &filter);
 
     let rows = client.query(&query, &params).await?;

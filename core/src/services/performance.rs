@@ -8,7 +8,7 @@ use tabled::Tabled;
 use typeshare::typeshare;
 
 use crate::database::{
-    models::{dividend::Dividend, trade::Trade},
+    models::{auth::UserId, dividend::Dividend, trade::Trade},
     queries::{
         composite::get_all_trades,
         dividend::get_dividends,
@@ -122,10 +122,11 @@ pub(crate) struct SecurityCost {
 }
 
 async fn load_trade_groups(
+    user_id: &UserId,
     isin_filter: Option<&str>,
     broker_filter: Option<&str>,
 ) -> anyhow::Result<Vec<TradeGroup>> {
-    let trades = get_all_trades(None).await?;
+    let trades = get_all_trades(user_id, None).await?;
     let listing_changes = get_listing_changes().await?;
     let mut groups = std::collections::BTreeMap::<(String, String), Vec<Trade>>::new();
     for mut trade in trades {
@@ -142,26 +143,28 @@ async fn load_trade_groups(
     }).collect())
 }
 
-pub async fn get_performance() -> anyhow::Result<PortfolioPerformance> {
-    let performance_overview = compute_performance(None, None).await?;
-    export_csv(&performance_overview.position, "performance")?;
-    export_json(&performance_overview, "performance")?;
+/// Compute and atomically publish reports in this owner's private output directory.
+pub async fn get_performance(user_id: &UserId) -> anyhow::Result<PortfolioPerformance> {
+    let performance_overview = compute_performance(user_id, None, None).await?;
+    export_csv(user_id, &performance_overview.position, "performance")?;
+    export_json(user_id, &performance_overview, "performance")?;
     Ok(performance_overview)
 }
 
 pub async fn compute_performance(
+    user_id: &UserId,
     isin_filter: Option<&str>,
     broker_filter: Option<&str>,
 ) -> anyhow::Result<PortfolioPerformance> {
     let as_of = Utc::now();
     let (groups, costs, mut splits) =
-        load_security_accounting(isin_filter, broker_filter, as_of).await?;
+        load_security_accounting(user_id, isin_filter, broker_filter, as_of).await?;
     if let Some(gap) = costs.iter().find_map(|cost| cost.history_gaps.first()) {
         return Err(gap.clone().into());
     }
     let isins: Vec<_> = costs.iter().map(|cost| cost.isin.clone()).collect();
-    let prices = batch_get_instrument_prices(&isins).await?;
-    let names = batch_get_instrument_names(&isins).await?;
+    let prices = batch_get_instrument_prices(user_id, &isins).await?;
+    let names = batch_get_instrument_names(user_id, &isins).await?;
     let index = if get_env_variable("FRED_TOKEN").is_some() {
         Some(fetch_fred_data_set("SP500").await?)
     } else {
@@ -234,16 +237,17 @@ fn position_from_cost(
 }
 
 pub async fn get_buy_ins(
+    user_id: &UserId,
     isin_filter: Option<&str>,
     broker_filter: Option<&str>,
 ) -> anyhow::Result<Vec<BuyIn>> {
-    let grouped_trades = load_trade_groups(isin_filter, broker_filter).await?;
+    let grouped_trades = load_trade_groups(user_id, isin_filter, broker_filter).await?;
     let isins: Vec<_> = grouped_trades
         .iter()
         .map(|group| group.isin.clone())
         .collect();
-    let prices = batch_get_instrument_prices(&isins).await?;
-    let names = batch_get_instrument_names(&isins).await?;
+    let prices = batch_get_instrument_prices(user_id, &isins).await?;
+    let names = batch_get_instrument_names(user_id, &isins).await?;
     let price_map: HashMap<_, _> = isins.iter().zip(prices.iter()).collect();
     let name_map: HashMap<_, _> = isins.iter().zip(names.iter()).collect();
     let mut stock_split_information = get_stock_splits().await?;
@@ -349,19 +353,20 @@ fn validate_sale_inventory(trade: &Trade, units: Decimal, inventory: Decimal) ->
 }
 
 /// Per-ISIN costs for portfolio snapshots, without prices, rounding or benchmark IO.
-pub(crate) async fn security_costs(as_of: DateTime<Utc>) -> anyhow::Result<Vec<SecurityCost>> {
-    let (_, costs, _) = load_security_accounting(None, None, as_of).await?;
+pub(crate) async fn security_costs(user_id: &UserId, as_of: DateTime<Utc>) -> anyhow::Result<Vec<SecurityCost>> {
+    let (_, costs, _) = load_security_accounting(user_id, None, None, as_of).await?;
     Ok(costs)
 }
 
 async fn load_security_accounting(
+    user_id: &UserId,
     isin_filter: Option<&str>,
     broker_filter: Option<&str>,
     as_of: DateTime<Utc>,
 ) -> anyhow::Result<(Vec<TradeGroup>, Vec<SecurityCost>, Vec<StockSplit>)> {
-    let groups = load_trade_groups(isin_filter, broker_filter).await?;
+    let groups = load_trade_groups(user_id, isin_filter, broker_filter).await?;
     // get_dividends uses the same listing-change normalization as load_trade_groups.
-    let dividends = get_dividends(QueryFilter {
+    let dividends = get_dividends(user_id, QueryFilter {
         isin: isin_filter.map(str::to_owned),
         broker: broker_filter.map(str::to_owned),
         until_date: Some(as_of),

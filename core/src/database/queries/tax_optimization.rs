@@ -6,16 +6,16 @@ use crate::{
 };
 
 /// Check if a tax optimization with the given hash already exists
-pub async fn tax_optimization_exists_by_hash(hash: &str) -> anyhow::Result<bool> {
+pub async fn tax_optimization_exists_by_hash(user_id: &crate::database::models::auth::UserId, hash: &str) -> anyhow::Result<bool> {
     let client = db_client().await?;
     let row = client
-        .query_opt("SELECT 1 FROM tax_optimizations WHERE id = $1", &[&hash])
+        .query_opt("SELECT 1 FROM tax_optimizations WHERE user_id = $1 AND id = $2", &[&user_id.as_str(), &hash])
         .await?;
     Ok(row.is_some())
 }
 
 /// Add tax optimization to database, returns true if inserted, false if duplicate
-pub async fn add_tax_optimization_to_db(tax_optimization: TaxOptimization) -> anyhow::Result<bool> {
+pub async fn add_tax_optimization_to_db(user_id: &crate::database::models::auth::UserId, tax_optimization: TaxOptimization) -> anyhow::Result<bool> {
     let client = db_client().await?;
 
     let hash = hash_string(
@@ -31,14 +31,15 @@ pub async fn add_tax_optimization_to_db(tax_optimization: TaxOptimization) -> an
     );
 
     // Check if already exists
-    if tax_optimization_exists_by_hash(&hash).await? {
+    if tax_optimization_exists_by_hash(user_id, &hash).await? {
         return Ok(false);
     }
 
     let result = client
         .execute(
-            "INSERT INTO tax_optimizations (id, date, broker, amount, currency, amount_eur, tax_type, description, transaction_id) values ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT(id) DO NOTHING",
+            "INSERT INTO tax_optimizations (user_id, id, date, broker, amount, currency, amount_eur, tax_type, description, transaction_id) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT(user_id,id) DO NOTHING",
             &[
+                &user_id.as_str(),
                 &hash,
                 &tax_optimization.date,
                 &tax_optimization.broker,
@@ -56,7 +57,7 @@ pub async fn add_tax_optimization_to_db(tax_optimization: TaxOptimization) -> an
     Ok(result == 1)
 }
 
-pub async fn get_tax_optimizations_by_date_range(
+pub async fn get_tax_optimizations_by_date_range(user_id: &crate::database::models::auth::UserId, 
     start_date: DateTime<Utc>,
     end_date: DateTime<Utc>,
 ) -> anyhow::Result<Vec<TaxOptimization>> {
@@ -64,8 +65,8 @@ pub async fn get_tax_optimizations_by_date_range(
 
     let rows = client
         .query(
-            "SELECT date, broker, amount, currency, amount_eur, tax_type, description, transaction_id FROM tax_optimizations WHERE date >= $1 AND date <= $2",
-            &[&start_date, &end_date],
+            "SELECT date, broker, amount, currency, amount_eur, tax_type, description, transaction_id FROM tax_optimizations WHERE user_id = $1 AND date >= $2 AND date <= $3",
+            &[&user_id.as_str(), &start_date, &end_date],
         )
         .await?;
 

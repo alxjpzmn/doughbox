@@ -20,7 +20,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { BASE_URL, fetcher } from "@/lib/http";
+import { BASE_URL, apiFetch, fetcher, getPrivateRequestEpoch, isCurrentPrivateRequestEpoch, type HttpError } from "@/lib/http";
 
 const ALL_BROKERS = "all";
 
@@ -29,14 +29,16 @@ const Positions = () => {
   const [broker, setBroker] = useState(ALL_BROKERS);
   const { data: brokers } = useSwr<string[]>(`${BASE_URL}/brokers`, fetcher);
   const date = format(selectedDate, "yyyy-LL-dd");
-  const { data, isLoading, error } = useSwr<PositionWithName[]>(
+  const { data, isLoading, error } = useSwr<PositionWithName[], HttpError>(
     ["positions", date, broker],
     async () => {
+      const epoch = getPrivateRequestEpoch();
       const params = new URLSearchParams({ date });
       if (broker !== ALL_BROKERS) params.set("broker", broker);
-      const res = await fetch(`${BASE_URL}/positions?${params.toString()}`, { cache: "no-store" });
-      if (!res.ok) throw new Error("Imported holdings could not be loaded.");
-      return res.json();
+      const response = await apiFetch(`${BASE_URL}/positions?${params.toString()}`, { cache: "no-store" });
+      const positions: PositionWithName[] = await response.json();
+      if (!isCurrentPrivateRequestEpoch(epoch)) throw new DOMException("Authentication changed.", "AbortError");
+      return positions;
     },
   );
 

@@ -1,8 +1,9 @@
-use axum::{extract::{rejection::JsonRejection, Query}, http::StatusCode, response::IntoResponse, Json};
+use axum::{extract::{rejection::JsonRejection, Query}, http::StatusCode, response::IntoResponse, Extension, Json};
 use serde::Deserialize;
 use tokio::fs;
 use utoipa::IntoParams;
 
+use crate::database::models::auth::CurrentUser;
 use crate::{
     database::queries::{
         composite::{events_exist, EventFilter},
@@ -11,7 +12,8 @@ use crate::{
     services::{
         calculations::{self, CalculationSchedulerSettings, CalculationStatus},
         performance::compute_performance,
-        shared::{constants::OUT_DIR, env::is_running_in_docker},
+        files::user_output_dir,
+        shared::env::is_running_in_docker,
     },
 };
 
@@ -38,9 +40,10 @@ pub struct PerformanceQuery {
     security(("api_token" = []))
 )]
 pub async fn live_performance(
+    Extension(current): Extension<CurrentUser>,
     Query(query): Query<PerformanceQuery>,
 ) -> Result<impl IntoResponse, ErrorResponse> {
-    let performance = compute_performance(query.isin.as_deref(), query.broker.as_deref())
+    let performance = compute_performance(&current.id, query.isin.as_deref(), query.broker.as_deref())
         .await
         .map_err(|error| security_accounting_error(error, "PerformanceComputationError"))?;
     json_response(&performance).map_err(|status| internal_error("SerializationError", status))
@@ -51,15 +54,15 @@ pub async fn live_performance(
     path = "/api/performance_overview",
     tag = "performance",
     responses(
-        (status = 200, description = "Precomputed economic EUR security performance from output/performance.json, including recorded gross dividends; realized remains trading-only. Regenerate with `doughbox performance` after changing income records.", body = crate::services::performance::PortfolioPerformance),
+        (status = 200, description = "Precomputed economic EUR security performance from the current user's saved report, including recorded gross dividends; realized remains trading-only. Regenerate with Refresh performance or `doughbox --user <username> performance` after changing income records.", body = crate::services::performance::PortfolioPerformance),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "No saved performance; press Refresh performance or run `doughbox performance`", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     ),
     security(("api_token" = []))
 )]
-pub async fn performance_overview() -> anyhow::Result<impl IntoResponse, ErrorResponse> {
-    let path = format!("{}/performance.json", OUT_DIR);
+pub async fn performance_overview(Extension(current): Extension<CurrentUser>) -> anyhow::Result<impl IntoResponse, ErrorResponse> {
+    let path = user_output_dir(&current.id).join("performance.json");
     match fs::read_to_string(&path).await {
         Ok(data) => {
             let mut headers = axum::http::HeaderMap::new();
@@ -67,7 +70,7 @@ pub async fn performance_overview() -> anyhow::Result<impl IntoResponse, ErrorRe
             Ok((StatusCode::OK, headers, data))
         }
         Err(err) => {
-            let events_check_result = events_exist(EventFilter::All).await.map_err(|e| {
+            let events_check_result = events_exist(&current.id, EventFilter::All).await.map_err(|e| {
                 internal_error(
                     "EventsExistError",
                     format!("Error while checking if events exist: {e}"),
@@ -82,7 +85,7 @@ pub async fn performance_overview() -> anyhow::Result<impl IntoResponse, ErrorRe
                 Err(ErrorResponse::new(
                     StatusCode::NOT_FOUND,
                     "FileNotFound",
-                    &format!("The file '{path}' could not be found."),
+                    "No saved performance report exists. Choose Refresh performance to calculate it.",
                     Some(error_details),
                 ))
             } else {
@@ -108,8 +111,8 @@ pub async fn performance_overview() -> anyhow::Result<impl IntoResponse, ErrorRe
     ),
     security(("api_token" = []))
 )]
-pub async fn past_performance() -> anyhow::Result<impl IntoResponse, StatusCode> {
-    let performance = get_performance_signals()
+pub async fn past_performance(Extension(current): Extension<CurrentUser>) -> anyhow::Result<impl IntoResponse, StatusCode> {
+    let performance = get_performance_signals(&current.id)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     json_response(&performance)
@@ -124,8 +127,8 @@ pub async fn past_performance() -> anyhow::Result<impl IntoResponse, StatusCode>
     ),
     security(("api_token" = []))
 )]
-pub async fn get_performance_status() -> Result<impl IntoResponse, ErrorResponse> {
-    let status = calculations::status("performance").await
+pub async fn get_performance_status(Extension(current): Extension<CurrentUser>) -> Result<impl IntoResponse, ErrorResponse> {
+    let status = calculations::status(&current.id, "performance").await
         .map_err(|_| internal_error("PerformanceRefreshStatusError", "Could not read performance refresh status"))?;
     Ok(Json(status))
 }
@@ -139,8 +142,8 @@ pub async fn get_performance_status() -> Result<impl IntoResponse, ErrorResponse
     ),
     security(("api_token" = []))
 )]
-pub async fn refresh_performance() -> Result<impl IntoResponse, ErrorResponse> {
-    let status = calculations::refresh("performance", None, None).await
+pub async fn refresh_performance(Extension(current): Extension<CurrentUser>) -> Result<impl IntoResponse, ErrorResponse> {
+    let status = calculations::refresh(&current.id, "performance", None, None).await
         .map_err(|_| internal_error("PerformanceRefreshError", "Could not start performance refresh"))?;
     Ok((StatusCode::ACCEPTED, Json(status)))
 }
@@ -159,6 +162,7 @@ pub async fn refresh_performance() -> Result<impl IntoResponse, ErrorResponse> {
     security(("api_token" = []))
 )]
 pub async fn save_performance_scheduler(
+    Extension(current): Extension<CurrentUser>,
     payload: Result<Json<CalculationSchedulerSettings>, JsonRejection>,
 ) -> Result<impl IntoResponse, ErrorResponse> {
     let Json(settings) = payload.map_err(|rejection| {
@@ -169,7 +173,7 @@ pub async fn save_performance_scheduler(
             None,
         )
     })?;
-    let status = calculations::save_schedule("performance", settings)
+    let status = calculations::save_schedule(&current.id, "performance", settings)
         .await
         .map_err(|_| internal_error("PerformanceScheduleError", "Could not save performance schedule"))?;
     Ok(Json(status))
@@ -197,7 +201,14 @@ mod tests {
             }
             let request = request.body(Body::from(body)).unwrap();
             let payload = Json::<CalculationSchedulerSettings>::from_request(request, &()).await;
-            let result = save_performance_scheduler(payload).await;
+            let current = CurrentUser {
+                id: crate::database::models::auth::UserId::new(),
+                username: "performance-test".into(),
+                role: crate::database::models::auth::Role::Member,
+                auth_version: 1,
+                credential: crate::database::models::auth::CredentialKind::BrowserSession,
+            };
+            let result = save_performance_scheduler(Extension(current), payload).await;
             assert_eq!(result.err().unwrap().into_response().status(), expected);
         }
     }

@@ -1,8 +1,9 @@
-use axum::{extract::Query, http::StatusCode, response::IntoResponse};
+use axum::{extract::Query, http::StatusCode, response::IntoResponse, Extension};
 use chrono::{Datelike, Utc};
 use serde::Deserialize;
 use utoipa::IntoParams;
 
+use crate::database::models::auth::CurrentUser;
 use crate::{
     database::queries::composite::{events_exist, EventFilter},
     services::{
@@ -26,12 +27,12 @@ use crate::api::errors::{ErrorDetails, ErrorResponse};
     ),
     security(("api_token" = []))
 )]
-pub async fn portfolio() -> Result<impl IntoResponse, ErrorResponse> {
-    match get_portfolio_overview().await {
+pub async fn portfolio(Extension(current): Extension<CurrentUser>) -> Result<impl IntoResponse, ErrorResponse> {
+    match get_portfolio_overview(&current.id).await {
         Ok(portfolio_overview) => {
             if portfolio_overview.positions.is_empty() {
                 let events_check_result =
-                    events_exist(EventFilter::All).await.map_err(|e| {
+                    events_exist(&current.id, EventFilter::All).await.map_err(|e| {
                         internal_error(
                             "EventsExistError",
                             format!("Error while checking if events exist: {e}"),
@@ -54,7 +55,7 @@ pub async fn portfolio() -> Result<impl IntoResponse, ErrorResponse> {
             Ok(json_response(&portfolio_overview))
         }
         Err(_err) => {
-            let events_check_result = events_exist(EventFilter::TradesOnly).await.map_err(|e| {
+            let events_check_result = events_exist(&current.id, EventFilter::TradesOnly).await.map_err(|e| {
                 internal_error(
                     "EventsExistError",
                     format!("Error while checking if events exist: {e}"),
@@ -97,6 +98,7 @@ pub struct PositionsQuery {
     security(("api_token" = []))
 )]
 pub async fn positions(
+    Extension(current): Extension<CurrentUser>,
     Query(query): Query<PositionsQuery>,
 ) -> anyhow::Result<impl IntoResponse, StatusCode> {
     let date = query.date.unwrap_or_else(|| {
@@ -106,6 +108,7 @@ pub async fn positions(
     let timestamp = parse_timestamp(format!("{date} 19:00:00").as_str())
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let positions = get_positions_overview(
+        &current.id,
         Some(timestamp),
         query.isin.as_deref(),
         query.broker.as_deref(),

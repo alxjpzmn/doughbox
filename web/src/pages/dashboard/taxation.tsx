@@ -1,5 +1,5 @@
 import useSwr from "swr";
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useRef, useState, useMemo } from "react";
 import { format } from "date-fns";
 import { AnnualTaxableAmounts, SecWac, TaxationReport, TransactionTaxImpact, EventType } from "@/types/core";
 import EmptyState, { EmptyStateVariants } from "@/components/composite/empty-state";
@@ -19,7 +19,7 @@ import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { Calendar } from "@/components/ui/calendar";
 import { CalendarIcon, XIcon, DownloadSimpleIcon, ArrowDownIcon, ArrowUpIcon, ArrowsDownUpIcon } from "@phosphor-icons/react";
-import { BASE_URL, fetcher } from "@/lib/http";
+import { BASE_URL, apiFetch, fetcher, getPrivateRequestEpoch, isCurrentPrivateRequestEpoch, type HttpError } from "@/lib/http";
 import { formatCurrency, colorMetric } from "@/lib/utils";
 
 const labelMap: Record<keyof AnnualTaxableAmounts, string> = {
@@ -94,15 +94,20 @@ const eventTypeLabels: Record<EventType, string> = {
   [EventType.Valuation]: "Valuation",
 };
 
-const TaxationCacheError = ({ error }: { error: { status?: number; details?: { events_present?: boolean; in_docker?: boolean } } }) => (
-  <div className="mb-6 space-y-3">
-    <p role="alert" className="text-sm text-muted-foreground">
-      {error.status === 404 ? "No saved taxation results exist for this exact date range." : "Saved taxation results could not be loaded for this date range."}
-      {" "}Press Recalculate taxation above to save the selected range, then view its summary, transactions and detailed export. Changing dates never calculates automatically.
-    </p>
-    {error.details?.events_present === false && <EmptyState variant={EmptyStateVariants.WithCliInstructionImport} docker={error.details?.in_docker} />}
-  </div>
-);
+const TaxationCacheError = ({ error }: { error: HttpError }) => {
+  const details = error.details && typeof error.details === "object" ? error.details : null;
+  const eventsAbsent = details && "events_present" in details && details.events_present === false;
+  const inDocker = !!details && "in_docker" in details && details.in_docker === true;
+  return (
+    <div className="mb-6 space-y-3">
+      <p role="alert" className="text-sm text-muted-foreground">
+        {error.status === 404 ? "No saved taxation results exist for this exact date range." : "Saved taxation results could not be loaded for this date range."}
+        {" "}Press Recalculate taxation above to save the selected range, then view its summary, transactions and detailed export. Changing dates never calculates automatically.
+      </p>
+      {eventsAbsent && <EmptyState variant={EmptyStateVariants.WithCliInstructionImport} docker={inDocker} />}
+    </div>
+  );
+};
 
 const Taxation = () => {
   const [fromDate, setFromDate] = useState<Date | undefined>(undefined);
@@ -110,6 +115,11 @@ const Taxation = () => {
   const [activeTab, setActiveTab] = useState<"summary" | "transactions">("summary");
   const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState<{ query: string; message: string } | null>(null);
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
 
   const queryParams = new URLSearchParams();
   if (fromDate) queryParams.set("from_date", format(fromDate, "yyyy-LL-dd"));
@@ -119,12 +129,12 @@ const Taxation = () => {
   const summaryUrl = queryString ? `${BASE_URL}/taxation?${queryString}` : `${BASE_URL}/taxation`;
   const transactionsUrl = queryString ? `${BASE_URL}/taxation/transactions?${queryString}` : `${BASE_URL}/taxation/transactions`;
 
-  const { data, error, isLoading } = useSwr<TaxationReport>(summaryUrl, fetcher);
+  const { data, error, isLoading } = useSwr<TaxationReport, HttpError>(summaryUrl, fetcher);
   const {
     data: txData,
     error: txError,
     isLoading: txIsLoading,
-  } = useSwr<TransactionTaxImpact[]>(transactionsUrl, fetcher);
+  } = useSwr<TransactionTaxImpact[], HttpError>(transactionsUrl, fetcher);
 
   useEffect(() => {
     setDownloadError(null);
@@ -133,20 +143,14 @@ const Taxation = () => {
   const isFiltered = fromDate !== undefined || untilDate !== undefined;
 
   const downloadDetailed = async () => {
+    const epoch = getPrivateRequestEpoch();
+    const current = () => mounted.current && isCurrentPrivateRequestEpoch(epoch);
     setDownloading(true);
     setDownloadError(null);
     try {
-      const response = await fetch(`${BASE_URL}/taxation/detailed${queryString ? `?${queryString}` : ""}`);
-      if (!response.ok) {
-        setDownloadError({
-          query: queryString,
-          message: response.status === 404
-            ? "No saved detailed export exists for this exact range. Press Recalculate taxation above, wait for it to finish, then export again."
-            : "The saved detailed export could not be downloaded. Check your connection and sign-in, then try again. Downloading never recalculates taxation.",
-        });
-        return;
-      }
+      const response = await apiFetch(`${BASE_URL}/taxation/detailed${queryString ? `?${queryString}` : ""}`, { cache: "no-store" });
       const blob = await response.blob();
+      if (!current()) return;
       const downloadUrl = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = downloadUrl;
@@ -155,10 +159,17 @@ const Taxation = () => {
       a.click();
       document.body.removeChild(a);
       window.URL.revokeObjectURL(downloadUrl);
-    } catch {
-      setDownloadError({ query: queryString, message: "The saved detailed export could not be downloaded. Check your connection and try again. Use Recalculate taxation above if this range has not been saved." });
+    } catch (failure: unknown) {
+      if (!current() || (failure instanceof Error && failure.name === "AbortError")) return;
+      const missing = !!failure && typeof failure === "object" && "status" in failure && failure.status === 404;
+      const message = missing
+        ? "No saved detailed export exists for this exact range. Press Recalculate taxation above, wait for it to finish, then export again."
+        : failure && typeof failure === "object" && "message" in failure && typeof failure.message === "string"
+          ? failure.message
+          : "The saved detailed export could not be downloaded. Check your connection and try again. Use Recalculate taxation above if this range has not been saved.";
+      setDownloadError({ query: queryString, message });
     } finally {
-      setDownloading(false);
+      if (current()) setDownloading(false);
     }
   };
 

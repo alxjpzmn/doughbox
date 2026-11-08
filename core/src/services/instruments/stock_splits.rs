@@ -6,7 +6,6 @@ use rust_decimal::Decimal;
 
 use crate::{
     database::queries::{
-        composite::get_used_isins,
         stock_split::{add_stock_split_to_db, get_stock_splits},
     },
     services::market_data::{openfigi::get_symbol_from_isin, polygon::get_stock_split_information},
@@ -21,12 +20,11 @@ pub struct StockSplit {
     pub isin: String,
 }
 
-pub async fn update_stock_splits() -> anyhow::Result<()> {
+pub async fn update_stock_splits(isins: &[String]) -> anyhow::Result<()> {
     let existing_splits = get_stock_splits().await?;
-    let isins = get_used_isins().await?;
     for isin in isins {
-        let symbol = get_symbol_from_isin(&isin, None).await?;
-        let split_events = get_stock_split_information(&symbol, &isin).await?;
+        let symbol = get_symbol_from_isin(isin, None).await?;
+        let split_events = get_stock_split_information(&symbol, isin).await?;
         for split_event in split_events {
             let split_event_already_stored = !existing_splits
                 .clone()

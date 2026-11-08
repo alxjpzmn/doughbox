@@ -1,7 +1,8 @@
-use axum::{extract::Query, response::IntoResponse};
+use axum::{extract::Query, response::IntoResponse, Extension};
 use serde::Deserialize;
 use utoipa::IntoParams;
 
+use crate::database::models::auth::CurrentUser;
 use crate::database::queries::{
     dividend::get_dividends, fx_conversion::get_fx_conversions, interest::get_interest,
     trade::get_trades, QueryFilter,
@@ -78,8 +79,8 @@ pub struct BuyInQuery {
     ),
     security(("api_token" = []))
 )]
-pub async fn trades(Query(query): Query<TradeQuery>) -> Result<impl IntoResponse, ErrorResponse> {
-    let trades = get_trades(query.into_filter()?)
+pub async fn trades(Extension(current): Extension<CurrentUser>, Query(query): Query<TradeQuery>) -> Result<impl IntoResponse, ErrorResponse> {
+    let trades = get_trades(&current.id, query.into_filter()?)
         .await
         .map_err(|e| internal_error("TradeRetrievalError", e))?;
     json_response(&trades).map_err(|status| internal_error("SerializationError", status))
@@ -98,8 +99,8 @@ pub async fn trades(Query(query): Query<TradeQuery>) -> Result<impl IntoResponse
     ),
     security(("api_token" = []))
 )]
-pub async fn buy_ins(Query(query): Query<BuyInQuery>) -> Result<impl IntoResponse, ErrorResponse> {
-    let buy_ins = get_buy_ins(query.isin.as_deref(), query.broker.as_deref())
+pub async fn buy_ins(Extension(current): Extension<CurrentUser>, Query(query): Query<BuyInQuery>) -> Result<impl IntoResponse, ErrorResponse> {
+    let buy_ins = get_buy_ins(&current.id, query.isin.as_deref(), query.broker.as_deref())
         .await
         .map_err(|error| security_accounting_error(error, "BuyInRetrievalError"))?;
     json_response(&buy_ins).map_err(|status| internal_error("SerializationError", status))
@@ -119,9 +120,10 @@ pub async fn buy_ins(Query(query): Query<BuyInQuery>) -> Result<impl IntoRespons
     security(("api_token" = []))
 )]
 pub async fn dividends(
+    Extension(current): Extension<CurrentUser>,
     Query(query): Query<ResourceQuery>,
 ) -> Result<impl IntoResponse, ErrorResponse> {
-    let dividends = get_dividends(query.into_filter()?)
+    let dividends = get_dividends(&current.id, query.into_filter()?)
         .await
         .map_err(|e| internal_error("DividendRetrievalError", e))?;
     json_response(&dividends).map_err(|status| internal_error("SerializationError", status))
@@ -141,9 +143,10 @@ pub async fn dividends(
     security(("api_token" = []))
 )]
 pub async fn interest(
+    Extension(current): Extension<CurrentUser>,
     Query(query): Query<ResourceQuery>,
 ) -> Result<impl IntoResponse, ErrorResponse> {
-    let interest = get_interest(query.into_filter()?)
+    let interest = get_interest(&current.id, query.into_filter()?)
         .await
         .map_err(|e| internal_error("InterestRetrievalError", e))?;
     json_response(&interest).map_err(|status| internal_error("SerializationError", status))
@@ -163,9 +166,10 @@ pub async fn interest(
     security(("api_token" = []))
 )]
 pub async fn fx_conversions(
+    Extension(current): Extension<CurrentUser>,
     Query(query): Query<ResourceQuery>,
 ) -> Result<impl IntoResponse, ErrorResponse> {
-    let conversions = get_fx_conversions(query.into_filter()?)
+    let conversions = get_fx_conversions(&current.id, query.into_filter()?)
         .await
         .map_err(|e| internal_error("FxConversionRetrievalError", e))?;
     json_response(&conversions).map_err(|status| internal_error("SerializationError", status))

@@ -1,4 +1,5 @@
 pub mod application_settings;
+pub mod auth;
 pub mod asset;
 pub mod background_job;
 pub mod calculation;

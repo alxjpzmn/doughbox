@@ -11,7 +11,8 @@ use tokio_postgres::Client;
 
 use crate::database::{
     db_client,
-    queries::{performance::add_performance_signal_to_db, telegram_schedule},
+    models::auth::UserId,
+    queries::{auth, performance::add_performance_signal_to_db, telegram_schedule},
 };
 use super::{notifications, portfolio::get_portfolio_overview, portfolio_reports::{complete_snapshot, send_report}};
 
@@ -64,32 +65,42 @@ async fn scheduler(mut stop: watch::Receiver<bool>) {
 
 async fn schedule_report(workers: &mut JoinSet<()>) -> anyhow::Result<()> {
     let db = db_client().await?;
-    telegram_schedule::recover_interrupted(&db).await?;
-    let schedule = telegram_schedule::read(&db).await?;
-    if !schedule.enabled
-        || schedule.next_report_at.is_none_or(|next| next > Utc::now())
-        || !notifications::configured()
-    {
-        return Ok(());
-    }
-    if !telegram_schedule::try_lock(&db).await? {
-        return Ok(());
-    }
-    if telegram_schedule::start_scheduled(&db, Utc::now()).await? {
-        workers.spawn(run_report(db));
-    } else {
-        telegram_schedule::unlock(&db).await?;
+    for user_id in auth::active_users(&db).await? {
+        if schedule_user(user_id, workers).await.is_err() {
+            log::error!("Could not schedule or recover a user's Telegram report; checking again next minute");
+        }
     }
     Ok(())
 }
 
-async fn run_report(db: Client) {
+async fn schedule_user(user_id: UserId, workers: &mut JoinSet<()>) -> anyhow::Result<()> {
+    let db = db_client().await?;
+    telegram_schedule::recover_interrupted(&user_id, &db).await?;
+    let schedule = telegram_schedule::read(&user_id, &db).await?;
+    if !schedule.enabled
+        || schedule.next_report_at.is_none_or(|next| next > Utc::now())
+        || !notifications::configured(&user_id).await?
+    {
+        return Ok(());
+    }
+    if !telegram_schedule::try_lock(&user_id, &db).await? {
+        return Ok(());
+    }
+    if telegram_schedule::start_scheduled(&user_id, &db, Utc::now()).await? {
+        workers.spawn(run_report(user_id, db));
+    } else {
+        telegram_schedule::unlock(&user_id, &db).await?;
+    }
+    Ok(())
+}
+
+async fn run_report(user_id: UserId, db: Client) {
     let report = AssertUnwindSafe(async {
-        let overview = get_portfolio_overview().await
+        let overview = get_portfolio_overview(&user_id).await
             .map_err(|_| "Portfolio report generation failed. Check database and market data availability.")?;
         let snapshot = complete_snapshot(&overview)
             .map_err(|_| "Portfolio valuation or returns are incomplete. No report was sent or snapshot saved.")?;
-        send_report(&snapshot).await
+        send_report(&user_id, &snapshot).await
             .map_err(|_| "Telegram delivery failed. Check server credentials, chat access, and upstream availability.")?;
         Ok::<_, &'static str>(snapshot)
     }).catch_unwind();
@@ -118,15 +129,15 @@ async fn run_report(db: Client) {
     }
     // Record actual delivery first. A later snapshot write failure must not turn
     // a confirmed Telegram send into a failure or cause the report to be resent.
-    if telegram_schedule::finish(&db, error).await.is_err() {
+    if telegram_schedule::finish(&user_id, &db, error).await.is_err() {
         log::error!("Could not persist Telegram delivery outcome; status will recover as interrupted");
     }
     if let Some(snapshot) = snapshot {
-        if add_performance_signal_to_db(snapshot).await.is_err() {
+        if add_performance_signal_to_db(&user_id, snapshot).await.is_err() {
             log::error!("Telegram report was delivered but its performance snapshot could not be saved");
         }
     }
-    if telegram_schedule::unlock(&db).await.is_err() {
+    if telegram_schedule::unlock(&user_id, &db).await.is_err() {
         log::error!("Could not release Telegram report lock");
     }
 }

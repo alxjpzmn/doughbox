@@ -13,7 +13,8 @@ use utoipa::ToSchema;
 
 use crate::database::{
     db_client,
-    queries::{calculation, performance::add_performance_signal_to_db},
+    models::auth::UserId,
+    queries::{auth, calculation, performance::add_performance_signal_to_db},
 };
 
 use super::{
@@ -70,15 +71,17 @@ pub struct CalculationStatus {
 
 /// Read persisted metadata and recover interrupted runs, without calculating or
 /// exporting anything. A live worker's advisory lock prevents false recovery.
-pub async fn status(source: &str) -> anyhow::Result<CalculationStatus> {
-    calculation::recover_interrupted(&mut db_client().await?, source).await
+pub async fn status(user_id: &UserId, source: &str) -> anyhow::Result<CalculationStatus> {
+    calculation::recover_interrupted(user_id, &mut db_client().await?, source).await
 }
 
 pub async fn save_schedule(
+    user_id: &UserId,
     source: &str,
     settings: CalculationSchedulerSettings,
 ) -> anyhow::Result<CalculationStatus> {
     calculation::update_schedule(
+        user_id,
         &db_client().await?,
         source,
         settings.enabled,
@@ -123,10 +126,17 @@ async fn scheduler(mut stop: watch::Receiver<bool>) {
             biased;
             _ = stop.changed() => break,
             _ = tick.tick() => {
-                for source in SOURCES {
-                    if schedule_source(source, &mut workers).await.is_err() {
-                        log::error!("Could not schedule or recover calculation for {source}; retrying next tick");
+                match active_users().await {
+                    Ok(users) => {
+                        for user_id in users {
+                            for source in SOURCES {
+                                if schedule_source(&user_id, source, &mut workers).await.is_err() {
+                                    log::error!("Could not schedule or recover calculation for {source}; retrying next tick");
+                                }
+                            }
+                        }
                     }
+                    Err(_) => log::error!("Could not enumerate active calculation users; retrying next tick"),
                 }
             }
             result = workers.join_next(), if !workers.is_empty() => {
@@ -141,18 +151,26 @@ async fn scheduler(mut stop: watch::Receiver<bool>) {
     while workers.join_next().await.is_some() {}
 }
 
-async fn schedule_source(source: &str, workers: &mut JoinSet<()>) -> anyhow::Result<()> {
+async fn active_users() -> anyhow::Result<Vec<UserId>> {
+    Ok(auth::active_users(&db_client().await?).await?)
+}
+
+async fn schedule_source(user_id: &UserId, source: &str, workers: &mut JoinSet<()>) -> anyhow::Result<()> {
     let mut db = db_client().await?;
     // Also recover interrupted jobs while paused, without doing financial work.
-    let status = calculation::recover_interrupted(&mut db, source).await?;
+    let status = calculation::recover_interrupted(user_id, &mut db, source).await?;
     let now = Utc::now();
     if status.schedule_enabled
         && status.next_refresh_at.is_some_and(|next| next <= now)
-        && calculation::try_claim_scheduled(&mut db, source, now).await?
+        && calculation::try_claim_scheduled(user_id, &mut db, source, now).await?
     {
         // Scheduled taxation always covers all history; manual UI ranges never
         // leak into scheduled work. Performance uses the same guarded pipeline.
-        workers.spawn(run_calculation(db, source.to_owned(), None, None));
+        let user_id = user_id.clone();
+        let source = source.to_owned();
+        workers.spawn(async move {
+            run_calculation(&user_id, db, source, None, None).await;
+        });
     }
     Ok(())
 }
@@ -161,6 +179,7 @@ async fn schedule_source(source: &str, workers: &mut JoinSet<()>) -> anyhow::Res
 /// Claiming is committed before spawn, so API replicas coalesce without
 /// changing the active calculation's range or the persisted schedule.
 pub async fn refresh(
+    user_id: &UserId,
     source: &str,
     from: Option<DateTime<Utc>>,
     until: Option<DateTime<Utc>>,
@@ -175,6 +194,7 @@ pub async fn refresh(
     );
     let mut db = db_client().await?;
     let (claimed, status) = calculation::try_claim(
+        user_id,
         &mut db,
         source,
         from.map(|date| date.date_naive()),
@@ -183,42 +203,45 @@ pub async fn refresh(
     .await?;
     if claimed {
         let source = source.to_owned();
+        let user_id = user_id.clone();
         tokio::spawn(async move {
-            run_calculation(db, source, from, until).await;
+            run_calculation(&user_id, db, source, from, until).await;
         });
     }
     Ok(status)
 }
 
 async fn calculate(
+    user_id: &UserId,
     source: &str,
     from: Option<DateTime<Utc>>,
     until: Option<DateTime<Utc>>,
 ) -> anyhow::Result<()> {
     match source {
         "performance" => {
-            let overview = get_portfolio_overview().await?;
+            let overview = get_portfolio_overview(user_id).await?;
             // Validate all security/custom-asset valuations and cost data before
             // exporting results or saving an authoritative history snapshot.
             let snapshot = complete_snapshot(&overview)?;
-            get_performance().await?;
+            get_performance(user_id).await?;
             // complete_snapshot includes per-asset components and gross invested
             // amounts, keeping the new history point filterable by asset/class.
-            add_performance_signal_to_db(snapshot).await?;
+            add_performance_signal_to_db(user_id, snapshot).await?;
             Ok(())
         }
-        "taxation" => export_detailed_capital_gains_tax_report(from, until).await,
+        "taxation" => export_detailed_capital_gains_tax_report(user_id, from, until).await,
         _ => unreachable!("validated before starting worker"),
     }
 }
 
 async fn run_calculation(
+    user_id: &UserId,
     db: Client,
     source: String,
     from: Option<DateTime<Utc>>,
     until: Option<DateTime<Utc>>,
 ) {
-    let calculation = AssertUnwindSafe(calculate(&source, from, until)).catch_unwind();
+    let calculation = AssertUnwindSafe(calculate(user_id, &source, from, until)).catch_unwind();
     tokio::pin!(calculation);
     let mut heartbeat = tokio::time::interval(Duration::from_secs(2));
     heartbeat.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -252,10 +275,10 @@ async fn run_calculation(
     if let Some(error) = error.as_deref() {
         log::warn!("{error}");
     }
-    if calculation::finish(&db, &source, error.as_deref()).await.is_err() {
+    if calculation::finish(user_id, &db, &source, error.as_deref()).await.is_err() {
         log::error!("Could not persist calculation outcome for {source}; status will recover as interrupted");
     }
-    if calculation::unlock(&db, &source).await.is_err() {
+    if calculation::unlock(user_id, &db, &source).await.is_err() {
         log::error!("Could not release calculation lock for {source}");
     }
 }

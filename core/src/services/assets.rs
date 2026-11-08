@@ -1,6 +1,21 @@
+//! Portfolio I/O carries an explicit owner; value-only ledger folds remain reusable.
+
 use anyhow::{bail, Context};
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
+
+use crate::database::models::auth::UserId;
+
+#[derive(Debug)]
+pub struct AssetNotFound(pub &'static str);
+
+impl std::fmt::Display for AssetNotFound {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{} not found", self.0)
+    }
+}
+
+impl std::error::Error for AssetNotFound {}
 
 use crate::{
     database::{
@@ -20,394 +35,354 @@ use crate::{
     services::market_data::fx_rates::convert_amount,
 };
 
-pub async fn create_asset(request: &CreateAssetRequest) -> anyhow::Result<Asset> {
-    request.validate()?;
-    asset_queries::create_asset(request).await
-}
+pub async fn create_asset(user_id: &UserId, request: &CreateAssetRequest) -> anyhow::Result<Asset> { request.validate()?;
+asset_queries::create_asset(user_id, request).await }
 
-pub async fn update_asset(asset_id: &str, request: &UpdateAssetRequest) -> anyhow::Result<Asset> {
-    let asset = require_asset(asset_id).await?;
-    request.validate_for(asset.asset_class)?;
+pub async fn update_asset(user_id: &UserId, asset_id: &str, request: &UpdateAssetRequest) -> anyhow::Result<Asset> { let asset = require_asset(user_id, asset_id).await?;
+request.validate_for(asset.asset_class)?;
 
-    if request.currency != asset.currency || request.unit_label != asset.unit_label {
-        let detail = asset_queries::get_asset_detail(asset_id)
-            .await?
-            .context("asset disappeared while being updated")?;
-        if detail_has_activity(&detail) {
-            if request.currency != asset.currency {
-                bail!("asset currency cannot change after activity has been recorded");
-            }
-            if request.unit_label != asset.unit_label {
-                bail!("asset unit label cannot change after activity has been recorded");
-            }
+if request.currency != asset.currency || request.unit_label != asset.unit_label {
+    let detail = asset_queries::get_asset_detail(user_id, asset_id)
+        .await?
+        .context("asset disappeared while being updated")?;
+    if detail_has_activity(&detail) {
+        if request.currency != asset.currency {
+            bail!("asset currency cannot change after activity has been recorded");
+        }
+        if request.unit_label != asset.unit_label {
+            bail!("asset unit label cannot change after activity has been recorded");
         }
     }
-
-    asset_queries::update_asset(asset_id, request)
-        .await?
-        .context("asset disappeared while being updated")
 }
 
-pub async fn list_assets(include_archived: bool) -> anyhow::Result<Vec<AssetListRecord>> {
-    asset_queries::list_assets(include_archived).await
-}
+asset_queries::update_asset(user_id, asset_id, request)
+    .await?
+    .context("asset disappeared while being updated") }
 
-pub async fn get_asset_detail(asset_id: &str) -> anyhow::Result<Option<AssetDetailRecord>> {
-    asset_queries::get_asset_detail(asset_id).await
-}
+pub async fn list_assets(user_id: &UserId, include_archived: bool) -> anyhow::Result<Vec<AssetListRecord>> { asset_queries::list_assets(user_id, include_archived).await }
 
-pub async fn archive_asset(asset_id: &str) -> anyhow::Result<Asset> {
-    let activity_revision = asset_queries::get_asset_activity_revision(asset_id)
-        .await?
-        .with_context(|| format!("asset not found: {asset_id}"))?;
-    let detail = asset_queries::get_asset_detail(asset_id)
-        .await?
-        .with_context(|| format!("asset not found: {asset_id}"))?;
-    let now = Utc::now();
-    if detail_has_future_activity(&detail, now) {
-        bail!("asset with future-dated activity cannot be archived");
+pub async fn get_asset_detail(user_id: &UserId, asset_id: &str) -> anyhow::Result<Option<AssetDetailRecord>> { asset_queries::get_asset_detail(user_id, asset_id).await }
+
+pub async fn archive_asset(user_id: &UserId, asset_id: &str) -> anyhow::Result<Asset> { let activity_revision = asset_queries::get_asset_activity_revision(user_id, asset_id)
+    .await?
+    .context(AssetNotFound("asset"))?;
+let detail = asset_queries::get_asset_detail(user_id, asset_id)
+    .await?
+    .context(AssetNotFound("asset"))?;
+let now = Utc::now();
+if detail_has_future_activity(&detail, now) {
+    bail!("asset with future-dated activity cannot be archived");
+}
+let holding = calculate_holding(detail, now).await?;
+if holding.units_or_balance != Decimal::ZERO {
+    bail!("asset must have a zero balance before it can be archived");
+}
+if let Some(asset) = asset_queries::archive_asset(user_id, asset_id, activity_revision).await? {
+    return Ok(asset);
+}
+if asset_queries::get_asset(user_id, asset_id).await?.is_none() {
+    bail!(AssetNotFound("asset"));
+}
+bail!("asset activity changed while it was being archived; try again") }
+
+pub async fn restore_asset(user_id: &UserId, asset_id: &str) -> anyhow::Result<Asset> { asset_queries::restore_asset(user_id, asset_id)
+    .await?
+    .context(AssetNotFound("asset")) }
+
+pub async fn create_asset_trade(user_id: &UserId, asset_id: &str,
+request: &CreateAssetTradeRequest,) -> anyhow::Result<AssetTrade> { let asset = require_active_asset(user_id, asset_id).await?;
+request.validate()?;
+ensure_trade_asset(&asset)?;
+ensure_currency(&asset, &request.currency)?;
+ensure_sell_inventory(user_id, asset_id,
+request.date,
+request.units,
+request.direction,
+None,)
+.await?;
+let eur_price_per_unit = resolve_eur(
+    request.price_per_unit,
+    request.eur_price_per_unit,
+    request.date,
+    &request.currency,
+)
+.await?;
+let fees_eur = resolve_trade_fees_eur(
+    request.fees,
+    request.price_per_unit,
+    request.eur_price_per_unit,
+    request.date,
+    &request.currency,
+)
+.await?;
+asset_queries::create_asset_trade(user_id, asset_id, request, eur_price_per_unit, fees_eur).await }
+
+pub async fn update_asset_trade(user_id: &UserId, asset_id: &str,
+trade_id: &str,
+request: &UpdateAssetTradeRequest,) -> anyhow::Result<Option<AssetTrade>> {
+    if !asset_queries::asset_trade_exists(user_id, asset_id, trade_id).await? {
+        return Ok(None);
     }
-    let holding = calculate_holding(detail, now).await?;
-    if holding.units_or_balance != Decimal::ZERO {
-        bail!("asset must have a zero balance before it can be archived");
+    let asset = require_active_asset(user_id, asset_id).await?;
+ request.validate()?;
+ensure_trade_asset(&asset)?;
+ensure_currency(&asset, &request.currency)?;
+ensure_sell_inventory(user_id, asset_id,
+request.date,
+request.units,
+request.direction,
+Some(trade_id),)
+.await?;
+let eur_price_per_unit = resolve_eur(
+    request.price_per_unit,
+    request.eur_price_per_unit,
+    request.date,
+    &request.currency,
+)
+.await?;
+let fees_eur = resolve_trade_fees_eur(
+    request.fees,
+    request.price_per_unit,
+    request.eur_price_per_unit,
+    request.date,
+    &request.currency,
+)
+.await?;
+asset_queries::update_asset_trade(user_id, asset_id, trade_id, request, eur_price_per_unit, fees_eur)
+    .await }
+
+pub async fn delete_asset_trade(user_id: &UserId, asset_id: &str, trade_id: &str) -> anyhow::Result<bool> {
+    if !asset_queries::asset_trade_exists(user_id, asset_id, trade_id).await? {
+        return Ok(false);
     }
-    if let Some(asset) = asset_queries::archive_asset(asset_id, activity_revision).await? {
-        return Ok(asset);
+ let asset = require_active_asset(user_id, asset_id).await?;
+ensure_trade_asset(&asset)?;
+asset_queries::delete_asset_trade(user_id, asset_id, trade_id).await }
+
+pub async fn create_asset_valuation(user_id: &UserId, asset_id: &str,
+request: &CreateAssetValuationRequest,) -> anyhow::Result<AssetValuation> { let asset = require_active_asset(user_id, asset_id).await?;
+request.validate()?;
+ensure_trade_asset(&asset)?;
+ensure_currency(&asset, &request.currency)?;
+let eur_price_per_unit = resolve_eur(
+    request.price_per_unit,
+    request.eur_price_per_unit,
+    request.date,
+    &request.currency,
+)
+.await?;
+asset_queries::create_asset_valuation(user_id, asset_id, request, eur_price_per_unit).await }
+
+pub async fn update_asset_valuation(user_id: &UserId, asset_id: &str,
+valuation_id: &str,
+request: &UpdateAssetValuationRequest,) -> anyhow::Result<Option<AssetValuation>> {
+    if !asset_queries::manual_asset_valuation_exists(user_id, asset_id, valuation_id).await? {
+        return Ok(None);
     }
-    if asset_queries::get_asset(asset_id).await?.is_none() {
-        bail!("asset not found: {asset_id}");
+    let asset = require_active_asset(user_id, asset_id).await?;
+ request.validate()?;
+ensure_trade_asset(&asset)?;
+ensure_currency(&asset, &request.currency)?;
+let eur_price_per_unit = resolve_eur(
+    request.price_per_unit,
+    request.eur_price_per_unit,
+    request.date,
+    &request.currency,
+)
+.await?;
+asset_queries::update_asset_valuation(user_id, asset_id, valuation_id, request, eur_price_per_unit).await }
+
+pub async fn delete_asset_valuation(user_id: &UserId, asset_id: &str, valuation_id: &str) -> anyhow::Result<bool> {
+    if !asset_queries::manual_asset_valuation_exists(user_id, asset_id, valuation_id).await? {
+        return Ok(false);
     }
-    bail!("asset activity changed while it was being archived; try again")
-}
+ let asset = require_active_asset(user_id, asset_id).await?;
+ensure_trade_asset(&asset)?;
+asset_queries::delete_asset_valuation(user_id, asset_id, valuation_id).await }
 
-pub async fn restore_asset(asset_id: &str) -> anyhow::Result<Asset> {
-    asset_queries::restore_asset(asset_id)
-        .await?
-        .with_context(|| format!("asset not found: {asset_id}"))
-}
+pub async fn create_asset_transaction(user_id: &UserId, asset_id: &str,
+request: &CreateAssetTransactionRequest,) -> anyhow::Result<AssetTransaction> { let asset = require_active_asset(user_id, asset_id).await?;
+request.validate()?;
+ensure_transaction_kind(&asset, request.kind)?;
+ensure_currency(&asset, &request.currency)?;
+ensure_available_balance(user_id, &asset, request.date, request.kind, request.amount, None).await?;
+let amount_eur = resolve_eur(
+    request.amount,
+    request.amount_eur,
+    request.date,
+    &request.currency,
+)
+.await?;
+asset_queries::create_asset_transaction(user_id, asset_id, request, amount_eur).await }
 
-pub async fn create_asset_trade(
-    asset_id: &str,
-    request: &CreateAssetTradeRequest,
-) -> anyhow::Result<AssetTrade> {
-    request.validate()?;
-    let asset = require_active_asset(asset_id).await?;
-    ensure_trade_asset(&asset)?;
-    ensure_currency(&asset, &request.currency)?;
-    ensure_sell_inventory(
-        asset_id,
-        request.date,
-        request.units,
-        request.direction,
-        None,
-    )
-    .await?;
-    let eur_price_per_unit = resolve_eur(
-        request.price_per_unit,
-        request.eur_price_per_unit,
-        request.date,
-        &request.currency,
-    )
-    .await?;
-    let fees_eur = resolve_trade_fees_eur(
-        request.fees,
-        request.price_per_unit,
-        request.eur_price_per_unit,
-        request.date,
-        &request.currency,
-    )
-    .await?;
-    asset_queries::create_asset_trade(asset_id, request, eur_price_per_unit, fees_eur).await
-}
-
-pub async fn update_asset_trade(
-    asset_id: &str,
-    trade_id: &str,
-    request: &UpdateAssetTradeRequest,
-) -> anyhow::Result<Option<AssetTrade>> {
-    request.validate()?;
-    let asset = require_active_asset(asset_id).await?;
-    ensure_trade_asset(&asset)?;
-    ensure_currency(&asset, &request.currency)?;
-    ensure_sell_inventory(
-        asset_id,
-        request.date,
-        request.units,
-        request.direction,
-        Some(trade_id),
-    )
-    .await?;
-    let eur_price_per_unit = resolve_eur(
-        request.price_per_unit,
-        request.eur_price_per_unit,
-        request.date,
-        &request.currency,
-    )
-    .await?;
-    let fees_eur = resolve_trade_fees_eur(
-        request.fees,
-        request.price_per_unit,
-        request.eur_price_per_unit,
-        request.date,
-        &request.currency,
-    )
-    .await?;
-    asset_queries::update_asset_trade(asset_id, trade_id, request, eur_price_per_unit, fees_eur)
-        .await
-}
-
-pub async fn delete_asset_trade(asset_id: &str, trade_id: &str) -> anyhow::Result<bool> {
-    let asset = require_active_asset(asset_id).await?;
-    ensure_trade_asset(&asset)?;
-    asset_queries::delete_asset_trade(asset_id, trade_id).await
-}
-
-pub async fn create_asset_valuation(
-    asset_id: &str,
-    request: &CreateAssetValuationRequest,
-) -> anyhow::Result<AssetValuation> {
-    request.validate()?;
-    let asset = require_active_asset(asset_id).await?;
-    ensure_trade_asset(&asset)?;
-    ensure_currency(&asset, &request.currency)?;
-    let eur_price_per_unit = resolve_eur(
-        request.price_per_unit,
-        request.eur_price_per_unit,
-        request.date,
-        &request.currency,
-    )
-    .await?;
-    asset_queries::create_asset_valuation(asset_id, request, eur_price_per_unit).await
-}
-
-pub async fn update_asset_valuation(
-    asset_id: &str,
-    valuation_id: &str,
-    request: &UpdateAssetValuationRequest,
-) -> anyhow::Result<Option<AssetValuation>> {
-    request.validate()?;
-    let asset = require_active_asset(asset_id).await?;
-    ensure_trade_asset(&asset)?;
-    ensure_currency(&asset, &request.currency)?;
-    let eur_price_per_unit = resolve_eur(
-        request.price_per_unit,
-        request.eur_price_per_unit,
-        request.date,
-        &request.currency,
-    )
-    .await?;
-    asset_queries::update_asset_valuation(asset_id, valuation_id, request, eur_price_per_unit).await
-}
-
-pub async fn delete_asset_valuation(asset_id: &str, valuation_id: &str) -> anyhow::Result<bool> {
-    let asset = require_active_asset(asset_id).await?;
-    ensure_trade_asset(&asset)?;
-    asset_queries::delete_asset_valuation(asset_id, valuation_id).await
-}
-
-pub async fn create_asset_transaction(
-    asset_id: &str,
-    request: &CreateAssetTransactionRequest,
-) -> anyhow::Result<AssetTransaction> {
-    request.validate()?;
-    let asset = require_active_asset(asset_id).await?;
-    ensure_transaction_kind(&asset, request.kind)?;
-    ensure_currency(&asset, &request.currency)?;
-    ensure_available_balance(&asset, request.date, request.kind, request.amount, None).await?;
-    let amount_eur = resolve_eur(
-        request.amount,
-        request.amount_eur,
-        request.date,
-        &request.currency,
-    )
-    .await?;
-    asset_queries::create_asset_transaction(asset_id, request, amount_eur).await
-}
-
-pub async fn update_asset_transaction(
-    asset_id: &str,
-    transaction_id: &str,
-    request: &UpdateAssetTransactionRequest,
-) -> anyhow::Result<Option<AssetTransaction>> {
-    request.validate()?;
-    let asset = require_active_asset(asset_id).await?;
-    ensure_transaction_kind(&asset, request.kind)?;
-    ensure_currency(&asset, &request.currency)?;
-    ensure_available_balance(
-        &asset,
-        request.date,
-        request.kind,
-        request.amount,
-        Some(transaction_id),
-    )
-    .await?;
-    let amount_eur = resolve_eur(
-        request.amount,
-        request.amount_eur,
-        request.date,
-        &request.currency,
-    )
-    .await?;
-    asset_queries::update_asset_transaction(asset_id, transaction_id, request, amount_eur).await
-}
-
-pub async fn delete_asset_transaction(
-    asset_id: &str,
-    transaction_id: &str,
-) -> anyhow::Result<bool> {
-    let asset = require_active_asset(asset_id).await?;
-    if !asset.asset_class.supports_transactions() {
-        bail!(
-            "{} does not support principal transactions",
-            asset.asset_class
-        );
+pub async fn update_asset_transaction(user_id: &UserId, asset_id: &str,
+transaction_id: &str,
+request: &UpdateAssetTransactionRequest,) -> anyhow::Result<Option<AssetTransaction>> {
+    if !asset_queries::asset_transaction_exists(user_id, asset_id, transaction_id).await? {
+        return Ok(None);
     }
-    asset_queries::delete_asset_transaction(asset_id, transaction_id).await
-}
+    let asset = require_active_asset(user_id, asset_id).await?;
+ request.validate()?;
+ensure_transaction_kind(&asset, request.kind)?;
+ensure_currency(&asset, &request.currency)?;
+ensure_available_balance(user_id, &asset,
+request.date,
+request.kind,
+request.amount,
+Some(transaction_id),)
+.await?;
+let amount_eur = resolve_eur(
+    request.amount,
+    request.amount_eur,
+    request.date,
+    &request.currency,
+)
+.await?;
+asset_queries::update_asset_transaction(user_id, asset_id, transaction_id, request, amount_eur).await }
 
-pub async fn create_asset_balance_snapshot(
-    asset_id: &str,
-    request: &CreateAssetBalanceSnapshotRequest,
-) -> anyhow::Result<AssetBalanceSnapshot> {
-    request.validate()?;
-    let asset = require_active_asset(asset_id).await?;
-    ensure_cash_account(&asset)?;
-    let balance_eur = resolve_eur(
-        request.balance,
-        request.balance_eur,
-        request.date,
-        &asset.currency,
-    )
-    .await?;
-    asset_queries::create_asset_balance_snapshot(asset_id, request, balance_eur).await
-}
-
-pub async fn update_asset_balance_snapshot(
-    asset_id: &str,
-    snapshot_id: &str,
-    request: &UpdateAssetBalanceSnapshotRequest,
-) -> anyhow::Result<Option<AssetBalanceSnapshot>> {
-    request.validate()?;
-    let asset = require_active_asset(asset_id).await?;
-    ensure_cash_account(&asset)?;
-    let balance_eur = resolve_eur(
-        request.balance,
-        request.balance_eur,
-        request.date,
-        &asset.currency,
-    )
-    .await?;
-    asset_queries::update_asset_balance_snapshot(asset_id, snapshot_id, request, balance_eur).await
-}
-
-pub async fn delete_asset_balance_snapshot(
-    asset_id: &str,
-    snapshot_id: &str,
-) -> anyhow::Result<bool> {
-    let asset = require_active_asset(asset_id).await?;
-    ensure_cash_account(&asset)?;
-    asset_queries::delete_asset_balance_snapshot(asset_id, snapshot_id).await
-}
-
-pub async fn link_interest(asset_id: &str, interest_id: &str) -> anyhow::Result<bool> {
-    let asset = require_active_asset(asset_id).await?;
-    ensure_interest_asset(&asset)?;
-    let interest = asset_queries::get_interest_by_id(interest_id)
-        .await?
-        .with_context(|| format!("interest not found: {interest_id}"))?;
-    ensure_currency(&asset, &interest.currency)?;
-    ensure_interest_principal(&asset, interest.principal.as_deref())?;
-    asset_queries::link_interest(asset_id, interest_id).await
-}
-
-pub async fn unlink_interest(asset_id: &str, interest_id: &str) -> anyhow::Result<bool> {
-    let asset = require_asset(asset_id).await?;
-    ensure_interest_asset(&asset)?;
-    asset_queries::unlink_interest(asset_id, interest_id).await
-}
-
-pub async fn create_linked_interest(
-    asset_id: &str,
-    request: &CreateLinkedInterestRequest,
-) -> anyhow::Result<LinkedAssetInterest> {
-    request.validate()?;
-    let asset = require_active_asset(asset_id).await?;
-    ensure_interest_asset(&asset)?;
-    ensure_currency(&asset, &request.currency)?;
-    let mut request = request.clone();
-    if request.principal.is_none() {
-        request.principal = Some(
-            if asset.asset_class == AssetClass::CashAccount {
-                "Cash"
-            } else {
-                "PrivateDebt"
-            }
-            .to_string(),
-        );
+pub async fn delete_asset_transaction(user_id: &UserId, asset_id: &str,
+transaction_id: &str,) -> anyhow::Result<bool> {
+    if !asset_queries::asset_transaction_exists(user_id, asset_id, transaction_id).await? {
+        return Ok(false);
     }
-    ensure_interest_principal(&asset, request.principal.as_deref())?;
-    let amount_eur = resolve_eur(
-        request.amount,
-        request.amount_eur,
-        request.date,
-        &request.currency,
-    )
-    .await?;
-    asset_queries::create_linked_interest(asset_id, &request, amount_eur).await
+ let asset = require_active_asset(user_id, asset_id).await?;
+if !asset.asset_class.supports_transactions() {
+    bail!(
+        "{} does not support principal transactions",
+        asset.asset_class
+    );
 }
+asset_queries::delete_asset_transaction(user_id, asset_id, transaction_id).await }
 
-pub async fn update_linked_interest(
+pub async fn create_asset_balance_snapshot(user_id: &UserId, asset_id: &str,
+request: &CreateAssetBalanceSnapshotRequest,) -> anyhow::Result<AssetBalanceSnapshot> { let asset = require_active_asset(user_id, asset_id).await?;
+request.validate()?;
+ensure_cash_account(&asset)?;
+let balance_eur = resolve_eur(
+    request.balance,
+    request.balance_eur,
+    request.date,
+    &asset.currency,
+)
+.await?;
+asset_queries::create_asset_balance_snapshot(user_id, asset_id, request, balance_eur).await }
+
+pub async fn update_asset_balance_snapshot(user_id: &UserId, asset_id: &str,
+snapshot_id: &str,
+request: &UpdateAssetBalanceSnapshotRequest,) -> anyhow::Result<Option<AssetBalanceSnapshot>> {
+    if !asset_queries::asset_balance_snapshot_exists(user_id, asset_id, snapshot_id).await? {
+        return Ok(None);
+    }
+    let asset = require_active_asset(user_id, asset_id).await?;
+ request.validate()?;
+ensure_cash_account(&asset)?;
+let balance_eur = resolve_eur(
+    request.balance,
+    request.balance_eur,
+    request.date,
+    &asset.currency,
+)
+.await?;
+asset_queries::update_asset_balance_snapshot(user_id, asset_id, snapshot_id, request, balance_eur).await }
+
+pub async fn delete_asset_balance_snapshot(user_id: &UserId, asset_id: &str,
+snapshot_id: &str,) -> anyhow::Result<bool> {
+    if !asset_queries::asset_balance_snapshot_exists(user_id, asset_id, snapshot_id).await? {
+        return Ok(false);
+    }
+ let asset = require_active_asset(user_id, asset_id).await?;
+ensure_cash_account(&asset)?;
+asset_queries::delete_asset_balance_snapshot(user_id, asset_id, snapshot_id).await }
+
+pub async fn link_interest(user_id: &UserId, asset_id: &str, interest_id: &str) -> anyhow::Result<bool> { let asset = require_active_asset(user_id, asset_id).await?;
+let interest = asset_queries::get_interest_by_id(user_id, interest_id)
+    .await?
+    .context(AssetNotFound("interest"))?;
+ensure_interest_asset(&asset)?;
+ensure_currency(&asset, &interest.currency)?;
+ensure_interest_principal(&asset, interest.principal.as_deref())?;
+asset_queries::link_interest(user_id, asset_id, interest_id).await }
+
+pub async fn unlink_interest(
+    user_id: &UserId,
     asset_id: &str,
     interest_id: &str,
-    request: &CreateLinkedInterestRequest,
-) -> anyhow::Result<Option<LinkedAssetInterest>> {
-    request.validate()?;
-    let asset = require_active_asset(asset_id).await?;
-    ensure_interest_asset(&asset)?;
-    ensure_currency(&asset, &request.currency)?;
-    let mut request = request.clone();
-    if request.principal.is_none() {
-        request.principal = Some(
-            if asset.asset_class == AssetClass::CashAccount {
-                "Cash"
-            } else {
-                "PrivateDebt"
-            }
-            .to_string(),
-        );
+) -> anyhow::Result<bool> {
+    asset_queries::unlink_interest(user_id, asset_id, interest_id).await
+}
+
+pub async fn create_linked_interest(user_id: &UserId, asset_id: &str,
+request: &CreateLinkedInterestRequest,) -> anyhow::Result<LinkedAssetInterest> { let asset = require_active_asset(user_id, asset_id).await?;
+request.validate()?;
+ensure_interest_asset(&asset)?;
+ensure_currency(&asset, &request.currency)?;
+let mut request = request.clone();
+if request.principal.is_none() {
+    request.principal = Some(
+        if asset.asset_class == AssetClass::CashAccount {
+            "Cash"
+        } else {
+            "PrivateDebt"
+        }
+        .to_string(),
+    );
+}
+ensure_interest_principal(&asset, request.principal.as_deref())?;
+let amount_eur = resolve_eur(
+    request.amount,
+    request.amount_eur,
+    request.date,
+    &request.currency,
+)
+.await?;
+asset_queries::create_linked_interest(user_id, asset_id, &request, amount_eur).await }
+
+pub async fn update_linked_interest(user_id: &UserId, asset_id: &str,
+interest_id: &str,
+request: &CreateLinkedInterestRequest,) -> anyhow::Result<Option<LinkedAssetInterest>> {
+    if !asset_queries::manual_linked_interest_exists(user_id, asset_id, interest_id).await? {
+        return Ok(None);
     }
-    ensure_interest_principal(&asset, request.principal.as_deref())?;
-    let amount_eur = resolve_eur(
-        request.amount,
-        request.amount_eur,
-        request.date,
-        &request.currency,
-    )
-    .await?;
-    asset_queries::update_linked_interest(asset_id, interest_id, &request, amount_eur).await
+    let asset = require_active_asset(user_id, asset_id).await?;
+ request.validate()?;
+ensure_interest_asset(&asset)?;
+ensure_currency(&asset, &request.currency)?;
+let mut request = request.clone();
+if request.principal.is_none() {
+    request.principal = Some(
+        if asset.asset_class == AssetClass::CashAccount {
+            "Cash"
+        } else {
+            "PrivateDebt"
+        }
+        .to_string(),
+    );
+}
+ensure_interest_principal(&asset, request.principal.as_deref())?;
+let amount_eur = resolve_eur(
+    request.amount,
+    request.amount_eur,
+    request.date,
+    &request.currency,
+)
+.await?;
+asset_queries::update_linked_interest(user_id, asset_id, interest_id, &request, amount_eur).await }
+
+pub async fn calculate_custom_holdings(user_id: &UserId, ) -> anyhow::Result<Vec<CustomAssetHolding>> { calculate_custom_holdings_as_of(user_id, Utc::now()).await }
+
+pub async fn calculate_custom_holdings_as_of(user_id: &UserId, as_of: DateTime<Utc>,) -> anyhow::Result<Vec<CustomAssetHolding>> { let assets = asset_queries::list_assets(user_id, true).await?;
+let mut holdings = Vec::with_capacity(assets.len());
+
+for listed_asset in assets {
+    let detail = asset_queries::get_asset_detail(user_id, &listed_asset.id)
+        .await?
+        .with_context(|| {
+            format!("asset disappeared during calculation: {}", listed_asset.id)
+        })?;
+    holdings.push(calculate_holding(detail, as_of).await?);
 }
 
-pub async fn calculate_custom_holdings() -> anyhow::Result<Vec<CustomAssetHolding>> {
-    calculate_custom_holdings_as_of(Utc::now()).await
-}
-
-pub async fn calculate_custom_holdings_as_of(
-    as_of: DateTime<Utc>,
-) -> anyhow::Result<Vec<CustomAssetHolding>> {
-    let assets = asset_queries::list_assets(true).await?;
-    let mut holdings = Vec::with_capacity(assets.len());
-
-    for listed_asset in assets {
-        let detail = asset_queries::get_asset_detail(&listed_asset.id)
-            .await?
-            .with_context(|| {
-                format!("asset disappeared during calculation: {}", listed_asset.id)
-            })?;
-        holdings.push(calculate_holding(detail, as_of).await?);
-    }
-
-    Ok(holdings)
-}
+Ok(holdings) }
 
 /// Totals include every known value. Callers should treat the result as incomplete whenever
 /// `incomplete_asset_count` is non-zero rather than silently valuing missing holdings at zero.
@@ -439,52 +414,50 @@ pub fn summarize_custom_holdings(holdings: &[CustomAssetHolding]) -> CustomAsset
     }
 }
 
-pub async fn calculate_weighted_cash_interest() -> anyhow::Result<WeightedCashInterestSummary> {
-    let as_of = Utc::now();
-    let assets = asset_queries::list_assets(false).await?;
-    let mut accounts = Vec::new();
+pub async fn calculate_weighted_cash_interest(user_id: &UserId, ) -> anyhow::Result<WeightedCashInterestSummary> { let as_of = Utc::now();
+let assets = asset_queries::list_assets(user_id, false).await?;
+let mut accounts = Vec::new();
 
-    for listed_asset in assets
-        .into_iter()
-        .filter(|asset| asset.asset_class == AssetClass::CashAccount)
-    {
-        let detail = asset_queries::get_asset_detail(&listed_asset.id)
-            .await?
-            .with_context(|| {
-                format!("asset disappeared during calculation: {}", listed_asset.id)
-            })?;
-        let AssetActivity::CashAccount(activity) = detail.activity else {
-            bail!("cash account returned incompatible activity");
-        };
-        let folded = fold_cash_events(
-            &activity.transactions,
-            &activity.balance_snapshots,
-            &activity.interest,
-            as_of,
-        );
-        let current_balance_eur = try_convert_current(
-            folded.balance,
-            as_of,
-            &detail.asset.currency,
-            &detail.asset.id,
-        )
-        .await;
-        accounts.push(CashAccountSummary {
-            asset_id: detail.asset.id,
-            name: detail.asset.name,
-            currency: detail.asset.currency,
-            current_balance: folded.balance,
-            current_balance_eur,
-            current_interest_rate_percent: detail
-                .asset
-                .current_interest_rate_percent
-                .context("cash account has no current interest rate")?,
-            interest_rate_updated_at: detail.asset.interest_rate_updated_at,
-        });
-    }
-
-    Ok(weighted_cash_interest_summary(accounts))
+for listed_asset in assets
+    .into_iter()
+    .filter(|asset| asset.asset_class == AssetClass::CashAccount)
+{
+    let detail = asset_queries::get_asset_detail(user_id, &listed_asset.id)
+        .await?
+        .with_context(|| {
+            format!("asset disappeared during calculation: {}", listed_asset.id)
+        })?;
+    let AssetActivity::CashAccount(activity) = detail.activity else {
+        bail!("cash account returned incompatible activity");
+    };
+    let folded = fold_cash_events(
+        &activity.transactions,
+        &activity.balance_snapshots,
+        &activity.interest,
+        as_of,
+    );
+    let current_balance_eur = try_convert_current(
+        folded.balance,
+        as_of,
+        &detail.asset.currency,
+        &detail.asset.id,
+    )
+    .await;
+    accounts.push(CashAccountSummary {
+        asset_id: detail.asset.id,
+        name: detail.asset.name,
+        currency: detail.asset.currency,
+        current_balance: folded.balance,
+        current_balance_eur,
+        current_interest_rate_percent: detail
+            .asset
+            .current_interest_rate_percent
+            .context("cash account has no current interest rate")?,
+        interest_rate_updated_at: detail.asset.interest_rate_updated_at,
+    });
 }
+
+Ok(weighted_cash_interest_summary(accounts)) }
 
 pub fn weighted_cash_interest_summary(
     accounts: Vec<CashAccountSummary>,
@@ -945,14 +918,14 @@ async fn try_convert_current(
     }
 }
 
-async fn require_asset(asset_id: &str) -> anyhow::Result<Asset> {
-    asset_queries::get_asset(asset_id)
+async fn require_asset(user_id: &UserId, asset_id: &str) -> anyhow::Result<Asset> {
+    asset_queries::get_asset(user_id, asset_id)
         .await?
-        .with_context(|| format!("asset not found: {asset_id}"))
+        .context(AssetNotFound("asset"))
 }
 
-async fn require_active_asset(asset_id: &str) -> anyhow::Result<Asset> {
-    let asset = require_asset(asset_id).await?;
+async fn require_active_asset(user_id: &UserId, asset_id: &str) -> anyhow::Result<Asset> {
+    let asset = require_asset(user_id, asset_id).await?;
     if asset.archived_at.is_some() {
         bail!("asset is archived: {asset_id}");
     }
@@ -1025,7 +998,7 @@ fn ensure_currency(asset: &Asset, currency: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn ensure_sell_inventory(
+async fn ensure_sell_inventory(user_id: &UserId, 
     asset_id: &str,
     date: DateTime<Utc>,
     units: Decimal,
@@ -1036,7 +1009,7 @@ async fn ensure_sell_inventory(
         return Ok(());
     }
 
-    let available = asset_queries::list_asset_trades(asset_id)
+    let available = asset_queries::list_asset_trades(user_id, asset_id)
         .await?
         .into_iter()
         .filter(|trade| trade.date <= date && Some(trade.id.as_str()) != excluded_trade_id)
@@ -1050,7 +1023,7 @@ async fn ensure_sell_inventory(
     Ok(())
 }
 
-async fn ensure_available_balance(
+async fn ensure_available_balance(user_id: &UserId, 
     asset: &Asset,
     date: DateTime<Utc>,
     kind: AssetTransactionKind,
@@ -1069,7 +1042,7 @@ async fn ensure_available_balance(
         return Ok(());
     }
 
-    let detail = asset_queries::get_asset_detail(&asset.id)
+    let detail = asset_queries::get_asset_detail(user_id, &asset.id)
         .await?
         .context("asset disappeared while validating its balance")?;
     let available = match detail.activity {

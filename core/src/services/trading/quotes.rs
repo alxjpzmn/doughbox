@@ -7,6 +7,7 @@ use serde::Serialize;
 
 use crate::database::{
     db_client,
+    models::auth::UserId,
     queries::{
         fx_rate,
         price::{self, LatestPrice},
@@ -180,6 +181,7 @@ fn resolve_instruments<'a>(
 }
 
 pub(super) async fn get(
+    user_id: &UserId,
     hash: &str,
     tickers: &[String],
     max_age_seconds: i32,
@@ -193,7 +195,7 @@ pub(super) async fn get(
         tickers.iter().all(|ticker| (1..=100).contains(&ticker.len())),
         "Use exact Trading 212 tickers from search_instruments."
     );
-    let catalog = super::catalog::load(hash).await?;
+    let catalog = super::catalog::load(user_id, hash).await?;
     let instruments = resolve_instruments(&catalog.instruments, tickers)?;
     let client = db_client().await?;
     let isins: Vec<_> = instruments.iter().map(|instrument| instrument.isin.clone()).collect();

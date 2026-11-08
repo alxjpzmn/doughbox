@@ -146,8 +146,8 @@ async fn pricing_database_source_tombstones_and_portfolio_references_obey_seven_
              ('old-event-new-revision', 1, now()),
              ('portfolio-protected', 0, now() - interval '30 days')
          ) reports(id, revision, received);
-         INSERT INTO instrument(id, name, price, last_price_update, price_pinned, price_report_id)
-         VALUES('DE0007164600', 'Pinned portfolio', 50, '2020-01-01', TRUE, 'portfolio-protected')",
+         INSERT INTO instrument(user_id, id, name, price, last_price_update, price_pinned, price_report_id)
+         VALUES('pricing-owner', 'DE0007164600', 'Pinned portfolio', 50, '2020-01-01', TRUE, 'portfolio-protected')",
     ).await.unwrap();
     assert!(!jobs::prune_in(&tx).await.unwrap());
     let retained: Vec<String> = tx
@@ -167,8 +167,8 @@ async fn pricing_database_source_tombstones_and_portfolio_references_obey_seven_
     );
     let protected = tx
         .query_one(
-            "SELECT price, price_pinned, price_report_id FROM instrument WHERE id='DE0007164600'",
-            &[],
+            "SELECT price, price_pinned, price_report_id FROM instrument WHERE user_id = $1 AND id='DE0007164600'",
+            &[&owner().as_str()],
         )
         .await
         .unwrap();
@@ -176,7 +176,7 @@ async fn pricing_database_source_tombstones_and_portfolio_references_obey_seven_
     assert!(protected.get::<_, bool>(1));
     assert_eq!(protected.get::<_, String>(2), "portfolio-protected");
     tx.commit().await.unwrap();
-    let portfolio = price::quotes(&db, &["DE0007164600".into()])
+    let portfolio = price::quotes(&owner(), &db, &["DE0007164600".into()])
         .await
         .unwrap()
         .remove(0);
@@ -260,8 +260,8 @@ async fn pricing_database_paused_startup_retention_drains_multiple_batches_indep
          SELECT 'old-' || n, 'DETR-posttrade', 'isin-' || n, 'trade-' || n, 'XCEF', 'XETA',
              now() - interval '8 days', 1, 1, 0, 'old-' || n, 50, 'EUR', TRUE, 'old-file', now() - interval '8 days'
          FROM generate_series(1, 10002) n;
-         INSERT INTO instrument(id, name, price, last_price_update, price_pinned, price_report_id)
-         VALUES('isin-1', 'Protected holding', 50, '2020-01-01', TRUE, 'old-1');
+         INSERT INTO instrument(user_id, id, name, price, last_price_update, price_pinned, price_report_id)
+         VALUES('pricing-owner', 'isin-1', 'Protected holding', 50, '2020-01-01', TRUE, 'old-1');
          INSERT INTO background_job(feed, status, finished_at, last_error) VALUES
              ('DETR-posttrade', 'failed', now(), 'paused failure'),
              ('DGAT-posttrade', 'queued', NULL, 'paused queued')",
@@ -361,7 +361,7 @@ async fn pricing_database_paused_startup_retention_drains_multiple_batches_indep
             .get::<_, String>(0),
         "old-1"
     );
-    let portfolio = price::quotes(&db, &["isin-1".into()])
+    let portfolio = price::quotes(&owner(), &db, &["isin-1".into()])
         .await
         .unwrap()
         .remove(0);

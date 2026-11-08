@@ -65,7 +65,7 @@ fn detect_record_type(record: &LightyearRecord) -> RecordType {
     RecordType::Unmatched
 }
 
-pub async fn extract_lightyear_record(file_content: &[u8]) -> anyhow::Result<()> {
+pub async fn extract_lightyear_record(user_id: &crate::database::models::auth::UserId, file_content: &[u8]) -> anyhow::Result<()> {
     let broker = "Lightyear".to_string();
 
     let cursor = Cursor::new(file_content);
@@ -114,7 +114,7 @@ pub async fn extract_lightyear_record(file_content: &[u8]) -> anyhow::Result<()>
                                     date_added: Utc::now(),
                                     fees: record.fee.parse::<Decimal>().unwrap_or(dec!(0.0)),
                                 };
-                                add_fx_conversion_to_db(fx_conversion).await?;
+                                add_fx_conversion_to_db(user_id, fx_conversion).await?;
                             }
                         }
                     };
@@ -141,7 +141,7 @@ pub async fn extract_lightyear_record(file_content: &[u8]) -> anyhow::Result<()>
                     withholding_tax: record.tax_amount.parse::<Decimal>().unwrap_or(dec!(0.0)),
                     withholding_tax_currency: record.currency.to_string(),
                 };
-                if add_dividend_to_db(dividend.clone(), None).await? {
+                if add_dividend_to_db(user_id, dividend.clone(), None).await? {
                     println!("💵 Dividend added: {:?}", dividend);
                 }
             }
@@ -185,7 +185,7 @@ pub async fn extract_lightyear_record(file_content: &[u8]) -> anyhow::Result<()>
                     withholding_tax: record.tax_amount.parse::<Decimal>().unwrap_or(dec!(0.0)),
                     withholding_tax_currency: record.currency.to_string(),
                 };
-                add_trade_to_db(trade, Some(record.reference)).await?;
+                add_trade_to_db(user_id, trade, Some(record.reference)).await?;
             }
             RecordType::CashInterest => {
                 let interest_payment = InterestPayment {
@@ -208,7 +208,7 @@ pub async fn extract_lightyear_record(file_content: &[u8]) -> anyhow::Result<()>
                     withholding_tax: record.tax_amount.parse::<Decimal>().unwrap_or(dec!(0.0)),
                     withholding_tax_currency: record.currency.to_string(),
                 };
-                if add_interest_to_db(interest_payment.clone(), None).await? {
+                if add_interest_to_db(user_id, interest_payment.clone(), None).await? {
                     println!("💵 Interest payment added: {:?}", interest_payment);
                 }
             }

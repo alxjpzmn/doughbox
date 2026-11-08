@@ -17,6 +17,15 @@ export default defineConfig({
       devOptions: {
         enabled: true,
       },
+      workbox: {
+        navigateFallbackDenylist: [/^\/api(?:\/|$)/],
+        runtimeCaching: [
+          {
+            urlPattern: ({ url }) => url.pathname === "/api" || url.pathname.startsWith("/api/"),
+            handler: "NetworkOnly",
+          },
+        ],
+      },
     }),
     tailwindcss(),
   ],
@@ -24,20 +33,10 @@ export default defineConfig({
     proxy: {
       "/api": {
         target: "http://127.0.0.1:8084",
-        changeOrigin: true,
+        // Preserve the browser Origin; rewriting it to the API host fails CSRF checks.
+        changeOrigin: false,
         secure: false,
         ws: false,
-        configure: (proxy, _options) => {
-          proxy.on("error", (err, _req, _res) => {
-            console.error("Proxy error", err);
-          });
-          proxy.on("proxyReq", (_proxyReq, req, _res) => {
-            console.log("Sending request:", req.method, req.url);
-          });
-          proxy.on("proxyRes", (proxyRes, req, _res) => {
-            console.log("Received response:", proxyRes.statusCode, req.url);
-          });
-        },
       },
     },
   },

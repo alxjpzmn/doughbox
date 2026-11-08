@@ -1,4 +1,5 @@
 pub mod assets;
+pub mod auth;
 pub mod calculations;
 pub mod data_imports;
 pub mod dtt;

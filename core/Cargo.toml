@@ -30,9 +30,8 @@ pdf-extract = "0.12.1"
 rust_decimal_macros = "1.40.0"
 axum = { version = "0.8.9", features = ["multipart"] }
 tower = "0.5.3"
-tower-http = { version = "0.7.1", features = ["fs", "cors", "trace"] }
-tower-sessions = "0.15.0"
-tower-cookies = { version = "0.11.0", features = ["signed"] }
+tower-http = { version = "0.7.1", features = ["fs", "trace"] }
+tower-cookies = "0.11.0"
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
 dotenvy = "0.15.7"
@@ -49,6 +48,8 @@ rand_core = { version = "0.6.4", features = ["getrandom"] }
 rmcp = { version = "2.2.0", features = ["server", "transport-streamable-http-server"] }
 schemars = "1.1.0"
 uuid = { version = "1.17.0", features = ["v4"] }
+argon2 = "0.5.3"
+totp-rs = { version = "5.7.0", features = ["qr", "zeroize"] }
 
 [dev-dependencies]
 tokio = { version = "1.54.1", features = ["test-util"] }

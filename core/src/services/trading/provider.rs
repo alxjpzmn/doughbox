@@ -2,23 +2,16 @@ use std::{borrow::Cow, fmt, str::FromStr, time::Duration};
 
 use anyhow::{anyhow, bail, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
-use chacha20poly1305::{
-    aead::{Aead, KeyInit, Payload},
-    XChaCha20Poly1305, XNonce,
-};
-use rand_core::{OsRng, RngCore};
 use reqwest::StatusCode;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Number, Value};
 
-use crate::services::shared::env::get_env_variable;
+use crate::services::shared::{env::get_env_variable, secrets};
 
 const CREDENTIALS_AAD: &[u8] = b"doughbox-trading212-v1";
 const MAX_REJECTION_BODY: usize = 16 * 1024;
 const MAX_REJECTION_FIELD_CHARS: usize = 400;
-const NONCE_BYTES: usize = 24;
-const TAG_BYTES: usize = 16;
 
 // Deliberately not Debug: neither credentials nor a client may be logged.
 #[derive(Serialize, Deserialize)]
@@ -42,87 +35,20 @@ pub fn decrypt_credentials(ciphertext: &str) -> Result<Credentials> {
 fn master_key() -> Result<[u8; 32]> {
     let encoded = get_env_variable("TRADING_MASTER_KEY")
         .ok_or_else(|| anyhow!("TRADING_MASTER_KEY must be set to 64 hexadecimal characters"))?;
-    parse_master_key(&encoded)
-}
-
-fn parse_master_key(encoded: &str) -> Result<[u8; 32]> {
-    let mut key = [0_u8; 32];
-    if !decode_hex_into(encoded, &mut key) {
-        bail!("TRADING_MASTER_KEY must contain exactly 64 hexadecimal characters");
-    }
-    Ok(key)
+    secrets::parse_master_key(&encoded)
+        .map_err(|_| anyhow!("TRADING_MASTER_KEY must contain exactly 64 hexadecimal characters"))
 }
 
 fn encrypt_with_key(credentials: &Credentials, key: &[u8; 32]) -> Result<String> {
     let plaintext = serde_json::to_vec(credentials)
         .map_err(|_| anyhow!("Trading credentials could not be encoded"))?;
-    let cipher = XChaCha20Poly1305::new(key.into());
-    let mut nonce = [0_u8; NONCE_BYTES];
-    OsRng
-        .try_fill_bytes(&mut nonce)
-        .map_err(|_| anyhow!("Secure randomness is unavailable for trading credentials"))?;
-    let ciphertext = cipher
-        .encrypt(
-            XNonce::from_slice(&nonce),
-            Payload {
-                msg: &plaintext,
-                aad: CREDENTIALS_AAD,
-            },
-        )
-        .map_err(|_| anyhow!("Trading credentials could not be encrypted"))?;
-    Ok(encode_hex(nonce.iter().chain(ciphertext.iter()).copied()))
+    secrets::encrypt(&plaintext, key, CREDENTIALS_AAD)
 }
 
 fn decrypt_with_key(encoded: &str, key: &[u8; 32]) -> Result<Credentials> {
-    if encoded.len() < (NONCE_BYTES + TAG_BYTES) * 2 || encoded.len() % 2 != 0 {
-        bail!("Encrypted trading credentials are invalid");
-    }
-    let mut encrypted = vec![0_u8; encoded.len() / 2];
-    if !decode_hex_into(encoded, &mut encrypted) {
-        bail!("Encrypted trading credentials are invalid");
-    }
-    let plaintext = XChaCha20Poly1305::new(key.into())
-        .decrypt(
-            XNonce::from_slice(&encrypted[..NONCE_BYTES]),
-            Payload {
-                msg: &encrypted[NONCE_BYTES..],
-                aad: CREDENTIALS_AAD,
-            },
-        )
-        .map_err(|_| anyhow!("Trading credentials could not be decrypted"))?;
+    let plaintext = secrets::decrypt(encoded, key, CREDENTIALS_AAD)?;
     serde_json::from_slice(&plaintext)
         .map_err(|_| anyhow!("Decrypted trading credentials are invalid"))
-}
-
-fn decode_hex_into(encoded: &str, output: &mut [u8]) -> bool {
-    if encoded.len() != output.len() * 2 {
-        return false;
-    }
-    fn digit(byte: u8) -> Option<u8> {
-        match byte {
-            b'0'..=b'9' => Some(byte - b'0'),
-            b'a'..=b'f' => Some(byte - b'a' + 10),
-            b'A'..=b'F' => Some(byte - b'A' + 10),
-            _ => None,
-        }
-    }
-    for (pair, slot) in encoded.as_bytes().chunks_exact(2).zip(output) {
-        let (Some(high), Some(low)) = (digit(pair[0]), digit(pair[1])) else {
-            return false;
-        };
-        *slot = (high << 4) | low;
-    }
-    true
-}
-
-fn encode_hex(bytes: impl Iterator<Item = u8>) -> String {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut encoded = String::with_capacity(bytes.size_hint().0 * 2);
-    for byte in bytes {
-        encoded.push(DIGITS[(byte >> 4) as usize] as char);
-        encoded.push(DIGITS[(byte & 15) as usize] as char);
-    }
-    encoded
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -505,6 +431,11 @@ fn submission_id(body: &Value) -> std::result::Result<String, SubmitError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chacha20poly1305::{
+        aead::{Aead, KeyInit, Payload},
+        XChaCha20Poly1305, XNonce,
+    };
+    use crate::services::shared::secrets::encode_hex;
     use std::sync::{atomic::{AtomicUsize, Ordering}, Arc};
 
     struct BrokerFixture {
@@ -674,7 +605,7 @@ mod tests {
         assert!(decrypt_with_key(std::str::from_utf8(&changed).unwrap(), &key).is_err());
 
         let cipher = XChaCha20Poly1305::new((&key).into());
-        let nonce = [0; NONCE_BYTES];
+        let nonce = [0; 24];
         let wrong_aad = cipher
             .encrypt(
                 XNonce::from_slice(&nonce),
@@ -694,9 +625,34 @@ mod tests {
             assert!(decrypt_with_key(encoded, &[7; 32]).is_err());
         }
         for encoded in ["", "key", &"0".repeat(63), &"0".repeat(65), &"g".repeat(64)] {
-            assert!(parse_master_key(encoded).is_err());
+            assert!(secrets::parse_master_key(encoded).is_err());
         }
-        assert_eq!(parse_master_key(&"aB".repeat(32)).unwrap(), [0xab; 32]);
+        assert_eq!(secrets::parse_master_key(&"aB".repeat(32)).unwrap(), [0xab; 32]);
+    }
+
+    #[test]
+    fn trading_envelopes_remain_compatible_with_the_original_byte_layout() {
+        let key = [7; 32];
+        let cipher = XChaCha20Poly1305::new((&key).into());
+        let nonce = [0x42; 24];
+        let plaintext = br#"{"api_key":"legacy-key","api_secret":"legacy-secret"}"#;
+        let legacy_ciphertext = cipher.encrypt(
+            XNonce::from_slice(&nonce),
+            Payload { msg: plaintext, aad: b"doughbox-trading212-v1" },
+        ).unwrap();
+        let legacy_envelope = encode_hex(nonce.iter().chain(legacy_ciphertext.iter()).copied());
+        let credentials = decrypt_with_key(&legacy_envelope, &key).unwrap();
+        assert_eq!(credentials.api_key, "legacy-key");
+        assert_eq!(credentials.api_secret, "legacy-secret");
+
+        let envelope = encrypt_with_key(&credentials, &key).unwrap();
+        let mut bytes = vec![0; envelope.len() / 2];
+        assert!(secrets::decode_hex_into(&envelope, &mut bytes));
+        let decoded = cipher.decrypt(
+            XNonce::from_slice(&bytes[..24]),
+            Payload { msg: &bytes[24..], aad: b"doughbox-trading212-v1" },
+        ).unwrap();
+        assert_eq!(decoded, plaintext);
     }
 
     #[test]

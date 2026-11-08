@@ -3,7 +3,7 @@ use rust_decimal::Decimal;
 
 use crate::database::{db_client, models::performance::PerformanceSignal};
 
-pub async fn add_performance_signal_to_db(
+pub async fn add_performance_signal_to_db(user_id: &crate::database::models::auth::UserId, 
     performance_signal: PerformanceSignal,
 ) -> anyhow::Result<()> {
     let client = db_client().await?;
@@ -11,8 +11,9 @@ pub async fn add_performance_signal_to_db(
 
     client
         .execute(
-            "INSERT INTO performance (date, total_value, total_invested, gross_invested, components) values ($1, $2, $3, $4, $5::text::jsonb)",
+            "INSERT INTO performance (user_id, date, total_value, total_invested, gross_invested, components) values ($1, $2, $3, $4, $5, $6::text::jsonb)",
             &[
+                &user_id.as_str(),
                 &performance_signal.date,
                 &performance_signal.total_value,
                 &performance_signal.total_invested,
@@ -25,30 +26,30 @@ pub async fn add_performance_signal_to_db(
     Ok(())
 }
 
-pub async fn get_performance_signals() -> anyhow::Result<Vec<PerformanceSignal>> {
+pub async fn get_performance_signals(user_id: &crate::database::models::auth::UserId, ) -> anyhow::Result<Vec<PerformanceSignal>> {
     let client = db_client().await?;
 
     let statement: String =
         "SELECT DISTINCT ON (date_trunc('day', date)) date, total_value, total_invested, gross_invested, components::text
-    FROM performance
+    FROM performance WHERE user_id = $1
     ORDER BY date_trunc('day', date), date DESC;"
             .to_string();
 
-    let rows = client.query(&statement, &[]).await?;
+    let rows = client.query(&statement, &[&user_id.as_str()]).await?;
 
     rows.into_iter().map(signal_from_row).collect()
 }
 
-pub async fn get_latest_performance_signal() -> anyhow::Result<Option<PerformanceSignal>> {
+pub async fn get_latest_performance_signal(user_id: &crate::database::models::auth::UserId, ) -> anyhow::Result<Option<PerformanceSignal>> {
     let client = db_client().await?;
 
     let statement = "SELECT date, total_value, total_invested, gross_invested, components::text
-                     FROM performance
+                     FROM performance WHERE user_id = $1
                      ORDER BY date DESC
                      LIMIT 1;";
 
     Ok(client
-        .query_opt(statement, &[])
+        .query_opt(statement, &[&user_id.as_str()])
         .await?
         .map(signal_from_row)
         .transpose()?)

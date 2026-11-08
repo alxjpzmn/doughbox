@@ -114,7 +114,7 @@ fn parse_fx_from_notes(notes: &str) -> anyhow::Result<(Decimal, String, Decimal,
     Ok((from_amount, from_currency, to_amount, to_currency))
 }
 
-pub async fn extract_trading212_record(file_content: &[u8]) -> anyhow::Result<()> {
+pub async fn extract_trading212_record(user_id: &crate::database::models::auth::UserId, file_content: &[u8]) -> anyhow::Result<()> {
     let broker = "Trading212".to_string();
 
     let cursor = Cursor::new(file_content);
@@ -182,7 +182,7 @@ pub async fn extract_trading212_record(file_content: &[u8]) -> anyhow::Result<()
                         &record[currency_price_idx],
                     ),
                 };
-                if add_dividend_to_db(dividend.clone(), None).await? {
+                if add_dividend_to_db(user_id, dividend.clone(), None).await? {
                     println!("💵 Dividend added: {:?}", dividend);
                 }
             }
@@ -216,7 +216,7 @@ pub async fn extract_trading212_record(file_content: &[u8]) -> anyhow::Result<()
                     date_added: Utc::now(),
                     fees: record[fees_idx].parse::<Decimal>().unwrap_or(dec!(-0.0)) * -dec!(1.0),
                 };
-                add_fx_conversion_to_db(fx_conversion).await?;
+                add_fx_conversion_to_db(user_id, fx_conversion).await?;
             }
             RecordType::EquityTrade => {
                 let date = parse_timestamp(&record[timestamp_idx])?;
@@ -261,7 +261,7 @@ pub async fn extract_trading212_record(file_content: &[u8]) -> anyhow::Result<()
                         &record[currency_total_idx],
                     ),
                 };
-                add_trade_to_db(trade, Some(record[id_idx].to_string())).await?;
+                add_trade_to_db(user_id, trade, Some(record[id_idx].to_string())).await?;
             }
             RecordType::CashInterest => {
                 let amount = if record[currency_total_idx].to_string() == "EUR" {
@@ -295,7 +295,7 @@ pub async fn extract_trading212_record(file_content: &[u8]) -> anyhow::Result<()
                         &record[currency_total_idx],
                     ),
                 };
-                if add_interest_to_db(interest_payment.clone(), None).await? {
+                if add_interest_to_db(user_id, interest_payment.clone(), None).await? {
                     println!("💵 Interest payment added: {:?}", interest_payment);
                 }
             }
@@ -332,7 +332,7 @@ pub async fn extract_trading212_record(file_content: &[u8]) -> anyhow::Result<()
                         &record[currency_total_idx],
                     ),
                 };
-                if add_interest_to_db(interest_payment.clone(), None).await? {
+                if add_interest_to_db(user_id, interest_payment.clone(), None).await? {
                     println!("💵 Interest payment added: {:?}", interest_payment);
                 }
             }

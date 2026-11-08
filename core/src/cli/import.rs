@@ -5,8 +5,9 @@ use std::io::{self, Write};
 use walkdir::WalkDir;
 
 use crate::services::parsers::{parse_file_for_import, InteractionMode};
+use crate::database::models::auth::UserId;
 
-pub async fn import(directory_path: &str) -> anyhow::Result<()> {
+pub async fn import(user_id: &UserId, directory_path: &str) -> anyhow::Result<()> {
     for entry in WalkDir::new(directory_path)
         .into_iter()
         .filter_map(|e| e.ok())
@@ -18,7 +19,7 @@ pub async fn import(directory_path: &str) -> anyhow::Result<()> {
 
         match fs::read(file_path) {
             Ok(buffer) => {
-                if let Err(e) = parse_file_for_import(&buffer, file_path).await {
+                if let Err(e) = parse_file_for_import(user_id, &buffer, file_path).await {
                     eprintln!("Failed to process {}: {:?}", file_path.display(), e);
                     continue;
                 }

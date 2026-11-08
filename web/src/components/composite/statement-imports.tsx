@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import useSWR, { useSWRConfig } from 'swr';
 import { CheckCircleIcon, ClockIcon, SpinnerGapIcon, UploadSimpleIcon, XCircleIcon } from '@phosphor-icons/react';
-import { BASE_URL, fetcher } from '@/lib/http';
+import { BASE_URL, fetcher, getPrivateRequestEpoch, isCurrentPrivateRequestEpoch, type HttpError } from '@/lib/http';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -42,11 +42,16 @@ const states = {
 
 export const StatementImportsPanel = () => {
   const { mutate: mutateCache } = useSWRConfig();
-  const { data, error, isLoading, mutate } = useSWR<StatementImportsResponse>(importsUrl, fetcher, {
+  const { data, error, isLoading, mutate } = useSWR<StatementImportsResponse, HttpError>(importsUrl, fetcher, {
     refreshInterval: current => current?.jobs.some(job => job.status === 'queued' || job.status === 'running') ? 2_000 : 60_000,
   });
   const input = useRef<HTMLInputElement>(null);
   const submitting = useRef(false);
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
   const completions = useRef<Map<string, string | null> | null>(null);
   const [files, setFiles] = useState<File[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -70,13 +75,17 @@ export const StatementImportsPanel = () => {
     completions.current = new Map(data.jobs.map(job => [job.id, job.finished_at]));
     if (!finished) return;
     // Failed imports can have written records before the error, so refresh those too.
+    const epoch = getPrivateRequestEpoch();
     setRefreshError(null);
     void mutateCache(key => {
       if (Array.isArray(key)) return key[0] === 'positions';
       if (typeof key !== 'string') return false;
       const path = key.split('?')[0];
       return affectedEndpoints.some(endpoint => path === endpoint || path.startsWith(`${endpoint}/`));
-    }).catch((error: unknown) => setRefreshError(`Import status is current, but portfolio data could not be refreshed. Reload to see current data. ${errorMessage(error)}`));
+    }).catch((error: unknown) => {
+      if (!mounted.current || !isCurrentPrivateRequestEpoch(epoch)) return;
+      setRefreshError(`Import status is current, but portfolio data could not be refreshed. Reload to see current data. ${errorMessage(error)}`);
+    });
   }, [data, mutateCache]);
 
   const upload = async (event: FormEvent<HTMLFormElement>) => {
@@ -99,11 +108,13 @@ export const StatementImportsPanel = () => {
       return;
     }
     submitting.current = true;
+    const epoch = getPrivateRequestEpoch();
     setUploading(true);
     try {
       const body = new FormData();
       for (const file of files) body.append('files', file);
-      const accepted: StatementImportsResponse = await fetcher(importsUrl, { method: 'POST', body });
+      const accepted: StatementImportsResponse = await fetcher(importsUrl, { method: 'POST', body, cache: 'no-store' });
+      if (!mounted.current || !isCurrentPrivateRequestEpoch(epoch)) return;
       setFiles([]);
       if (input.current) input.current.value = '';
       setNotice(`${accepted.jobs.length} ${accepted.jobs.length === 1 ? 'file' : 'files'} added to the import queue.`);
@@ -113,11 +124,14 @@ export const StatementImportsPanel = () => {
         ...current?.jobs ?? [],
       ] }), { revalidate: false });
     } catch (error: unknown) {
+      if (!mounted.current || !isCurrentPrivateRequestEpoch(epoch) || (error instanceof Error && error.name === 'AbortError')) return;
       setFailure(`Upload could not be confirmed: ${errorMessage(error)} Check the queue before submitting again.`);
     } finally {
       submitting.current = false;
-      setUploading(false);
-      void mutate().catch(() => undefined);
+      if (mounted.current && isCurrentPrivateRequestEpoch(epoch)) {
+        setUploading(false);
+        void mutate().catch(() => undefined);
+      }
     }
   };
 

@@ -2,7 +2,7 @@ use axum::{
     extract::{rejection::JsonRejection, Path},
     http::StatusCode,
     response::IntoResponse,
-    Json,
+    Extension, Json,
 };
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
@@ -12,6 +12,7 @@ use utoipa::ToSchema;
 
 use crate::database::{
     db_client,
+    models::auth::{CurrentUser, Role, UserId},
     models::instrument::InstrumentDetails,
     queries::{
         background_job as jobs,
@@ -56,11 +57,11 @@ pub struct ManualPriceRequest {
     ),
     security(("api_token" = []))
 )]
-pub async fn instruments() -> Result<impl IntoResponse, ErrorResponse> {
+pub async fn instruments(Extension(current): Extension<CurrentUser>) -> Result<impl IntoResponse, ErrorResponse> {
     let client = db_client()
         .await
         .map_err(|e| internal_error("InstrumentRetrievalError", e))?;
-    let instruments = get_all_instruments(&client)
+    let instruments = get_all_instruments(&current.id, &client)
         .await
         .map_err(|e| internal_error("InstrumentRetrievalError", e))?;
     json_response(&instruments).map_err(|status| internal_error("SerializationError", status))
@@ -79,11 +80,11 @@ pub async fn instruments() -> Result<impl IntoResponse, ErrorResponse> {
     ),
     security(("api_token" = []))
 )]
-pub async fn instrument(Path(isin): Path<String>) -> Result<impl IntoResponse, ErrorResponse> {
+pub async fn instrument(Extension(current): Extension<CurrentUser>, Path(isin): Path<String>) -> Result<impl IntoResponse, ErrorResponse> {
     let client = db_client()
         .await
         .map_err(|e| internal_error("InstrumentRetrievalError", e))?;
-    let instrument = required_instrument(&client, &isin).await?;
+    let instrument = required_instrument(&current.id, &client, &isin).await?;
     json_response(&instrument).map_err(|status| internal_error("SerializationError", status))
 }
 
@@ -106,10 +107,11 @@ fn invalid_json(rejection: JsonRejection) -> ErrorResponse {
 }
 
 async fn required_instrument(
+    user_id: &UserId,
     client: &Client,
     isin: &str,
 ) -> Result<InstrumentDetails, ErrorResponse> {
-    get_instrument_by_id(client, isin)
+    get_instrument_by_id(user_id, client, isin)
         .await
         .map_err(|e| internal_error("InstrumentRetrievalError", e))?
         .ok_or_else(|| instrument_not_found(isin))
@@ -132,6 +134,7 @@ async fn required_instrument(
     security(("api_token" = []))
 )]
 pub async fn rename(
+    Extension(current): Extension<CurrentUser>,
     Path(isin): Path<String>,
     payload: Result<Json<RenameInstrumentRequest>, JsonRejection>,
 ) -> Result<impl IntoResponse, ErrorResponse> {
@@ -148,7 +151,7 @@ pub async fn rename(
     let client = db_client()
         .await
         .map_err(|e| internal_error("InstrumentUpdateError", e))?;
-    let instrument = rename_instrument(&client, &isin, name)
+    let instrument = rename_instrument(&current.id, &client, &isin, name)
         .await
         .map_err(|e| internal_error("InstrumentUpdateError", e))?
         .ok_or_else(|| instrument_not_found(&isin))?;
@@ -172,6 +175,7 @@ pub async fn rename(
     security(("api_token" = []))
 )]
 pub async fn set_price(
+    Extension(current): Extension<CurrentUser>,
     Path(isin): Path<String>,
     payload: Result<Json<ManualPriceRequest>, JsonRejection>,
 ) -> Result<impl IntoResponse, ErrorResponse> {
@@ -197,11 +201,11 @@ pub async fn set_price(
     let mut client = db_client()
         .await
         .map_err(|e| internal_error("PriceUpdateError", e))?;
-    required_instrument(&client, &isin).await?;
-    price::set_manual(&mut client, &isin, request.price, as_of)
+    required_instrument(&current.id, &client, &isin).await?;
+    price::set_manual(&current.id, &mut client, &isin, request.price, as_of)
         .await
         .map_err(|e| internal_error("PriceUpdateError", e))?;
-    let instrument = required_instrument(&client, &isin).await?;
+    let instrument = required_instrument(&current.id, &client, &isin).await?;
     json_response(&instrument).map_err(|status| internal_error("SerializationError", status))
 }
 
@@ -218,15 +222,15 @@ pub async fn set_price(
     ),
     security(("api_token" = []))
 )]
-pub async fn unpin_price(Path(isin): Path<String>) -> Result<impl IntoResponse, ErrorResponse> {
+pub async fn unpin_price(Extension(current): Extension<CurrentUser>, Path(isin): Path<String>) -> Result<impl IntoResponse, ErrorResponse> {
     let mut client = db_client()
         .await
         .map_err(|e| internal_error("PriceUpdateError", e))?;
-    required_instrument(&client, &isin).await?;
-    price::unpin(&mut client, &isin)
+    required_instrument(&current.id, &client, &isin).await?;
+    price::unpin(&current.id, &mut client, &isin)
         .await
         .map_err(|e| internal_error("PriceUpdateError", e))?;
-    let instrument = required_instrument(&client, &isin).await?;
+    let instrument = required_instrument(&current.id, &client, &isin).await?;
     json_response(&instrument).map_err(|status| internal_error("SerializationError", status))
 }
 
@@ -241,8 +245,8 @@ pub async fn unpin_price(Path(isin): Path<String>) -> Result<impl IntoResponse, 
     ),
     security(("api_token" = []))
 )]
-pub async fn brokers() -> Result<impl IntoResponse, ErrorResponse> {
-    let brokers = get_brokers()
+pub async fn brokers(Extension(current): Extension<CurrentUser>) -> Result<impl IntoResponse, ErrorResponse> {
+    let brokers = get_brokers(&current.id)
         .await
         .map_err(|e| internal_error("BrokerRetrievalError", e))?;
     json_response(&brokers).map_err(|status| internal_error("SerializationError", status))
@@ -259,8 +263,8 @@ pub async fn brokers() -> Result<impl IntoResponse, ErrorResponse> {
     ),
     security(("api_token" = []))
 )]
-pub async fn prices() -> Result<impl IntoResponse, ErrorResponse> {
-    let status = pricing::status()
+pub async fn prices(Extension(current): Extension<CurrentUser>) -> Result<impl IntoResponse, ErrorResponse> {
+    let status = pricing::status(&current.id)
         .await
         .map_err(|e| internal_error("PriceStatusError", e))?;
     json_response(&status).map_err(|status| internal_error("SerializationError", status))
@@ -290,8 +294,10 @@ fn supported_feed(value: &str) -> Result<Feed, ErrorResponse> {
     security(("api_token" = []))
 )]
 pub async fn save_scheduler(
+    Extension(current): Extension<CurrentUser>,
     payload: Result<Json<PriceSchedulerSettings>, JsonRejection>,
 ) -> Result<impl IntoResponse, ErrorResponse> {
+    require_price_admin(&current)?;
     let Json(settings) = payload.map_err(invalid_json)?;
     if !(1..=1440).contains(&settings.interval_minutes)
         || !(1..=4).contains(&settings.worker_concurrency)
@@ -322,7 +328,7 @@ pub async fn save_scheduler(
             .await
             .map_err(|e| internal_error("PriceScheduleError", e))?;
     }
-    let status = pricing::status()
+    let status = pricing::status(&current.id)
         .await
         .map_err(|e| internal_error("PriceStatusError", e))?;
     json_response(&status).map_err(|status| internal_error("SerializationError", status))
@@ -338,7 +344,8 @@ pub async fn save_scheduler(
     ),
     security(("api_token" = []))
 )]
-pub async fn refresh_prices() -> Result<impl IntoResponse, ErrorResponse> {
+pub async fn refresh_prices(Extension(current): Extension<CurrentUser>) -> Result<impl IntoResponse, ErrorResponse> {
+    require_price_admin(&current)?;
     let mut client = db_client()
         .await
         .map_err(|e| internal_error("PriceRefreshError", e))?;
@@ -356,7 +363,7 @@ pub async fn refresh_prices() -> Result<impl IntoResponse, ErrorResponse> {
     jobs::enqueue(&mut client, &config.feeds)
         .await
         .map_err(|e| internal_error("PriceRefreshError", e))?;
-    let status = pricing::status()
+    let status = pricing::status(&current.id)
         .await
         .map_err(|e| internal_error("PriceStatusError", e))?;
     Ok((StatusCode::ACCEPTED, Json(status)))
@@ -374,8 +381,10 @@ pub async fn refresh_prices() -> Result<impl IntoResponse, ErrorResponse> {
     security(("api_token" = []))
 )]
 pub async fn refresh_price_feed(
+    Extension(current): Extension<CurrentUser>,
     Path(feed): Path<String>,
 ) -> Result<impl IntoResponse, ErrorResponse> {
+    require_price_admin(&current)?;
     let feed = supported_feed(&feed)?;
     let mut client = db_client()
         .await
@@ -383,7 +392,7 @@ pub async fn refresh_price_feed(
     jobs::enqueue(&mut client, &[feed])
         .await
         .map_err(|e| internal_error("PriceRefreshError", e))?;
-    let status = pricing::status()
+    let status = pricing::status(&current.id)
         .await
         .map_err(|e| internal_error("PriceStatusError", e))?;
     Ok((StatusCode::ACCEPTED, Json(status)))
@@ -401,8 +410,10 @@ pub async fn refresh_price_feed(
     security(("api_token" = []))
 )]
 pub async fn reset_price_feed(
+    Extension(current): Extension<CurrentUser>,
     Path(feed): Path<String>,
 ) -> Result<impl IntoResponse, ErrorResponse> {
+    require_price_admin(&current)?;
     let feed = supported_feed(&feed)?;
     let mut client = db_client()
         .await
@@ -410,10 +421,19 @@ pub async fn reset_price_feed(
     price_scheduler::reset(&mut client, feed)
         .await
         .map_err(|e| internal_error("PriceResetError", e))?;
-    let status = pricing::status()
+    let status = pricing::status(&current.id)
         .await
         .map_err(|e| internal_error("PriceStatusError", e))?;
     Ok((StatusCode::ACCEPTED, Json(status)))
+}
+
+fn require_price_admin(current: &CurrentUser) -> Result<(), ErrorResponse> {
+    crate::services::auth::require_browser(current)
+        .map_err(|error| ErrorResponse::new(error.status(), error.code(), error.message(), None))?;
+    if current.role != Role::Admin {
+        return Err(ErrorResponse::new(StatusCode::FORBIDDEN, "Forbidden", "Administrator access is required.", None));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -421,6 +441,17 @@ mod tests {
     use super::*;
     use chrono::Duration;
     use rust_decimal_macros::dec;
+    use crate::database::models::auth::CredentialKind;
+
+    fn current_user() -> Extension<CurrentUser> {
+        Extension(CurrentUser {
+            id: UserId::new(),
+            username: "pricing-test".into(),
+            role: Role::Member,
+            auth_version: 1,
+            credential: CredentialKind::BrowserSession,
+        })
+    }
 
     #[test]
     fn manual_price_request_requires_an_exact_decimal_string() {
@@ -442,6 +473,7 @@ mod tests {
     async fn instrument_mutations_reject_invalid_values_before_database_access() {
         for name in ["", " \t\n "] {
             let error = rename(
+                current_user(),
                 Path("existing".into()),
                 Ok(Json(RenameInstrumentRequest { name: name.into() })),
             )
@@ -452,6 +484,7 @@ mod tests {
         }
         for price in [Decimal::ZERO, dec!(-0.01)] {
             let error = set_price(
+                current_user(),
                 Path("existing".into()),
                 Ok(Json(ManualPriceRequest { price, as_of: None })),
             )
@@ -461,6 +494,7 @@ mod tests {
             assert_eq!(error.into_response().status(), StatusCode::BAD_REQUEST);
         }
         let error = set_price(
+            current_user(),
             Path("existing".into()),
             Ok(Json(ManualPriceRequest {
                 price: dec!(1),

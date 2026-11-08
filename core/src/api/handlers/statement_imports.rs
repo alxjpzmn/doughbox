@@ -2,13 +2,16 @@ use axum::{
     extract::{multipart::{MultipartError, MultipartRejection}, Multipart},
     http::StatusCode,
     response::IntoResponse,
-    Json,
+    Extension, Json,
 };
 use utoipa::ToSchema;
 
 use crate::{
     api::errors::ErrorResponse,
-    database::models::statement_import::{StatementImportFile, StatementImportsStatus},
+    database::models::{
+        auth::CurrentUser,
+        statement_import::{StatementImportFile, StatementImportsStatus},
+    },
     services::statement_imports,
 };
 
@@ -96,14 +99,16 @@ async fn read_upload(payload: Result<Multipart, MultipartRejection>) -> Result<V
 #[utoipa::path(
     get, path = "/api/statement-imports", tag = "portfolio",
     responses(
-        (status = 200, description = "All queued/running uploads and the 100 latest completed uploads, newest id first. Uploads continue without an open browser. Interrupted imports fail and may have partially imported records.", body = StatementImportsStatus),
+        (status = 200, description = "Your queued/running uploads and 100 latest completed uploads, newest id first. Uploads continue without an open browser. Interrupted imports fail and may have partially imported records.", body = StatementImportsStatus),
         (status = 401, description = "Unauthorized"),
         (status = 500, description = "Could not read statement import status", body = ErrorResponse)
     ),
     security(("api_token" = []))
 )]
-pub async fn get_statement_imports() -> Result<impl IntoResponse, ErrorResponse> {
-    let status = statement_imports::status().await.map_err(|_| {
+pub async fn get_statement_imports(
+    Extension(current): Extension<CurrentUser>,
+) -> Result<impl IntoResponse, ErrorResponse> {
+    let status = statement_imports::status(&current.id).await.map_err(|_| {
         internal_error("StatementImportStatusError", "Could not read statement import status")
     })?;
     Ok(Json(status))
@@ -123,11 +128,16 @@ pub async fn get_statement_imports() -> Result<impl IntoResponse, ErrorResponse>
     security(("api_token" = []))
 )]
 pub async fn upload_statement_imports(
+    Extension(current): Extension<CurrentUser>,
     payload: Result<Multipart, MultipartRejection>,
 ) -> Result<impl IntoResponse, ErrorResponse> {
     let files = read_upload(payload).await?;
-    let accepted = statement_imports::enqueue(&files).await.map_err(|_| {
-        internal_error("StatementImportQueueError", "Could not queue statement files; no files were accepted")
+    let accepted = statement_imports::enqueue(&current.id, &files).await.map_err(|error| {
+        if let Some(auth) = error.downcast_ref::<crate::services::auth::AuthError>() {
+            ErrorResponse::new(auth.status(), auth.code(), auth.message(), None)
+        } else {
+            internal_error("StatementImportQueueError", "Could not queue statement files; no files were accepted")
+        }
     })?;
     Ok((StatusCode::ACCEPTED, Json(accepted)))
 }

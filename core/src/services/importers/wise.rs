@@ -151,7 +151,7 @@ fn detect_asset_record_type(record: &WiseAssetRecord) -> AssetRecordTye {
     AssetRecordTye::Unmatched
 }
 
-pub async fn extract_wise_record(file_content: &[u8]) -> anyhow::Result<()> {
+pub async fn extract_wise_record(user_id: &crate::database::models::auth::UserId, file_content: &[u8]) -> anyhow::Result<()> {
     let broker = "Wise".to_string();
 
     let cursor = Cursor::new(file_content);
@@ -204,7 +204,7 @@ pub async fn extract_wise_record(file_content: &[u8]) -> anyhow::Result<()> {
                             withholding_tax: dec!(0.0),
                             withholding_tax_currency: record.asset_base_currency.clone(),
                         };
-                        add_trade_to_db(trade, Some(record.wise_id)).await?;
+                        add_trade_to_db(user_id, trade, Some(record.wise_id)).await?;
                     }
                     AssetRecordTye::Unmatched => continue,
                 }
@@ -231,7 +231,7 @@ pub async fn extract_wise_record(file_content: &[u8]) -> anyhow::Result<()> {
                             date_added: Utc::now(),
                             fees: record.total_fees.parse::<Decimal>()?,
                         };
-                        add_fx_conversion_to_db(fx_conversion).await?
+                        add_fx_conversion_to_db(user_id, fx_conversion).await?
                     }
                     CashRecordType::InterestPayment => {
                         let date = parse_timestamp(format!("{} 16:00:00", record.date).as_str())?;
@@ -258,7 +258,7 @@ pub async fn extract_wise_record(file_content: &[u8]) -> anyhow::Result<()> {
                             withholding_tax: dec!(0.0),
                             withholding_tax_currency: record.currency,
                         };
-                        if add_interest_to_db(interest_payment.clone(), None).await? {
+                        if add_interest_to_db(user_id, interest_payment.clone(), None).await? {
                             println!("💵 Interest payment added: {:?}", interest_payment);
                         }
                     }
@@ -286,7 +286,7 @@ pub async fn extract_wise_record(file_content: &[u8]) -> anyhow::Result<()> {
                             date_added: Utc::now(),
                             fees: record.total_fees.parse::<Decimal>()?,
                         };
-                        add_fx_conversion_to_db(fx_conversion).await?
+                        add_fx_conversion_to_db(user_id, fx_conversion).await?
                     }
                     CashRecordType::InterestPayment => {
                         let interest_payment = InterestPayment {
@@ -312,7 +312,7 @@ pub async fn extract_wise_record(file_content: &[u8]) -> anyhow::Result<()> {
                             withholding_tax: dec!(0.0),
                             withholding_tax_currency: record.currency,
                         };
-                        if add_interest_to_db(interest_payment.clone(), None).await? {
+                        if add_interest_to_db(user_id, interest_payment.clone(), None).await? {
                             println!("💵 Interest payment added: {:?}", interest_payment);
                         }
                     }

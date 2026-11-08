@@ -1,8 +1,8 @@
 import { useLayoutEffect, useRef, useState, type FormEvent } from 'react';
 import useSwr from 'swr';
 import { ArrowClockwiseIcon, CheckCircleIcon, CircleDashedIcon, ClockIcon, SpinnerGapIcon, WarningCircleIcon, XCircleIcon } from '@phosphor-icons/react';
-import { BASE_URL, fetcher, sendMutateRequest } from '@/lib/http';
-import { focusedProposalId } from '@/hooks/useAuth';
+import { BASE_URL, fetcher, getPrivateRequestEpoch, isCurrentPrivateRequestEpoch, sendMutateRequest, type HttpError } from '@/lib/http';
+import useAuth, { focusedProposalId } from '@/hooks/useAuth';
 import type { Proposal, TradeResult, TradingEnvironment, TradingState } from '@/types/trading';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -132,9 +132,20 @@ function ProposalCard({ proposal, disabled, busyAction, focused, onAction }: {
 }
 
 export default function Trading() {
+  const { requestReauthentication } = useAuth();
+  const mounted = useRef(false);
+  useLayoutEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+  const assertCurrentRequest = (epoch: number) => {
+    if (!mounted.current || !isCurrentPrivateRequestEpoch(epoch)) {
+      throw new DOMException('Authentication changed.', 'AbortError');
+    }
+  };
   const submitting = useRef(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
-  const { data, error, isValidating, mutate } = useSwr<TradingState>(tradingUrl, fetcher, {
+  const { data, error, isValidating, mutate } = useSwr<TradingState, HttpError>(tradingUrl, fetcher, {
     refreshInterval: busyAction ? 0 : 10_000,
     revalidateOnFocus: !busyAction,
     revalidateOnReconnect: !busyAction,
@@ -163,23 +174,31 @@ export default function Trading() {
   const refresh = async () => {
     if (submitting.current) return;
     submitting.current = true;
+    const epoch = getPrivateRequestEpoch();
     setBusyAction('refresh');
     try {
-      await mutate(async () => await fetcher(tradingUrl) as TradingState, { revalidate: false });
+      await mutate(async () => {
+        const state: TradingState = await fetcher(tradingUrl);
+        assertCurrentRequest(epoch);
+        return state;
+      }, { revalidate: false });
+      assertCurrentRequest(epoch);
       setRefreshRequired(false);
       setFeedback({ error: false, message: 'Trading status refreshed.', refresh: true });
     } catch (failure) {
+      if (!mounted.current || !isCurrentPrivateRequestEpoch(epoch) || (failure instanceof Error && failure.name === 'AbortError')) return;
       setRefreshRequired(true);
       setFeedback({ error: true, message: errorMessage(failure), refresh: true });
     } finally {
       submitting.current = false;
-      setBusyAction(null);
+      if (mounted.current && isCurrentPrivateRequestEpoch(epoch)) setBusyAction(null);
     }
   };
 
-  const runMutation = async (action: string, operation: () => Promise<{ message: string; state?: TradingState }>) => {
+  const runMutation = async (action: string, operation: (epoch: number) => Promise<{ message: string; state?: TradingState }>) => {
     if (submitting.current || disabled) return;
     submitting.current = true;
+    const epoch = getPrivateRequestEpoch();
     setBusyAction(action);
     setFeedback(null);
     try {
@@ -189,17 +208,28 @@ export default function Trading() {
       // A rejected connection must not become the SWR error, or the form locks behind a refresh failure.
       await mutate(async (current) => {
         try {
-          const result = await operation();
+          const result = await operation(epoch);
+          assertCurrentRequest(epoch);
           mutationSucceeded = true;
           message = result.message;
-          return result.state ?? await fetcher(tradingUrl) as TradingState;
+          const state = result.state ?? await fetcher(tradingUrl) as TradingState;
+          assertCurrentRequest(epoch);
+          return state;
         } catch (error) {
+          if (!mounted.current || !isCurrentPrivateRequestEpoch(epoch) || (error instanceof Error && error.name === 'AbortError')) throw error;
           failure = error;
           return current;
         }
       }, { revalidate: false });
+      assertCurrentRequest(epoch);
       if (failure) {
-        const uncertainOrder = action.startsWith('approve:');
+        const code = (failure as Partial<HttpError>).error;
+        if (code === 'ReauthenticationRequired') {
+          requestReauthentication();
+          setFeedback({ error: true, message: 'Verify your password and authenticator, then retry this action. Your connection draft has been kept; nothing is retried automatically.' });
+          return;
+        }
+        const uncertainOrder = action.startsWith('approve:') && code !== 'CsrfRejected' && code !== 'AuthenticationStateChanged';
         if (uncertainOrder || mutationSucceeded) setRefreshRequired(true);
         setFeedback({ error: true, message: uncertainOrder
           ? `${errorMessage(failure)} The request may have taken effect. Refresh status before further actions; do not retry uncertain orders. Check the broker directly.`
@@ -210,9 +240,13 @@ export default function Trading() {
       }
       setRefreshRequired(false);
       setFeedback({ error: false, message });
+    } catch (failure) {
+      if (!mounted.current || !isCurrentPrivateRequestEpoch(epoch) || (failure instanceof Error && failure.name === 'AbortError')) return;
+      setRefreshRequired(true);
+      setFeedback({ error: true, message: errorMessage(failure) });
     } finally {
       submitting.current = false;
-      setBusyAction(null);
+      if (mounted.current && isCurrentPrivateRequestEpoch(epoch)) setBusyAction(null);
     }
   };
 
@@ -222,11 +256,12 @@ export default function Trading() {
     if ((environment === 'live' || data?.configured) && !window.confirm(
       `${environment === 'live' ? 'Connect to LIVE trading with real money at risk? ' : 'Replace the broker connection? '}All pending proposals will be discarded. Orders already submitted to the broker are not cancelled.`,
     )) return;
-    await runMutation('connection', async () => {
+    await runMutation('connection', async (epoch) => {
       const response = await sendMutateRequest(`${tradingUrl}/connection`, {
         api_key: apiKey, api_secret: apiSecret, environment,
       }, { method: 'PUT' });
       const state: TradingState = await response.json();
+      assertCurrentRequest(epoch);
       setAgentToken(null);
       setApiKey('');
       setApiSecret('');
@@ -237,9 +272,10 @@ export default function Trading() {
 
   const disconnect = async () => {
     if (disabled || executing || !data?.configured || !window.confirm('Disconnect trading? Pending proposals will be discarded and agent access disabled. Orders already submitted to the broker are not cancelled.')) return;
-    await runMutation('disconnect', async () => {
+    await runMutation('disconnect', async (epoch) => {
       const response = await sendMutateRequest(`${tradingUrl}/connection`, undefined, { method: 'DELETE' });
       const state: TradingState = await response.json();
+      assertCurrentRequest(epoch);
       setAgentToken(null);
       setApiKey('');
       setApiSecret('');
@@ -252,9 +288,10 @@ export default function Trading() {
     if (data.agent_token_set && !window.confirm('Rotate the agent token? The previous token will stop working immediately.')) return;
     setCopied(current => current === 'token' ? null : current);
     setAgentToken(null);
-    await runMutation('token', async () => {
+    await runMutation('token', async (epoch) => {
       const response = await sendMutateRequest(`${tradingUrl}/agent-token`);
       const result: { token: string } = await response.json();
+      assertCurrentRequest(epoch);
       setAgentToken(result.token);
       return { message: 'Agent token created. Copy it now; it will not be shown again after you leave this page.' };
     });
@@ -262,9 +299,10 @@ export default function Trading() {
 
   const proposalAction = async (proposal: Proposal, action: 'approve' | 'discard') => {
     if (disabled || !data?.configured || setupBlocked || (action === 'approve' && executing)) return;
-    await runMutation(`${action}:${proposal.id}`, async () => {
+    await runMutation(`${action}:${proposal.id}`, async (epoch) => {
       const response = await sendMutateRequest(`${tradingUrl}/proposals/${encodeURIComponent(proposal.id)}/${action}`);
       const result: Proposal = await response.json();
+      assertCurrentRequest(epoch);
       return { message: action === 'discard' ? 'Proposal discarded.'
         : result.trades.some(trade => trade.status === 'failed' || trade.status === 'unknown')
           ? 'Processing stopped with failed or uncertain orders. Review the results and check the broker; do not retry blindly.'
@@ -273,11 +311,16 @@ export default function Trading() {
   };
 
   const copy = async (value: string, kind: 'endpoint' | 'token') => {
+    const epoch = getPrivateRequestEpoch();
     try {
       await navigator.clipboard.writeText(value);
+      assertCurrentRequest(epoch);
       setCopied(kind);
-      window.setTimeout(() => setCopied(current => current === kind ? null : current), 2000);
+      window.setTimeout(() => {
+        if (mounted.current && isCurrentPrivateRequestEpoch(epoch)) setCopied(current => current === kind ? null : current);
+      }, 2000);
     } catch {
+      if (!mounted.current || !isCurrentPrivateRequestEpoch(epoch)) return;
       setFeedback({ error: true, message: `Could not copy the ${kind}. Select and copy the displayed value manually.` });
     }
   };
@@ -286,7 +329,7 @@ export default function Trading() {
     <div>
       <h1 className="text-xl font-semibold">Trading</h1>
       <p className="mt-1 text-sm text-muted-foreground">{setupBlocked
-        ? 'Before connecting Trading 212, configure a login password and credential-encryption key on the server. Once setup is complete, you can connect your broker, give an external agent the MCP endpoint, and review its proposed trades here.'
+        ? 'Your own account must have a password and enrolled authenticator before trading. Ask the server administrator to resolve the credential-encryption configuration before connecting Trading 212.'
         : 'External agents can only propose trades. You review and approve each order or entire batch here; an agent token cannot approve or execute trades.'}</p>
     </div>
     {!data && !error && <p role="status" className="text-sm text-muted-foreground">Loading trading…</p>}
@@ -297,7 +340,7 @@ export default function Trading() {
     {data?.setup_error && <div role="alert" className="space-y-2 rounded-lg border border-red-800/40 bg-red-50 p-3 text-sm text-red-950 dark:border-red-200/40 dark:bg-red-950 dark:text-red-50">
       <p className="font-semibold">Server setup required</p>
       <p className="break-words font-medium">{data.setup_error}</p>
-      <p>Ask the server administrator to configure PASSWORD and TRADING_MASTER_KEY (a hex-encoded 32-byte encryption key). Broker credentials are encrypted on the server. Refresh after the server configuration is fixed.</p>
+      <p>Ask the server administrator to configure TRADING_MASTER_KEY (a hex-encoded 32-byte encryption key). Broker credentials are encrypted on the server and belong only to your enrolled account. Refresh after the server configuration is fixed.</p>
       <RefreshControl label="Refresh setup status" busy={busyAction === 'refresh'} disabled={busy && busyAction !== 'refresh'} feedback={feedback} onClick={refresh} />
     </div>}
     {feedback && !feedback.refresh && <p role={feedback.error ? 'alert' : 'status'} className={`break-words text-sm ${feedback.error ? 'text-red-700 dark:text-red-300' : 'text-muted-foreground'}`}>{feedback.message}</p>}
@@ -380,11 +423,12 @@ export default function Trading() {
               <Button type="button" variant="outline" disabled={disabled || setupBlocked || !endpoint} onClick={() => endpoint && copy(endpoint, 'endpoint')}>{copied === 'endpoint' ? <><CheckCircleIcon aria-hidden="true" />Copied</> : 'Copy endpoint'}</Button>
             </div>
             <p className="text-xs text-muted-foreground">In your agent’s remote HTTP MCP settings, use this URL and an Authorization header of <code>Bearer &lt;agent token&gt;</code>.</p>
-            <p className="text-xs text-muted-foreground">For a public hostname, the server administrator must include it in <code>TRADING_MCP_HOSTS</code>. Use HTTPS outside localhost. Proposal responses include a link back to this page. Set <code>DOUGHBOX_PUBLIC_URL</code> when the browser origin differs from the MCP Host.</p>
+            <p className="text-xs text-muted-foreground">For a public hostname, the server administrator must include it in <code>TRADING_MCP_HOSTS</code>. Use HTTPS outside trusted local networks. Proposal responses link back to this page using the configured <code>DOUGHBOX_PUBLIC_URL</code>.</p>
             <div className="flex flex-wrap items-center gap-2">
               <Button type="button" variant="outline" disabled={disabled || setupBlocked} onClick={createToken}>{busyAction === 'token' ? 'Creating…' : data.agent_token_set ? 'Rotate agent token' : 'Create agent token'}</Button>
               <span className="text-xs text-muted-foreground">{data.agent_token_set ? 'A token is configured. Rotation revokes the previous token.' : 'No agent token configured.'}</span>
             </div>
+            <p className="text-xs text-muted-foreground">Creating or rotating a token requires password and authenticator verification within the last five minutes. After verification, retry the token action; it is never submitted automatically.</p>
             {agentToken && !stale && !setupBlocked && <div className="space-y-2 rounded-md border p-3">
               <Label htmlFor="trading-agent-token">New agent token — shown only this time</Label>
               <Input id="trading-agent-token" readOnly value={agentToken} autoComplete="off" spellCheck={false} />

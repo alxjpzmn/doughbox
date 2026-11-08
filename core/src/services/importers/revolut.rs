@@ -88,7 +88,7 @@ fn detect_account_record_type(record: &RevolutAccountRecord) -> AccountRecordTyp
     AccountRecordType::Unmatched
 }
 
-pub async fn extract_revolut_record(file_content: &[u8]) -> anyhow::Result<()> {
+pub async fn extract_revolut_record(user_id: &crate::database::models::auth::UserId, file_content: &[u8]) -> anyhow::Result<()> {
     let broker = "Revolut".to_string();
     let listing_changes = get_listing_changes().await?;
 
@@ -132,7 +132,7 @@ pub async fn extract_revolut_record(file_content: &[u8]) -> anyhow::Result<()> {
                             withholding_tax: dec!(0),
                             withholding_tax_currency: record.currency.clone(),
                         };
-                        if add_dividend_to_db(dividend.clone(), None).await? {
+                        if add_dividend_to_db(user_id, dividend.clone(), None).await? {
                             println!("💵 Dividend added: {:?}", dividend);
                         }
                     }
@@ -174,7 +174,7 @@ pub async fn extract_revolut_record(file_content: &[u8]) -> anyhow::Result<()> {
                             withholding_tax: dec!(0.0),
                             withholding_tax_currency: record.currency,
                         };
-                        add_trade_to_db(trade, None).await?;
+                        add_trade_to_db(user_id, trade, None).await?;
                     }
                     TradingRecordType::CashTransfer => continue,
                     TradingRecordType::Unmatched => continue,
@@ -220,7 +220,7 @@ pub async fn extract_revolut_record(file_content: &[u8]) -> anyhow::Result<()> {
                                                 .parse::<Decimal>()
                                                 .unwrap_or(dec!(0.0)),
                                         };
-                                        add_fx_conversion_to_db(fx_conversion).await?;
+                                        add_fx_conversion_to_db(user_id, fx_conversion).await?;
                                     }
                                 }
                             };

@@ -3,25 +3,10 @@ mod cli;
 mod database;
 mod services;
 
-use api::api;
-use cli::cli;
-use database::{db_client, queries::application_settings, run_migrations};
-use services::{
-    files::create_necessary_directories,
-    shared::{
-        env::check_for_env_variables,
-        logger::{apply_level, init_logger},
-    },
-};
 
 async fn run_doughbox() -> anyhow::Result<()> {
-    init_logger();
-    check_for_env_variables();
-    create_necessary_directories();
-    run_migrations().await?;
-    let settings = application_settings::read(&db_client().await?).await?;
-    apply_level(&settings.log_level)?;
-    cli().await?;
+    services::shared::logger::init_logger();
+    cli::cli().await?;
     Ok(())
 }
 

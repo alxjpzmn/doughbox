@@ -4,7 +4,7 @@ use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use std::collections::BTreeMap;
 
-use crate::database::models::fund_report::FundTaxReport;
+use crate::database::models::{auth::UserId, fund_report::FundTaxReport};
 use crate::database::queries::{composite::get_active_years, fund_report::get_oekb_fund_report_by_id, fx_rate::get_exchange_rate, tax_optimization::get_tax_optimizations_by_date_range};
 use crate::services::dtt::{determine_source_country, treaty_rate, DttIncomeType};
 use crate::services::events::{get_events, EventType, PortfolioEvent, TradeDirection};
@@ -33,8 +33,8 @@ pub(crate) fn in_range(date: DateTime<Utc>, from: Option<DateTime<Utc>>, until: 
     from.is_none_or(|d| date >= d) && until.is_none_or(|d| date <= d)
 }
 
-pub(crate) async fn load_events(until: Option<DateTime<Utc>>) -> Result<Vec<PortfolioEvent>> {
-    let years = get_active_years().await?;
+pub(crate) async fn load_events(user_id: &UserId, until: Option<DateTime<Utc>>) -> Result<Vec<PortfolioEvent>> {
+    let years = get_active_years(user_id).await?;
     let Some(first) = years.iter().min().copied() else { return Ok(Vec::new()); };
     let last = years.iter().max().copied().unwrap();
     let start = Utc.with_ymd_and_hms(first, 1, 1, 0, 0, 0).unwrap();
@@ -45,7 +45,7 @@ pub(crate) async fn load_events(until: Option<DateTime<Utc>>) -> Result<Vec<Port
         None => Utc.with_ymd_and_hms(last + 1, 1, 1, 0, 0, 0).unwrap(),
     };
     if end <= start { return Ok(Vec::new()); }
-    get_events(start, end).await
+    get_events(user_id, start, end).await
 }
 
 pub(crate) struct TaxEngine {
@@ -247,9 +247,9 @@ fn base_impact(event: &PortfolioEvent) -> TransactionTaxImpact {
     }
 }
 
-pub(crate) async fn calculate_report(from: Option<DateTime<Utc>>, until: Option<DateTime<Utc>>) -> Result<(TaxationReport, Vec<PortfolioEvent>, Vec<TransactionTaxImpact>)> {
+pub(crate) async fn calculate_report(user_id: &UserId, from: Option<DateTime<Utc>>, until: Option<DateTime<Utc>>) -> Result<(TaxationReport, Vec<PortfolioEvent>, Vec<TransactionTaxImpact>)> {
     ensure!(from.zip(until).is_none_or(|(f, u)| f <= u), "Tax report start must not exceed end");
-    let events = load_events(until).await?;
+    let events = load_events(user_id, until).await?;
     let mut engine = TaxEngine::new();
     let mut impacts = Vec::new();
     for event in &events {
@@ -257,11 +257,11 @@ pub(crate) async fn calculate_report(from: Option<DateTime<Utc>>, until: Option<
         let impact = engine.process(event, count).await.with_context(|| format!("Tax event {:?} on {}", event.event_id, event.date))?;
         if count { impacts.push(impact); }
     }
-    for year in get_active_years().await? {
+    for year in get_active_years(user_id).await? {
         let start = Utc.with_ymd_and_hms(year, 1, 1, 0, 0, 0).unwrap();
         if until.is_some_and(|u| start > u) { continue; }
         let end = Utc.with_ymd_and_hms(year + 1, 1, 1, 0, 0, 0).unwrap() - chrono::Duration::nanoseconds(1);
-        for opt in get_tax_optimizations_by_date_range(start, end).await? {
+        for opt in get_tax_optimizations_by_date_range(user_id, start, end).await? {
             if !in_range(opt.date, from, until) || opt.amount == dec!(0) { continue; }
             let annual = engine.amounts.entry(opt.date.year()).or_default();
             // Signed manual tax cash-flow information; not inferred taxable income or treaty credit.

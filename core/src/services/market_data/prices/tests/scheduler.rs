@@ -398,9 +398,9 @@ async fn pricing_database_scheduler_reset_fences_live_worker_and_preserves_price
     let (mut db, schema) = test_database().await;
     configure_scheduler(&mut db, &config()).await.unwrap();
     db.batch_execute(
-        "INSERT INTO instrument(id, name, price, last_price_update, fallback_price, fallback_at)
-         VALUES ('DE0007164600', 'Selected equity', 50, '2020-01-01', 50, '2020-01-01'),
-                ('DE0000000001', 'Pinned equity', 60, '2020-01-01', 60, '2020-01-01')",
+        "INSERT INTO instrument(user_id, id, name, price, last_price_update, fallback_price, fallback_at)
+         VALUES ('pricing-owner', 'DE0007164600', 'Selected equity', 50, '2020-01-01', 50, '2020-01-01'),
+                ('pricing-owner', 'DE0000000001', 'Pinned equity', 60, '2020-01-01', 60, '2020-01-01')",
     )
     .await
     .unwrap();
@@ -422,7 +422,7 @@ async fn pricing_database_scheduler_reset_fences_live_worker_and_preserves_price
     write_file(&mut db, &running, "partial-file", "partial-hash", Some("partial-etag"), vec![pinned_report, unheld_report])
     .await
     .unwrap();
-    price::set_manual(&mut db, "DE0000000001", dec!(333), Utc::now())
+    price::set_manual(&owner(), &mut db, "DE0000000001", dec!(333), Utc::now())
         .await
         .unwrap();
     assert_eq!(selected(&db).await.0, dec!(101));
@@ -575,8 +575,8 @@ async fn pricing_database_scheduler_reset_fences_live_worker_and_preserves_price
         .await
         .is_err());
     let tracked = HashSet::from(["DE0007164600".into(), "DE0000000001".into()]);
-    let scope_hash = price::portfolio_scope_hash(&tracked);
-    assert!(price::begin_file(&mut db, &running, "reset", &tracked, &scope_hash)
+    let (eligible, scope_hash) = (fixture_pairs(&tracked), price::portfolio_scope_hash(&tracked));
+    assert!(price::begin_file(&mut db, &running, "reset", &tracked, &eligible, &scope_hash)
         .await
         .is_err());
     assert_eq!(snapshot(&db, "background_job").await, jobs_after_reset);
@@ -608,7 +608,7 @@ async fn pricing_database_scheduler_reset_fences_live_worker_and_preserves_price
     assert_eq!(selected(&db).await.0, dec!(102));
     let pinned: (Decimal, bool, String) = {
         let row = db
-            .query_one("SELECT price, price_pinned, price_source FROM instrument WHERE id = 'DE0000000001'", &[])
+            .query_one("SELECT price, price_pinned, price_source FROM instrument WHERE user_id = $1 AND id = 'DE0000000001'", &[&owner().as_str()])
             .await
             .unwrap();
         (row.get(0), row.get(1), row.get(2))

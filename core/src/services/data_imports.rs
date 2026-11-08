@@ -240,7 +240,11 @@ pub async fn refresh(source: &str) -> anyhow::Result<DataImportsStatus> {
 async fn run_import(db: Client, source: String) {
     let import = AssertUnwindSafe(async {
         match source.as_str() {
-            "polygon" => update_stock_splits().await,
+            "polygon" => {
+                let isins = crate::database::queries::composite::get_used_isins_all_users().await?;
+                update_stock_splits(&isins).await?;
+                crate::services::instruments::fund_data::update_oekb_fund_reports(&isins).await
+            },
             "ecb" => fetch_historic_ecb_rates(None).await,
             _ => unreachable!("validated before starting worker"),
         }

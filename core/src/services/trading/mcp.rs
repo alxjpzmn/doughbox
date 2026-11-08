@@ -1,6 +1,6 @@
 use axum::{
-    extract::Request,
-    http::{request::Parts, StatusCode},
+    extract::{Request, State},
+    http::request::Parts,
     middleware::{self, Next},
     response::{IntoResponse, Response},
     Router,
@@ -19,12 +19,20 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 use super::{approval, SubmitInput};
-use crate::services::notifications::{self, Notification};
+use crate::{
+    database::models::auth::UserId,
+    services::{auth::AuthError, notifications::{self, Notification}, shared::{env::get_env_variable, urls::parse_public_origin}},
+};
 
 #[derive(Clone)]
-struct AgentToken(String);
+struct AgentIdentity {
+    user_id: UserId,
+    hash: String,
+}
 #[derive(Clone)]
-struct TradingMcp;
+struct TradingMcp {
+    public_origin: Arc<str>,
+}
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct SearchInput {
@@ -45,11 +53,8 @@ struct ProposalInput {
     id: String,
 }
 
-fn hash(parts: &Parts) -> anyhow::Result<&str> {
-    parts
-        .extensions
-        .get::<AgentToken>()
-        .map(|token| token.0.as_str())
+fn identity(parts: &Parts) -> anyhow::Result<&AgentIdentity> {
+    parts.extensions.get::<AgentIdentity>()
         .ok_or_else(|| anyhow::anyhow!("A trading agent token is required on every request."))
 }
 fn result<T: Serialize>(result: anyhow::Result<T>) -> CallToolResult {
@@ -72,33 +77,29 @@ enum Notice {
     Read,
 }
 
-fn present_proposal(parts: &Parts, proposal: super::Proposal, notice: Notice) -> CallToolResult {
-    let configured = crate::services::shared::env::get_env_variable("DOUGHBOX_PUBLIC_URL");
-    let allowed = crate::services::shared::env::get_env_variable("TRADING_MCP_HOSTS")
-        .unwrap_or_else(|| "localhost,127.0.0.1,::1".into());
-    let host = request_host(parts);
+async fn present_proposal(user_id: &UserId, public_origin: &str, proposal: super::Proposal, notice: Notice) -> CallToolResult {
     let url = approval::approval_url(&approval::LinkInput {
-        configured_origin: configured.as_deref(),
-        allowed_hosts: &allowed,
-        host: host.as_deref(),
-        uri_scheme: parts.uri.scheme_str(),
-        forwarded_proto: parts
-            .headers
-            .get("x-forwarded-proto")
-            .and_then(|value| value.to_str().ok()),
+        configured_origin: Some(public_origin),
         proposal_id: &proposal.id,
     });
     let telegram = match notice {
-        Notice::New if notifications::configured() => {
-            let message = approval::proposal_notification(&proposal, url.as_deref());
-            tokio::spawn(async move {
-                if let Err(error) = (Notification { content: message }).send_without_preview().await {
-                    tracing::warn!(%error, "Trading proposal Telegram notification failed");
-                }
-            });
-            Some("requested")
-        }
-        Notice::New => Some("not_configured"),
+        Notice::New => match notifications::configured(user_id).await {
+            Ok(true) => {
+                let message = approval::proposal_notification(&proposal, url.as_deref());
+                let user_id = user_id.clone();
+                tokio::spawn(async move {
+                    if let Err(error) = (Notification { content: message }).send_without_preview(&user_id).await {
+                        tracing::warn!(%error, "Trading proposal Telegram notification failed");
+                    }
+                });
+                Some("requested")
+            }
+            Ok(false) => Some("not_configured"),
+            Err(error) => {
+                tracing::warn!(%error, "Trading proposal Telegram configuration unavailable");
+                Some("unavailable")
+            }
+        },
         Notice::Replay => Some("not_repeated"),
         Notice::Read => None,
     };
@@ -122,19 +123,6 @@ fn present_proposal(parts: &Parts, proposal: super::Proposal, notice: Notice) ->
     result
 }
 
-fn request_host(parts: &Parts) -> Option<String> {
-    if let Some(host) = parts
-        .headers
-        .get(axum::http::header::HOST)
-        .and_then(|value| value.to_str().ok())
-    {
-        let host = host.trim();
-        if !host.is_empty() {
-            return Some(host.to_owned());
-        }
-    }
-    parts.uri.authority().map(|authority| authority.as_str().to_owned())
-}
 #[tool_router(server_handler)]
 impl TradingMcp {
     #[tool(
@@ -145,7 +133,10 @@ impl TradingMcp {
         Extension(parts): Extension<Parts>,
         Parameters(input): Parameters<SearchInput>,
     ) -> CallToolResult {
-        result(async { super::search(hash(&parts)?, &input.query).await }.await)
+        result(async {
+            let agent = identity(&parts)?;
+            super::search(&agent.user_id, &agent.hash, &input.query).await
+        }.await)
     }
     #[tool(
         description = "Get DELAYED last-trade price references for 1 to 50 exact Trading 212 tickers using only already-ingested bulk post-trade files. Resolves ISIN and order currency from the broker catalog, with metadata backfill for older catalogs. No exchange quote HTTP, price-job enqueue or FX import occurs on quote reads. Returns a nullable decimal-string price in order currency and a native reference with price, quantity, currency, feed, venue, source-event as_of and received_at. This is NOT a bid/ask, midpoint, live, executable or NBBO quote. Zero reported quantity is indicative; unknown quantity remains null. Selection prefers non-indicative, then within max_age_seconds (positive; default 1800), then requested currency/exact GBP-GBX units, then EUR, latest event and deterministic feed tie. Check age_seconds, stale, indicative and unavailable_reason. Prices expire 168 hours after source events; receipt and requested freshness never extend expiry. Stored dated ECB observations or exact GBP/GBX units convert prices; missing FX leaves price null but preserves native provenance. Coverage depends on completed imports across Xetra, Tradegate, Frankfurt, Cboe and Euronext, including unheld instruments; inactive schedules or feed failures mean stale/missing data. Choose explicit ticker-currency limit prices for human review; lookup never chooses or reprices orders."
@@ -156,8 +147,8 @@ impl TradingMcp {
         Parameters(input): Parameters<QuoteInput>,
     ) -> CallToolResult {
         result(async {
-            let hash = hash(&parts)?;
-            super::quotes::get(hash, &input.tickers, input.max_age_seconds.unwrap_or(1800)).await
+            let agent = identity(&parts)?;
+            super::quotes::get(&agent.user_id, &agent.hash, &input.tickers, input.max_age_seconds.unwrap_or(1800)).await
         }.await)
     }
     #[tool(
@@ -168,12 +159,12 @@ impl TradingMcp {
         Extension(parts): Extension<Parts>,
         Parameters(input): Parameters<SubmitInput>,
     ) -> CallToolResult {
-        let hash = match hash(&parts) {
-            Ok(hash) => hash,
+        let agent = match identity(&parts) {
+            Ok(agent) => agent,
             Err(error) => return tool_error(error),
         };
-        match super::submit(hash, input).await {
-            Ok(outcome) => present_proposal(&parts, outcome.proposal, if outcome.created { Notice::New } else { Notice::Replay }),
+        match super::submit(&agent.user_id, &agent.hash, input).await {
+            Ok(outcome) => present_proposal(&agent.user_id, &self.public_origin, outcome.proposal, if outcome.created { Notice::New } else { Notice::Replay }).await,
             Err(error) => tool_error(error),
         }
     }
@@ -185,61 +176,121 @@ impl TradingMcp {
         Extension(parts): Extension<Parts>,
         Parameters(input): Parameters<ProposalInput>,
     ) -> CallToolResult {
-        let hash = match hash(&parts) {
-            Ok(hash) => hash,
+        let agent = match identity(&parts) {
+            Ok(agent) => agent,
             Err(error) => return tool_error(error),
         };
-        match super::get_proposal(hash, &input.id).await {
-            Ok(proposal) => present_proposal(&parts, proposal, Notice::Read),
+        match super::get_proposal(&agent.user_id, &agent.hash, &input.id).await {
+            Ok(proposal) => present_proposal(&agent.user_id, &self.public_origin, proposal, Notice::Read).await,
             Err(error) => tool_error(error),
         }
     }
 }
-async fn authenticate(mut request: Request, next: Next) -> Response {
-    let token = request
-        .headers()
-        .get(axum::http::header::AUTHORIZATION)
+async fn authenticate(State(public_origin): State<String>, mut request: Request, next: Next) -> Response {
+    let headers = request.headers();
+    if headers.contains_key(axum::http::header::AUTHORIZATION) && headers.get_all(axum::http::header::COOKIE).iter().any(|header| {
+        header.to_str().ok().is_some_and(|cookies| cookies.split(';').any(|cookie| {
+            cookie.trim().split_once('=').is_some_and(|(name, _)| name.trim() == "doughbox_session")
+        }))
+    }) {
+        return AuthError::AmbiguousCredentials.into_response();
+    }
+    if let Some(origin) = headers.get(axum::http::header::ORIGIN) {
+        if origin.to_str().ok().and_then(parse_public_origin).as_deref() != Some(public_origin.as_str()) {
+            return AuthError::CsrfRejected.into_response();
+        }
+    }
+    let token = headers.get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "));
-    let Some(token) =
-        token.filter(|token| token.starts_with("doughbox_trading_") && token.len() <= 128)
-    else {
-        return (
-            StatusCode::UNAUTHORIZED,
-            "A submission-only Trading agent Bearer token is required.",
-        )
-            .into_response();
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .filter(|token| token.starts_with("doughbox_trading_") && token.len() <= 128);
+    let Some(token) = token else {
+        return AuthError::Unauthenticated.into_response();
     };
     let hash = super::token_hash(token);
-    if super::authenticate(&hash).await.is_err() {
-        return (
-            StatusCode::UNAUTHORIZED,
-            "Invalid, revoked, or unavailable trading agent token.",
-        )
-            .into_response();
-    }
-    request.extensions_mut().insert(AgentToken(hash));
+    let user_id = match super::authenticate(&hash).await {
+        Ok(user_id) => user_id,
+        Err(_) => return AuthError::Unauthenticated.into_response(),
+    };
+    request.extensions_mut().insert(AgentIdentity { user_id, hash });
     next.run(request).await
 }
-pub fn router() -> Router {
-    let hosts = crate::services::shared::env::get_env_variable("TRADING_MCP_HOSTS")
-        .unwrap_or_else(|| "localhost,127.0.0.1,::1".into());
-    let hosts: Vec<String> = hosts
-        .split(',')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned)
-        .collect();
+
+fn allowed_hosts(configured: Option<&str>) -> anyhow::Result<Vec<String>> {
+    let hosts: Vec<String> = configured.unwrap_or("localhost,127.0.0.1,::1")
+        .split(',').map(str::trim).filter(|host| !host.is_empty()).map(str::to_owned).collect();
+    anyhow::ensure!(!hosts.is_empty(), "TRADING_MCP_HOSTS must contain at least one allowed host.");
+    Ok(hosts)
+}
+
+pub fn router(public_origin: &str) -> anyhow::Result<Router> {
+    let hosts = allowed_hosts(get_env_variable("TRADING_MCP_HOSTS").as_deref())?;
+    let origin: Arc<str> = Arc::from(public_origin);
     let service: StreamableHttpService<TradingMcp, LocalSessionManager> =
         StreamableHttpService::new(
-            || Ok(TradingMcp),
+            move || Ok(TradingMcp { public_origin: origin.clone() }),
             Arc::default(),
             StreamableHttpServerConfig::default()
                 .with_stateful_mode(false)
                 .with_json_response(true)
                 .with_allowed_hosts(hosts),
         );
-    Router::new()
+    Ok(Router::new()
         .nest_service("/api/trading/mcp", service)
-        .layer(middleware::from_fn(authenticate))
+        .layer(middleware::from_fn_with_state(public_origin.to_owned(), authenticate)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_empty_host_allowlist_is_rejected() {
+        for configured in ["", "  ", ", ,"] {
+            assert!(allowed_hosts(Some(configured)).is_err());
+        }
+        assert_eq!(allowed_hosts(Some(" example.com, localhost ")).unwrap(), ["example.com", "localhost"]);
+        assert!(!allowed_hosts(None).unwrap().is_empty());
+    }
+
+    async fn boundary(origin: Option<&str>, cookie: Option<&str>, bearer: Option<&str>) -> (axum::http::StatusCode, Value) {
+        use axum::{body::{Body, to_bytes}, http::Request, routing::post};
+        use tower::ServiceExt;
+        let app = Router::new().route("/", post(|| async { "must not authorize" }))
+            .layer(middleware::from_fn_with_state("https://doughbox.example".to_owned(), authenticate));
+        let mut request = Request::builder().method("POST").uri("/");
+        if let Some(origin) = origin { request = request.header("origin", origin); }
+        if let Some(cookie) = cookie { request = request.header("cookie", cookie); }
+        if let Some(bearer) = bearer { request = request.header("authorization", bearer); }
+        let response = app.oneshot(request.body(Body::empty()).unwrap()).await.unwrap();
+        let status = response.status();
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        (status, serde_json::from_slice(&body).unwrap())
+    }
+
+    #[tokio::test]
+    async fn mcp_origin_is_configured_and_missing_origin_does_not_grant_authority() {
+        use axum::http::StatusCode;
+        for origin in [None, Some("https://DOUGHBOX.example:443/")] {
+            let (status, body) = boundary(origin, None, None).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+            assert_eq!(body["error"], "Unauthenticated");
+        }
+        for origin in ["https://other.example", "null", "https://doughbox.example/private"] {
+            let (status, body) = boundary(Some(origin), None, None).await;
+            assert_eq!(status, StatusCode::FORBIDDEN);
+            assert_eq!(body["error"], "CsrfRejected");
+        }
+    }
+
+    #[tokio::test]
+    async fn mcp_rejects_mixed_cookie_and_bearer_before_token_resolution() {
+        use axum::http::StatusCode;
+        let (status, body) = boundary(None, Some("theme=dark; doughbox_session=opaque"), Some("Bearer doughbox_trading_fixture")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"], "AmbiguousCredentials");
+        let (status, body) = boundary(None, Some("doughbox_session=opaque"), None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"], "Unauthenticated");
+    }
 }

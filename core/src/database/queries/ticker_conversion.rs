@@ -5,12 +5,9 @@ pub async fn query_isin_from_symbol(symbol: &str) -> anyhow::Result<String> {
 
     let client = db_client().await?;
 
-    let statement = format!(
-        "SELECT isin from ticker_conversion where ticker = '{}'",
-        symbol
-    );
+    let statement = "SELECT isin FROM ticker_conversion WHERE ticker = $1";
 
-    let result = client.query_one(&statement, &[]).await?;
+    let result = client.query_one(statement, &[&symbol]).await?;
 
     Ok(result
         .try_get::<usize, String>(0)

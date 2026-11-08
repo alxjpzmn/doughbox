@@ -26,6 +26,7 @@ use tokio::{
 
 use crate::database::{
     db_client,
+    models::auth::UserId,
     queries::{background_job as jobs, position::get_positions, price, price_scheduler},
 };
 use crate::services::shared::logger;
@@ -342,7 +343,13 @@ async fn refresh_feed(
     let started = Instant::now();
     let mut db = db_client().await?;
     db.batch_execute("SET statement_timeout = '60s'; SET lock_timeout = '10s'").await?;
-    let tracked = price::tracked_isins(&db).await?;
+    let (eligible, tracked) = if job.is_some() {
+        let eligible = price::eligible_pairs_all_users(&db).await?;
+        let tracked = eligible.iter().map(|(_, isin)| isin.clone()).collect();
+        (eligible, tracked)
+    } else {
+        (Default::default(), price::tracked_isins_all_users(&db).await?)
+    };
     let scope_hash = price::portfolio_scope_hash(&tracked);
     let checkpoints = if job.is_some() {
         price::checkpoints(&db, feed.key(), &scope_hash).await?
@@ -365,7 +372,7 @@ async fn refresh_feed(
         feed.key()
     );
     if job.is_some() {
-        price::ensure_instruments(&db, &tracked).await?;
+        price::ensure_instruments(&db, &eligible).await?;
     }
     let mut pending = JoinSet::new();
     let mut last_discovery = Instant::now();
@@ -387,7 +394,7 @@ async fn refresh_feed(
                 Some(job) => FileIngestion::Persist(job),
                 None => FileIngestion::DryRun(&mut dry_run),
             };
-            reports_processed += ingest_file(&mut db, feed, ingestion, file, &tracked, &scope_hash).await?;
+            reports_processed += ingest_file(&mut db, feed, ingestion, file, &tracked, &eligible, &scope_hash).await?;
             files_processed += 1;
         }
         files_checked += 1;
@@ -413,7 +420,9 @@ async fn refresh_feed(
         }
     }
     if let Some(job) = job {
-        price::reselect_all(&mut db, job, &tracked).await?;
+        // Always reselect: a new owner can join an unchanged ISIN union even
+        // when every upstream file was skipped by the shared checkpoint.
+        price::reselect_all(&mut db, job, &eligible).await?;
     }
     log::info!(
         "{} refresh complete: {files_checked}/{total_files} batches checked ({available_files} available); {reports_processed} portfolio reports; elapsed {}s",
@@ -464,6 +473,7 @@ async fn ingest_file(
     ingestion: FileIngestion<'_>,
     file: DownloadedFile,
     tracked: &std::collections::HashSet<String>,
+    eligible: &std::collections::BTreeSet<(UserId, String)>,
     scope_hash: &str,
 ) -> anyhow::Result<usize> {
     const BATCH_SIZE: usize = 4096;
@@ -479,7 +489,7 @@ async fn ingest_file(
         },
     }
     let mut destination = match ingestion {
-        FileIngestion::Persist(job) => Destination::Persist(price::begin_file(db, job, &file_key, tracked, scope_hash).await?),
+        FileIngestion::Persist(job) => Destination::Persist(price::begin_file(db, job, &file_key, tracked, eligible, scope_hash).await?),
         FileIngestion::DryRun(resume) => Destination::DryRun {
             client: db,
             state: resume.take().context("Dry-run refresh already aborted")?,
@@ -610,10 +620,10 @@ pub async fn refresh_now(
     Ok(())
 }
 
-pub async fn status() -> anyhow::Result<PricingStatus> {
+pub async fn status(user_id: &UserId) -> anyhow::Result<PricingStatus> {
     let db = db_client().await?;
     let config = price_scheduler::read(&db).await?;
-    let isins: Vec<_> = get_positions(None, None, None)
+    let isins: Vec<_> = get_positions(user_id, None, None, None)
         .await?
         .into_iter()
         .map(|p| p.isin)
@@ -623,7 +633,7 @@ pub async fn status() -> anyhow::Result<PricingStatus> {
         interval_minutes: config.interval_minutes,
         worker_concurrency: config.workers as u32,
         feeds: price::feed_status(&db).await?,
-        quotes: price::quotes(&db, &isins).await?,
+        quotes: price::quotes(user_id, &db, &isins).await?,
     })
 }
 

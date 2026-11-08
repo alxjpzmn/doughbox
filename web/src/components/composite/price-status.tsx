@@ -1,8 +1,9 @@
 import { useRef, useState, type FormEvent } from 'react';
 import useSwr from 'swr';
 import { ArrowClockwiseIcon, CheckCircleIcon, CircleDashedIcon, XCircleIcon, ClockIcon, SpinnerGapIcon } from '@phosphor-icons/react';
-import { PriceFeedStatus, PriceSchedulerSettings, PricingStatus } from '@/types/core';
+import { PriceFeedStatus, PriceSchedulerSettings, PricingStatus, Role } from '@/types/core';
 import { BASE_URL, fetcher, sendMutateRequest } from '@/lib/http';
+import useAuth from '@/hooks/useAuth';
 import { formatCurrency } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -131,8 +132,9 @@ const SchedulerControls = ({ data, disabled, onSave }: {
 
 const importActive = (feed: PriceFeedStatus) => feed.job_status === 'queued' || feed.job_status === 'running';
 
-const ExchangeImportStatus = ({ feed, disabled, onAction }: {
+const ExchangeImportStatus = ({ feed, controls, disabled, onAction }: {
   feed: PriceFeedStatus;
+  controls: boolean;
   disabled: boolean;
   onAction: (feed: string, action: 'refresh' | 'reset') => Promise<boolean>;
 }) => {
@@ -156,7 +158,7 @@ const ExchangeImportStatus = ({ feed, disabled, onAction }: {
         </div>
         {feed.job_status && <div>
           <dt className="text-muted-foreground">Latest job{feed.attempts > 0 && ` · attempt ${feed.attempts}`}</dt>
-          <dd className="mt-1">{feed.files_processed.toLocaleString()} batches · {feed.reports_processed.toLocaleString()} reports</dd>
+          <dd className="mt-1">{feed.files_processed.toLocaleString()} batches</dd>
         </div>}
         {feed.scheduled && <div>
           <dt className="text-muted-foreground">Next scheduled import</dt>
@@ -167,13 +169,13 @@ const ExchangeImportStatus = ({ feed, disabled, onAction }: {
         <summary className="cursor-pointer font-medium text-red-700 dark:text-red-300">Last recorded error</summary>
         <p className="mt-2 break-words text-muted-foreground">{feed.last_error}</p>
       </details>}
-      <div className="mt-3 flex flex-wrap gap-2">
+      {controls && <div className="mt-3 flex flex-wrap gap-2">
         <Button type="button" variant="outline" size="sm" disabled={disabled || importActive(feed)} aria-label={`Refresh ${name} now`}
           onClick={() => onAction(feed.feed, 'refresh')}><ArrowClockwiseIcon aria-hidden="true" />Refresh now</Button>
         <Button type="button" variant="outline" size="sm" disabled={disabled || confirmReset}
           aria-label={`Reset ${name} import`} onClick={() => setConfirmReset(true)}>Reset import</Button>
-      </div>
-      {confirmReset && <div role="group" aria-label={`${name} reset confirmation`} className="mt-3 space-y-3 rounded-md border border-amber-300 bg-amber-50 p-3 text-xs dark:border-amber-800 dark:bg-amber-950">
+      </div>}
+      {controls && confirmReset && <div role="group" aria-label={`${name} reset confirmation`} className="mt-3 space-y-3 rounded-md border border-amber-300 bg-amber-50 p-3 text-xs dark:border-amber-800 dark:bg-amber-950">
         <p>Replace the current {name} run with a fresh attempt? Completed checkpoints, stored prices, manual pins and job history are kept. A queued or running job will be retired.</p>
         <div className="flex flex-wrap gap-2">
           <Button type="button" size="sm" variant="destructive" disabled={disabled} aria-label={`Confirm reset for ${name}`} onClick={async () => {
@@ -186,7 +188,9 @@ const ExchangeImportStatus = ({ feed, disabled, onAction }: {
   );
 };
 
-export const PriceStatus = () => {
+export const PriceStatus = ({ controls = false }: { controls?: boolean }) => {
+  const { auth, status } = useAuth();
+  const canManage = controls && status === 'ready' && auth?.stage === 'authenticated' && auth.user?.role === Role.Admin;
   const { data, error, mutate } = useSwr<PricingStatus>(`${BASE_URL}/prices`, fetcher, {
     refreshInterval: status => status?.feeds.some(importActive) ? 2_000 : 60_000,
   });
@@ -195,7 +199,7 @@ export const PriceStatus = () => {
   const submitting = useRef(false);
 
   const submit = async (url: string, method: 'POST' | 'PUT', message: string, settings?: PriceSchedulerSettings): Promise<boolean> => {
-    if (submitting.current) return false;
+    if (!canManage || submitting.current) return false;
     submitting.current = true;
     setBusy(true);
     setFeedback(null);
@@ -229,7 +233,7 @@ export const PriceStatus = () => {
         <CardDescription>
           {error ? (data ? 'Price status could not be refreshed. Last loaded results are shown; retrying automatically.' : 'Price refresh status could not be loaded. Retrying automatically.') : data?.enabled
             ? `Automatic refresh every ${data.interval_minutes} minutes`
-            : 'Automatic refresh is paused. Manage the schedule below or refresh an exchange manually.'}
+            : 'Automatic refresh is paused.'}
         </CardDescription>
       </CardHeader>
       {data && <CardContent className="space-y-3">
@@ -237,12 +241,15 @@ export const PriceStatus = () => {
           <ArrowClockwiseIcon aria-hidden="true" />
           Status updates automatically · every minute, or every 2 seconds during imports
         </p>
-        <SchedulerControls data={data} disabled={busy || !!error} onSave={settings =>
-          submit(`${BASE_URL}/prices/scheduler`, 'PUT', 'Scheduler settings saved.', settings)} />
-        <Button type="button" variant="outline" size="sm" disabled={busy || !!error || !data.feeds.some(feed => feed.enabled) || data.feeds.some(feed => feed.enabled && importActive(feed))}
-          onClick={() => submit(`${BASE_URL}/prices/refresh`, 'POST', 'Refresh queued for selected exchanges. Existing work and retry backoff are preserved.')}>
-          <ArrowClockwiseIcon aria-hidden="true" />Refresh selected exchanges now
-        </Button>
+        {canManage && <>
+          <SchedulerControls data={data} disabled={busy || !!error} onSave={settings =>
+            submit(`${BASE_URL}/prices/scheduler`, 'PUT', 'Scheduler settings saved.', settings)} />
+          <Button type="button" variant="outline" size="sm" disabled={busy || !!error || !data.feeds.some(feed => feed.enabled) || data.feeds.some(feed => feed.enabled && importActive(feed))}
+            onClick={() => submit(`${BASE_URL}/prices/refresh`, 'POST', 'Refresh queued for selected exchanges. Existing work and retry backoff are preserved.')}>
+            <ArrowClockwiseIcon aria-hidden="true" />Refresh selected exchanges now
+          </Button>
+        </>}
+        {!canManage && <p className="text-sm text-muted-foreground">Shared feed status is read-only here. Administrators manage instance refresh jobs in Users &amp; instance. Your instrument names and manual prices remain editable in Instruments.</p>}
         {busy && <p role="status" className="text-sm text-muted-foreground">Updating price controls…</p>}
         {feedback && <p role={feedback.error ? 'alert' : 'status'} className={`text-sm ${feedback.error ? 'text-red-700 dark:text-red-300' : 'text-muted-foreground'}`}>{feedback.message}</p>}
         <p className="text-sm text-muted-foreground">
@@ -251,7 +258,7 @@ export const PriceStatus = () => {
           {missing > 0 && ` · ${missing} missing prices`}
         </p>
         <div aria-label="Exchange imports" className="grid gap-3 sm:grid-cols-3">
-          {data.feeds.map(feed => <ExchangeImportStatus key={feed.feed} feed={feed} disabled={busy || !!error} onAction={(key, action) =>
+          {data.feeds.map(feed => <ExchangeImportStatus key={feed.feed} feed={feed} controls={canManage} disabled={busy || !!error} onAction={(key, action) =>
             submit(`${BASE_URL}/prices/feeds/${encodeURIComponent(key)}/${action}`, 'POST',
               action === 'reset' ? `${exchangeNames[key] ?? key}: fresh attempt queued; completed checkpoints and prices are kept.` : `${exchangeNames[key] ?? key}: refresh queued.`)} />)}
         </div>
