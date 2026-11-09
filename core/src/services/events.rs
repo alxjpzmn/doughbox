@@ -27,6 +27,9 @@ use crate::{
     },
 };
 
+mod page;
+pub(crate) use page::{get_events_page, EventPageFilter};
+
 #[typeshare]
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub enum TradeDirection {
@@ -109,10 +112,10 @@ pub async fn get_events(
     )?;
 
     let mut events = Vec::new();
-    events.extend(process_interest_rows(interest_rows).await?);
+    events.extend(process_interest_rows(interest_rows, None).await?);
     events.extend(process_fund_report_rows(fund_report_rows)?);
-    events.extend(process_dividend_rows(user_id, dividend_rows).await?);
-    events.extend(process_trade_rows(user_id, trade_rows).await?);
+    events.extend(process_dividend_rows(user_id, dividend_rows, None).await?);
+    events.extend(process_trade_rows(user_id, trade_rows, None).await?);
     events.extend(process_fx_conversion_rows(fx_conversion_rows)?);
     events.extend(process_asset_trade_rows(asset_trade_rows)?);
     events.extend(process_asset_transaction_rows(asset_transaction_rows)?);
@@ -290,6 +293,22 @@ fn try_get_col<T: for<'a> tokio_postgres::types::FromSql<'a>>(
     })
 }
 
+// The legacy timeline may import missing FX; paged ledger reads must only use
+// observations already stored, while sharing the same financial calculations.
+async fn event_exchange_rate(
+    read_only_client: Option<&Client>,
+    from: &str,
+    to: &str,
+    date: &chrono::NaiveDate,
+) -> anyhow::Result<Decimal> {
+    match read_only_client {
+        Some(client) => Ok(crate::database::queries::fx_rate::quote_conversion(
+            client, from, to, date,
+        ).await?.rate),
+        None => get_exchange_rate(from, to, date).await,
+    }
+}
+
 /// Income native amounts are gross. Never infer FX from a potentially net/account-
 /// currency `amount_eur` total or gross up by only the treaty-creditable tax.
 async fn income_tax_values(
@@ -298,11 +317,12 @@ async fn income_tax_values(
     currency: &str,
     withholding_currency: &str,
     date: DateTime<Utc>,
+    read_only_client: Option<&Client>,
 ) -> anyhow::Result<(Option<Decimal>, Option<Decimal>)> {
     let eur_per_native = if currency == "EUR" {
         dec!(1)
     } else {
-        get_exchange_rate(currency, "EUR", &date.date_naive()).await?
+        event_exchange_rate(read_only_client, currency, "EUR", &date.date_naive()).await?
     };
     anyhow::ensure!(eur_per_native > dec!(0), "Income FX rate must be positive");
     let withholding_native = if withholding == dec!(0) || withholding_currency == currency {
@@ -311,7 +331,7 @@ async fn income_tax_values(
         let eur_per_withholding = if withholding_currency == "EUR" {
             dec!(1)
         } else {
-            get_exchange_rate(withholding_currency, "EUR", &date.date_naive()).await?
+            event_exchange_rate(read_only_client, withholding_currency, "EUR", &date.date_naive()).await?
         };
         anyhow::ensure!(eur_per_withholding > dec!(0), "Withholding FX rate must be positive");
         withholding.abs() * eur_per_withholding / eur_per_native
@@ -321,7 +341,10 @@ async fn income_tax_values(
     Ok((Some(dec!(1) / eur_per_native), Some(percent)))
 }
 
-async fn process_interest_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent>> {
+async fn process_interest_rows(
+    rows: Vec<Row>,
+    read_only_client: Option<&Client>,
+) -> anyhow::Result<Vec<PortfolioEvent>> {
     let mut events = Vec::new();
     for (idx, row) in rows.iter().enumerate() {
         let date: DateTime<Utc> =
@@ -347,7 +370,7 @@ async fn process_interest_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEv
             withholding_tax_currency.unwrap_or_else(|| event_currency.clone());
 
         let (applied_fx_rate, withholding_tax_percent) = if tax_supported {
-            income_tax_values(amount, withholding_tax, &event_currency, &withholding_tax_currency, date).await?
+            income_tax_values(amount, withholding_tax, &event_currency, &withholding_tax_currency, date, read_only_client).await?
         } else {
             (None, None)
         };
@@ -412,7 +435,11 @@ fn process_fund_report_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent
     Ok(events)
 }
 
-async fn process_dividend_rows(user_id: &UserId, rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent>> {
+async fn process_dividend_rows(
+    user_id: &UserId,
+    rows: Vec<Row>,
+    read_only_client: Option<&Client>,
+) -> anyhow::Result<Vec<PortfolioEvent>> {
     let mut events = Vec::new();
 
     let listing_changes = get_listing_changes().await?;
@@ -450,7 +477,7 @@ async fn process_dividend_rows(user_id: &UserId, rows: Vec<Row>) -> anyhow::Resu
             withholding_tax_currency.unwrap_or_else(|| event_currency.clone());
 
         let (applied_fx_rate, withholding_tax_percent) =
-            income_tax_values(amount, withholding_tax, &event_currency, &withholding_tax_currency, date).await?;
+            income_tax_values(amount, withholding_tax, &event_currency, &withholding_tax_currency, date, read_only_client).await?;
 
         let event = PortfolioEvent {
             event_id: Some(try_get_col(row, 8, "id", &ctx)?),
@@ -475,7 +502,11 @@ async fn process_dividend_rows(user_id: &UserId, rows: Vec<Row>) -> anyhow::Resu
     Ok(events)
 }
 
-async fn process_trade_rows(user_id: &UserId, rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent>> {
+async fn process_trade_rows(
+    user_id: &UserId,
+    rows: Vec<Row>,
+    read_only_client: Option<&Client>,
+) -> anyhow::Result<Vec<PortfolioEvent>> {
     let mut stock_split_information = get_stock_splits().await?;
     let listing_changes = get_listing_changes().await?;
 
@@ -536,7 +567,7 @@ async fn process_trade_rows(user_id: &UserId, rows: Vec<Row>) -> anyhow::Result<
         } else if event_currency == "EUR" {
             // Event is in EUR but withholding tax is in different currency - convert tax to EUR
             let naive_date = date.date_naive();
-            match get_exchange_rate(&withholding_tax_currency, "EUR", &naive_date).await {
+            match event_exchange_rate(read_only_client, &withholding_tax_currency, "EUR", &naive_date).await {
                 Ok(fx_rate) => {
                     let withholding_tax_eur = withholding_tax * fx_rate;
                     Some(withholding_tax_eur / trade_amount_eur)
@@ -560,7 +591,7 @@ async fn process_trade_rows(user_id: &UserId, rows: Vec<Row>) -> anyhow::Result<
         } else {
             // Neither is EUR - convert withholding tax to EUR and calculate
             let naive_date = date.date_naive();
-            match get_exchange_rate(&withholding_tax_currency, "EUR", &naive_date).await {
+            match event_exchange_rate(read_only_client, &withholding_tax_currency, "EUR", &naive_date).await {
                 Ok(fx_rate) => {
                     let withholding_tax_eur = withholding_tax * fx_rate;
                     Some(withholding_tax_eur / trade_amount_eur)
@@ -910,7 +941,7 @@ mod tax_event_tests {
     #[tokio::test]
     async fn income_preserves_gross_and_actual_withholding_before_treaty_cap() {
         let date = Utc.with_ymd_and_hms(2024, 6, 1, 0, 0, 0).unwrap();
-        let (rate, percent) = income_tax_values(dec!(100), dec!(30), "EUR", "EUR", date).await.unwrap();
+        let (rate, percent) = income_tax_values(dec!(100), dec!(30), "EUR", "EUR", date, None).await.unwrap();
         assert_eq!(rate, Some(dec!(1)));
         assert_eq!(percent, Some(dec!(0.30)));
     }
@@ -918,7 +949,7 @@ mod tax_event_tests {
     #[tokio::test]
     async fn income_reversal_preserves_the_refunded_withholding_rate() {
         let date = Utc.with_ymd_and_hms(2024, 6, 1, 0, 0, 0).unwrap();
-        let (rate, percent) = income_tax_values(dec!(-100), dec!(-30), "EUR", "EUR", date).await.unwrap();
+        let (rate, percent) = income_tax_values(dec!(-100), dec!(-30), "EUR", "EUR", date, None).await.unwrap();
         assert_eq!(rate, Some(dec!(1)));
         assert_eq!(percent, Some(dec!(0.30)));
     }
@@ -926,6 +957,6 @@ mod tax_event_tests {
     #[tokio::test]
     async fn withholding_on_zero_income_is_an_error_not_silent_zero_tax() {
         let date = Utc.with_ymd_and_hms(2024, 6, 1, 0, 0, 0).unwrap();
-        assert!(income_tax_values(dec!(0), dec!(10), "EUR", "EUR", date).await.is_err());
+        assert!(income_tax_values(dec!(0), dec!(10), "EUR", "EUR", date, None).await.is_err());
     }
 }

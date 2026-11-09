@@ -1,5 +1,6 @@
 mod approval;
 mod catalog;
+mod ledger;
 mod quotes;
 pub mod mcp;
 pub mod provider;
