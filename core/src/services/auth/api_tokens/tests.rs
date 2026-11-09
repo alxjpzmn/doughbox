@@ -1031,3 +1031,305 @@ async fn auth_database_personal_token_http_rejects_invalid_names_fields_and_miss
     assert_eq!(f.count().await, 0);
     f.cleanup().await;
 }
+
+#[tokio::test]
+#[ignore = "Requires a dedicated TEST_POSTGRES_URL; run with --test-threads=1"]
+async fn auth_database_trading_agent_reads_current_holdings_without_rest_or_approval_rights() {
+    use crate::services::trading;
+    use rust_decimal::Decimal;
+    use rust_decimal_macros::dec;
+
+    async fn rpc(router: &Router, token: &str, method: &str, params: Value) -> (StatusCode, Value) {
+        let mut request = bearer(
+            Method::POST,
+            "/api/trading/mcp",
+            token,
+            json!({"jsonrpc":"2.0","id":1,"method":method,"params":params}),
+        );
+        request.headers_mut().insert(
+            header::ACCEPT,
+            "application/json, text/event-stream".parse().unwrap(),
+        );
+        request.headers_mut().insert(header::HOST, "localhost".parse().unwrap());
+        let (status, _, body) = response(router, request).await;
+        (status, body)
+    }
+
+    let mut f = Fixture::new().await;
+    let _key = ScopedEnv::set("TRADING_MASTER_KEY", &"19".repeat(32));
+    let _hosts = ScopedEnv::set("TRADING_MCP_HOSTS", "localhost");
+    let bob = f.member().await;
+    let alice_token = "doughbox_trading_alice";
+    let bob_token = "doughbox_trading_bob";
+    for (user, token, units, name) in [
+        (&f.alice.id, alice_token, 3_i32, "Alice holding"),
+        (&bob.id, bob_token, 7_i32, "Bob holding"),
+    ] {
+        f.db.execute(
+            "INSERT INTO trading_connection(user_id,generation,environment,credentials,agent_token_hash,agent_auth_version) VALUES($1,'fixture','demo','fixture',$2,1)
+             ON CONFLICT(user_id) DO UPDATE SET environment='demo',credentials='fixture',agent_token_hash=$2,agent_auth_version=1",
+            &[&user.as_str(), &trading::token_hash(token)],
+        ).await.unwrap();
+        f.db.execute(
+            "INSERT INTO trade(user_id,hash,broker,date,units,avg_price_per_unit,eur_avg_price_per_unit,security_type,direction,currency,isin,date_added,withholding_tax,withholding_tax_currency) VALUES($1,'buy','Fixture','2020-01-01Z',$2::int,10,10,'Equity','Buy','EUR','same-isin',now(),0,'EUR')",
+            &[&user.as_str(), &units],
+        ).await.unwrap();
+        f.db.execute(
+            "INSERT INTO instrument(user_id,id,last_price_update,price,name) VALUES($1,'same-isin',now(),10,$2)",
+            &[&user.as_str(), &name],
+        ).await.unwrap();
+        let cash_id = format!("cash-{}", user.as_str());
+        f.db.execute(
+            "INSERT INTO asset(user_id,id,name,asset_class,currency,unit_label,current_interest_rate_percent) VALUES($1,$2,'Savings','CashAccount','EUR','EUR',0)",
+            &[&user.as_str(), &cash_id],
+        ).await.unwrap();
+        f.db.execute(
+            "INSERT INTO asset_balance_snapshot(user_id,asset_id,date,kind,balance,balance_eur) VALUES($1,$2,'2020-01-01Z','Opening',25,25)",
+            &[&user.as_str(), &cash_id],
+        ).await.unwrap();
+    }
+    let router = crate::api::routes::create_router(f.service.clone()).unwrap();
+    let args = json!({"name":"get_portfolio","arguments":{}});
+    for (token, name, units, total) in [
+        (alice_token, "Alice holding", "3", "55"),
+        (bob_token, "Bob holding", "7", "95"),
+    ] {
+        let (status, body) = rpc(&router, token, "tools/call", args.clone()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["result"]["isError"], false, "{body}");
+        let book = &body["result"]["structuredContent"];
+        assert_eq!(book["currency"], "EUR");
+        assert_eq!(book["total_value"].as_str().unwrap().parse::<Decimal>().unwrap(), total.parse::<Decimal>().unwrap());
+        let positions = book["positions"].as_array().unwrap();
+        assert_eq!(positions.len(), 2);
+        let security = positions.iter().find(|p| p["isin"] == "same-isin").unwrap();
+        assert_eq!(security["name"], name);
+        assert_eq!(security["units"].as_str().unwrap().parse::<Decimal>().unwrap(), units.parse::<Decimal>().unwrap());
+        let cash = positions.iter().find(|p| p["asset_class"] == "CashAccount").unwrap();
+        assert_eq!(cash["unit_label"], "EUR");
+        assert_eq!(cash["value"].as_str().unwrap().parse::<Decimal>().unwrap(), dec!(25));
+    }
+    // Reads recalculate recorded quantities rather than serving a saved report.
+    f.db.execute("UPDATE trade SET units=4 WHERE user_id=$1", &[&f.alice.id.as_str()]).await.unwrap();
+    let (_, body) = rpc(&router, alice_token, "tools/call", args.clone()).await;
+    let book = &body["result"]["structuredContent"];
+    assert_eq!(book["total_value"].as_str().unwrap().parse::<Decimal>().unwrap(), dec!(65));
+
+    // An unavailable stored valuation remains unknown, never zero.
+    f.db.execute("DELETE FROM instrument WHERE user_id=$1", &[&f.alice.id.as_str()]).await.unwrap();
+    let (_, body) = rpc(&router, alice_token, "tools/call", args.clone()).await;
+    let book = &body["result"]["structuredContent"];
+    assert_eq!(book["valuation_complete"], false);
+    assert_eq!(book["unpriced_isins"], json!(["same-isin"]));
+    let security = book["positions"].as_array().unwrap().iter().find(|p| p["isin"] == "same-isin").unwrap();
+    assert!(security["value"].is_null());
+    assert!(security["share"].is_null());
+    assert_eq!(book["total_value"].as_str().unwrap().parse::<Decimal>().unwrap(), dec!(25));
+
+    for (method, path) in [
+        (Method::GET, "/api/portfolio"),
+        (Method::GET, "/api/positions"),
+        (Method::POST, "/api/trading/proposals/unknown/approve"),
+    ] {
+        assert_eq!(
+            response(&router, bearer(method, path, alice_token, Value::Null)).await.0,
+            StatusCode::UNAUTHORIZED,
+        );
+    }
+    // Existing credentials cannot outlive rotation or account-version revocation.
+    let rotated = "doughbox_trading_rotated";
+    f.db.execute("UPDATE trading_connection SET agent_token_hash=$2 WHERE user_id=$1", &[&f.alice.id.as_str(), &trading::token_hash(rotated)]).await.unwrap();
+    assert_eq!(rpc(&router, alice_token, "tools/call", args.clone()).await.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(rpc(&router, rotated, "tools/call", args.clone()).await.0, StatusCode::OK);
+    f.db.execute("UPDATE auth_users SET auth_version=auth_version+1 WHERE id=$1", &[&f.alice.id.as_str()]).await.unwrap();
+    assert_eq!(rpc(&router, rotated, "tools/call", args).await.0, StatusCode::UNAUTHORIZED);
+    f.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "Requires a dedicated TEST_POSTGRES_URL; run with --test-threads=1"]
+async fn auth_database_trading_agent_ledger_reads_filter_and_page_owner_records() {
+    use crate::services::trading;
+    use rust_decimal::Decimal;
+    use rust_decimal_macros::dec;
+    use std::collections::BTreeSet;
+
+    async fn call(router: &Router, token: &str, name: &str, arguments: Value) -> Value {
+        let mut request = bearer(Method::POST, "/api/trading/mcp", token,
+            json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":arguments}}));
+        request.headers_mut().insert(header::ACCEPT, "application/json, text/event-stream".parse().unwrap());
+        request.headers_mut().insert(header::HOST, "localhost".parse().unwrap());
+        let (status, _, body) = response(router, request).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        body
+    }
+
+    fn page(body: &Value) -> &Value {
+        assert_eq!(body["result"]["isError"], false, "{body}");
+        &body["result"]["structuredContent"]
+    }
+
+    let mut f = Fixture::new().await;
+    let _key = ScopedEnv::set("TRADING_MASTER_KEY", &"19".repeat(32));
+    let _hosts = ScopedEnv::set("TRADING_MCP_HOSTS", "localhost");
+    let bob = f.member().await;
+    let token = "doughbox_trading_ledger-alice";
+    let bob_token = "doughbox_trading_ledger-bob";
+    for (owner, credential) in [(&f.alice.id, token), (&bob.id, bob_token)] {
+        f.db.execute(
+            "INSERT INTO trading_connection(user_id,generation,environment,credentials,agent_token_hash,agent_auth_version) VALUES($1,'ledger','demo','fixture',$2,1)
+             ON CONFLICT(user_id) DO UPDATE SET environment='demo',credentials='fixture',agent_token_hash=$2,agent_auth_version=1",
+            &[&owner.as_str(), &trading::token_hash(credential)],
+        ).await.unwrap();
+    }
+    for (owner, hash, date, units, isin, broker, direction) in [
+        (&f.alice.id, "a-older", "2026-11-01T12:00:00Z", 1_i32, "old-isin", "Alpha", "Buy"),
+        (&f.alice.id, "b-tied", "2026-11-02T23:59:59.999999Z", 2, "current-isin", "Alpha", "Buy"),
+        (&f.alice.id, "c-tied", "2026-11-02T23:59:59.999999Z", 3, "other-isin", "Beta", "Sell"),
+        (&f.alice.id, "d-outside", "2026-11-03T00:00:00Z", 4, "current-isin", "Alpha", "Buy"),
+        (&bob.id, "b-tied", "2026-11-02T23:59:59.999999Z", 99, "current-isin", "Alpha", "Buy"),
+    ] {
+        f.db.execute(
+            "INSERT INTO trade(user_id,hash,broker,date,units,avg_price_per_unit,eur_avg_price_per_unit,security_type,direction,currency,isin,date_added,fees,withholding_tax,withholding_tax_currency)
+             VALUES($1,$2,$3,$4::text::timestamptz,$5::int,10,10,'Equity',$6,'EUR',$7,now(),0.12,0,'EUR')",
+            &[&owner.as_str(), &hash, &broker, &date, &units, &direction, &isin],
+        ).await.unwrap();
+    }
+    f.db.batch_execute(
+        "INSERT INTO listing_change(id,ex_date,from_factor,to_factor,from_identifier,to_identifier) VALUES('rename','2026-11-02Z',1,1,'old-isin','current-isin');
+         INSERT INTO stock_split(id,ex_date,from_factor,to_factor,isin,date_added) VALUES('split','2026-11-02Z',1,2,'old-isin',now());"
+    ).await.unwrap();
+    for (id, class, label, rate) in [
+        ("ledger-cash", "CashAccount", "EUR", Some(0_i32)),
+        ("ledger-loan", "PrivateDebt", "EUR", None),
+        ("ledger-gold", "PhysicalGold", "g", None),
+    ] {
+        f.db.execute(
+            "INSERT INTO asset(user_id,id,name,asset_class,currency,unit_label,current_interest_rate_percent) VALUES($1,$2,$2,$3,'EUR',$4,$5::int)",
+            &[&f.alice.id.as_str(), &id, &class, &label, &rate],
+        ).await.unwrap();
+    }
+    f.db.execute(
+        "INSERT INTO asset_balance_snapshot(user_id,id,asset_id,date,kind,balance,balance_eur) VALUES
+         ($1,'opening','ledger-cash','2026-11-01Z','Opening',50,50),
+         ($1,'reconcile','ledger-cash','2026-11-02T11:00:00Z','Reconciliation',55,55)",
+        &[&f.alice.id.as_str()],
+    ).await.unwrap();
+    f.db.execute(
+        "INSERT INTO asset_transaction(user_id,id,asset_id,date,kind,amount,amount_eur,currency) VALUES
+         ($1,'shared','ledger-cash','2026-11-02T12:00:00Z','Deposit',5,5,'EUR'),
+         ($1,'withdraw','ledger-cash','2026-11-02T13:00:00Z','Withdrawal',1,1,'EUR'),
+         ($1,'advance','ledger-loan','2026-11-01Z','PrincipalAdvance',20,20,'EUR'),
+         ($1,'repay','ledger-loan','2026-11-02Z','PrincipalRepayment',5,5,'EUR')",
+        &[&f.alice.id.as_str()],
+    ).await.unwrap();
+    f.db.execute(
+        "INSERT INTO asset_trade(user_id,id,asset_id,date,units,price_per_unit,eur_price_per_unit,direction,currency,broker) VALUES($1,'b-tied','ledger-gold','2026-11-02T23:59:59.999999Z',2,20,20,'Buy','EUR','Vault')",
+        &[&f.alice.id.as_str()],
+    ).await.unwrap();
+    f.db.execute(
+        "INSERT INTO asset_valuation(user_id,id,asset_id,date,price_per_unit,eur_price_per_unit,currency,source) VALUES($1,'value','ledger-gold','2026-11-02Z',30,30,'EUR','Manual')",
+        &[&f.alice.id.as_str()],
+    ).await.unwrap();
+    f.db.execute(
+        "INSERT INTO dividend(user_id,id,date,isin,amount,broker,currency,amount_eur,withholding_tax,withholding_tax_currency) VALUES($1,'shared','2026-11-02T12:00:00Z','old-isin',2,'Alpha','EUR',2,0,'EUR')",
+        &[&f.alice.id.as_str()],
+    ).await.unwrap();
+    for (id, principal) in [("cash-interest", "Cash"), ("share-interest", "Shares"), ("loan-interest", "PrivateDebt")] {
+        f.db.execute(
+            "INSERT INTO interest(user_id,id,date,amount,broker,principal,currency,amount_eur,withholding_tax,withholding_tax_currency) VALUES($1,$2,'2026-11-02Z',1,'Alpha',$3,'EUR',1,0,'EUR')",
+            &[&f.alice.id.as_str(), &id, &principal],
+        ).await.unwrap();
+    }
+    f.db.execute(
+        "INSERT INTO fx_conversion(user_id,id,date,broker,from_amount,to_amount,from_currency,to_currency,date_added) VALUES($1,'shared','2026-11-02T12:00:00Z','Alpha',100,110,'EUR','USD',now())",
+        &[&f.alice.id.as_str()],
+    ).await.unwrap();
+    f.db.batch_execute(
+        "INSERT INTO fund_report_oekb(id,date,isin,currency) VALUES
+         (42,'2026-11-02Z','old-isin','EUR'), (43,'2026-11-02Z','unowned-isin','EUR')"
+    ).await.unwrap();
+    let router = crate::api::routes::create_router(f.service.clone()).unwrap();
+    let bounds = json!({"from_date":"2026-11-01","until_date":"2026-11-02","limit":1});
+
+    let mut trade_args = bounds.clone();
+    trade_args["isin"] = json!("current-isin");
+    trade_args["broker"] = json!("Alpha");
+    trade_args["direction"] = json!("Buy");
+    let first = call(&router, token, "get_trades", trade_args.clone()).await;
+    assert_eq!(page(&first)["next_offset"], 1);
+    assert_eq!(page(&first)["items"][0]["units"], "2");
+    trade_args["offset"] = page(&first)["next_offset"].clone();
+    let second = call(&router, token, "get_trades", trade_args.clone()).await;
+    assert!(page(&second)["next_offset"].is_null());
+    assert_eq!(page(&second)["items"][0]["isin"], "current-isin");
+    assert_eq!(page(&second)["items"][0]["units"], "1");
+    assert_eq!(page(&second)["items"][0]["fees"], "0.12");
+    let bob_page = call(&router, bob_token, "get_trades", bounds.clone()).await;
+    assert_eq!(page(&bob_page)["items"][0]["units"], "99");
+    assert!(page(&bob_page)["next_offset"].is_null());
+    let empty = call(&router, token, "get_trades", json!({"from_date":"2026-11-01","until_date":"2026-11-02","direction":"Sell","broker":"Alpha"})).await;
+    assert_eq!(page(&empty)["items"], json!([]));
+
+    let mut activity_args = bounds.clone();
+    activity_args["limit"] = json!(2);
+    let mut all = Vec::new();
+    loop {
+        let body = call(&router, token, "get_activity", activity_args.clone()).await;
+        let result = page(&body);
+        all.extend(result["items"].as_array().unwrap().iter().cloned());
+        match result["next_offset"].as_i64() {
+            Some(next) => activity_args["offset"] = json!(next),
+            None => break,
+        }
+    }
+    assert_eq!(all.len(), 17);
+    let identities: BTreeSet<_> = all.iter().map(|event| (
+        event["event_type"].to_string(), event["event_id"].to_string(), event["identifier"].to_string(),
+    )).collect();
+    assert_eq!(identities.len(), all.len(), "Tied dates/source IDs must not duplicate or skip events");
+    assert_eq!(all.iter().map(|event| event["event_type"].as_str().unwrap()).collect::<BTreeSet<_>>(), BTreeSet::from([
+        "Trade", "Dividend", "CashInterest", "ShareInterest", "PrivateDebtInterest", "FxConversion",
+        "Deposit", "Withdrawal", "PrincipalAdvance", "PrincipalRepayment", "OpeningBalance",
+        "BalanceReconciliation", "Valuation", "DividendAequivalent",
+    ]));
+    assert!(all.iter().all(|event| event["event_id"] != "fund-report-43"));
+    assert!(all.iter().all(|event| event["units"] != "99" && event["event_id"] != "d-outside"));
+    let old_trade = all.iter().find(|event| event["event_id"] == "a-older").unwrap();
+    assert_eq!(old_trade["identifier"], "current-isin");
+    assert_eq!(old_trade["units"].as_str().unwrap().parse::<Decimal>().unwrap(), dec!(2));
+    let fx = all.iter().find(|event| event["event_type"] == "FxConversion").unwrap();
+    assert_eq!(fx["currency"], "EUR");
+    assert_eq!(fx["total_currency"], "USD");
+    assert_eq!(fx["total"].as_str().unwrap().parse::<Decimal>().unwrap(), dec!(110));
+    let filtered = call(&router, token, "get_activity", json!({
+        "from_date":"2026-11-01","until_date":"2026-11-02","event_type":"Trade","identifier":"current-isin","broker":"Alpha","limit":1,
+    })).await;
+    assert_eq!(page(&filtered)["items"][0]["event_id"], "b-tied");
+    assert_eq!(page(&filtered)["next_offset"], 1);
+    let report = call(&router, token, "get_activity", json!({
+        "from_date":"2026-11-01","until_date":"2026-11-02","identifier":"42","event_type":"DividendAequivalent",
+    })).await;
+    assert_eq!(page(&report)["items"][0]["event_id"], "fund-report-42");
+
+    for (tool, args) in [
+        ("get_trades", json!({"limit":101})),
+        ("get_trades", json!({"from_date":"2026-11-03","until_date":"2026-11-02"})),
+        ("get_activity", json!({"offset":-1})),
+        ("get_activity", json!({"event_type":"NotAnEvent"})),
+    ] {
+        let result = call(&router, token, tool, args).await;
+        assert_eq!(result["result"]["isError"], true, "{result}");
+    }
+    // Missing FX must fail closed, never import rates or invent an exchange rate.
+    f.db.execute("UPDATE interest SET currency='USD' WHERE user_id=$1 AND id='cash-interest'", &[&f.alice.id.as_str()]).await.unwrap();
+    let missing_fx = call(&router, token, "get_activity", json!({
+        "from_date":"2026-11-01","until_date":"2026-11-02","event_type":"CashInterest",
+    })).await;
+    assert_eq!(missing_fx["result"]["isError"], true);
+    assert_eq!(f.db.query_one("SELECT count(*) FROM fx_rate", &[]).await.unwrap().get::<_, i64>(0), 0);
+    f.db.execute("UPDATE auth_users SET auth_version=auth_version+1 WHERE id=$1", &[&f.alice.id.as_str()]).await.unwrap();
+    let request = bearer(Method::POST, "/api/trading/mcp", token, json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}));
+    assert_eq!(response(&router, request).await.0, StatusCode::UNAUTHORIZED);
+    f.cleanup().await;
+}

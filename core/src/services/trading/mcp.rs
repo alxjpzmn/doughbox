@@ -53,6 +53,14 @@ struct ProposalInput {
     id: String,
 }
 
+#[derive(Serialize)]
+struct AgentPortfolio {
+    currency: &'static str,
+    notice: &'static str,
+    #[serde(flatten)]
+    overview: crate::services::portfolio::PortfolioOverview,
+}
+
 fn identity(parts: &Parts) -> anyhow::Result<&AgentIdentity> {
     parts.extensions.get::<AgentIdentity>()
         .ok_or_else(|| anyhow::anyhow!("A trading agent token is required on every request."))
@@ -125,6 +133,54 @@ async fn present_proposal(user_id: &UserId, public_origin: &str, proposal: super
 
 #[tool_router(server_handler)]
 impl TradingMcp {
+    #[tool(
+        description = "Read the authenticated owner's current recorded Doughbox portfolio across all brokers, including securities, cash accounts, gold, property and private debt. No arguments. Returns generated_at (Unix seconds), EUR total_value, positions with exact units or native-currency balances (unit_label), EUR value and percentage share, plus valuation/return completeness fields. Missing values remain null; totals and shares cover known values only. Recomputed from recorded activity and stored prices, NOT a weekly snapshot, live broker positions or executable market prices. generated_at is calculation time, not price freshness or proof of broker synchronization. Does not refresh prices, import transactions or authorize approval."
+    )]
+    async fn get_portfolio(
+        &self,
+        Extension(parts): Extension<Parts>,
+    ) -> CallToolResult {
+        result(async {
+            let agent = identity(&parts)?;
+            let mut client = crate::database::db_client().await?;
+            let tx = client.transaction().await?;
+            // Serialize token use with rotation, disconnect and account revocation.
+            super::store::agent_connection(&agent.user_id, &tx, &agent.hash).await?;
+            let overview = crate::services::portfolio::get_portfolio_overview(&agent.user_id).await?;
+            tx.commit().await?;
+            Ok(AgentPortfolio {
+                currency: "EUR",
+                notice: "Current recorded Doughbox holdings, not live broker balances. Values use stored prices and FX; generated_at is calculation time, not price freshness. Units reflect recorded activity only. Missing values are null; total_value and shares include known values only. Cash units are native-currency balances identified by unit_label.",
+                overview,
+            })
+        }.await)
+    }
+    #[tool(
+        description = "Read recorded imported security trades across the authenticated owner's brokers, NOT proposals or live broker order status. Optional inclusive UTC from_date/until_date (YYYY-MM-DD); default last 30 calendar days through today. Filter by canonical isin, exact broker and direction Buy/Sell. limit defaults to 50, maximum 100; offset defaults to 0. Returns items newest first, generated_at, resolved date bounds, limit, offset and nullable next_offset. Reuse resolved bounds and filters for subsequent pages; concurrent ledger edits can shift offset pages. Decimal-string quantities/prices preserve recorded transaction values, not today's split-adjusted units. Each trade has native currency, EUR price and EUR fees. Reads PostgreSQL only; never imports, refreshes, executes or approves."
+    )]
+    async fn get_trades(
+        &self,
+        Extension(parts): Extension<Parts>,
+        Parameters(input): Parameters<super::ledger::TradeReadInput>,
+    ) -> CallToolResult {
+        result(async {
+            let agent = identity(&parts)?;
+            super::ledger::trades(&agent.user_id, &agent.hash, input).await
+        }.await)
+    }
+    #[tool(
+        description = "Read the authenticated owner's recorded unified activity, NOT live broker executions or proposal status. Includes security/manual trades, dividends, interest, FX, deposits/withdrawals, loan principal, balance snapshots, manual valuations and owned-instrument fund tax reports. Optional inclusive UTC from_date/until_date (YYYY-MM-DD); default last 30 calendar days through today. Filter by exact identifier, broker and event_type. limit defaults to 50, maximum 100; offset defaults to 0. Returns items newest first with explicit event_type, currencies, direction, units and unit_label, plus resolved date bounds and nullable next_offset. Reuse resolved bounds and filters when paging; edits can shift offset pages. Timeline trade units/prices are split-adjusted; use get_trades for recorded transaction quantities. Balances, valuations and tax reports are not income or cash flows. Reads PostgreSQL only; never imports, refreshes, executes or approves."
+    )]
+    async fn get_activity(
+        &self,
+        Extension(parts): Extension<Parts>,
+        Parameters(input): Parameters<super::ledger::ActivityReadInput>,
+    ) -> CallToolResult {
+        result(async {
+            let agent = identity(&parts)?;
+            super::ledger::activity(&agent.user_id, &agent.hash, input).await
+        }.await)
+    }
     #[tool(
         description = "Search the connected Trading 212 instrument catalog by ticker, name, or ISIN. Returns exact ticker, ISIN, and order currency. get_quotes reads stored delayed bulk post-trade references only, without exchange quote HTTP, price jobs or FX imports. Older broker catalogs may be backfilled from metadata. Neither search nor quotes chooses, submits or reprices an order. Limit prices MUST use the ticker's order currency; GBX means pence, not GBP."
     )]

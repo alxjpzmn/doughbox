@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, useState, type FormEvent } from 'react';
 import useSwr from 'swr';
+import { Link } from 'wouter';
 import { ArrowClockwiseIcon, CheckCircleIcon, CircleDashedIcon, ClockIcon, SpinnerGapIcon, WarningCircleIcon, XCircleIcon } from '@phosphor-icons/react';
 import { BASE_URL, fetcher, getPrivateRequestEpoch, isCurrentPrivateRequestEpoch, sendMutateRequest, type HttpError } from '@/lib/http';
 import useAuth, { focusedProposalId } from '@/hooks/useAuth';
@@ -413,9 +414,11 @@ export default function Trading() {
       <Card>
         <CardHeader>
           <CardTitle>Agent access</CardTitle>
-          <CardDescription>Connect an external agent using the MCP endpoint and a separate Bearer token. Keep this token private; it grants proposal and instrument-search access, not approval rights.</CardDescription>
+          <CardDescription>Connect an external agent using the MCP endpoint and a separate Bearer token. Keep this token private; it grants read access to your whole recorded portfolio, trades and activity across brokers, including cash and manual assets, plus instrument search, quotes and trade proposals. It cannot approve orders.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
+          <p className="text-sm text-muted-foreground">Using the REST API instead of MCP? Create a separate read-only personal API token in Security for <code>GET /api/portfolio</code> and <code>GET /api/positions</code>. No broker connection is required. MCP tokens do not authorize REST requests.</p>
+          <Button asChild variant="outline"><Link href="~/dashboard/security">Manage REST API tokens</Link></Button>
           {!data.configured ? <p className="text-sm text-muted-foreground">Connect a broker first to enable the MCP endpoint and agent token controls.</p> : <>
             <Label htmlFor="trading-mcp-endpoint">MCP endpoint</Label>
             <div className="flex flex-col gap-2 sm:flex-row">
