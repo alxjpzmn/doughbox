@@ -159,6 +159,63 @@ async fn data(response: Response) -> Value {
 
 #[tokio::test]
 #[ignore = "Requires dedicated TEST_POSTGRES_URL; run the DB suite single-threaded"]
+async fn pricing_database_router_error_details_require_an_admin_browser_session() {
+    use crate::{
+        database::queries::{background_job, price_scheduler},
+        services::market_data::prices::config::Feed,
+    };
+
+    let mut f = Fixture::new().await;
+    price_scheduler::initialize(&mut f.db).await.unwrap();
+    background_job::enqueue(&mut f.db, &[Feed::Xetra]).await.unwrap();
+    let job = background_job::claim(&f.db, &[Feed::Xetra]).await.unwrap().unwrap();
+    let job_error = "Xetra download failed: provider returned HTTP 503\nCaused by: upstream unavailable";
+    background_job::fail(&mut f.db, &job, job_error, 60).await.unwrap();
+    let schedule_error = "Tradegate refresh failed: invalid CSV timestamp";
+    f.db.execute(
+        "UPDATE price_feed_schedule SET last_error = $2 WHERE feed = $1",
+        &[&Feed::Tradegate.key(), &schedule_error],
+    ).await.unwrap();
+
+    let bob = auth::by_id(&f.bob, &f.db).await.unwrap().unwrap();
+    let now = Utc::now();
+    let tx = f.db.transaction().await.unwrap();
+    let anonymous = create_anonymous(&tx, now).await.unwrap();
+    let issued = issue_successor_locked(
+        &tx, &anonymous.session, SessionGrant::full(&bob, now), now,
+    ).await.unwrap();
+    tx.commit().await.unwrap();
+    let member_cookie = format!("doughbox_session={}", issued.raw_cookie);
+    let read = format!("Bearer {}", f.token("read").await);
+    let write = format!("Bearer {}", f.token("write").await);
+
+    for (headers, detailed) in [
+        ([("cookie", f.cookie.as_str())], true),
+        ([("cookie", member_cookie.as_str())], false),
+        ([("authorization", read.as_str())], false),
+        ([("authorization", write.as_str())], false),
+    ] {
+        let response = f.request("GET", "/api/prices", Body::empty(), &headers).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let status = data(response).await;
+        let feeds = status["feeds"].as_array().unwrap();
+        for (feed, error) in [(Feed::Xetra, job_error), (Feed::Tradegate, schedule_error)] {
+            let actual = feeds.iter().find(|row| row["feed"] == feed.key()).unwrap();
+            if detailed {
+                assert_eq!(actual["last_error"], error);
+            } else {
+                let message = actual["last_error"].as_str().unwrap();
+                assert!(!message.contains(error));
+            }
+        }
+        let healthy = feeds.iter().find(|row| row["feed"] == Feed::Frankfurt.key()).unwrap();
+        assert!(healthy["last_error"].is_null());
+    }
+    f.finish().await;
+}
+
+#[tokio::test]
+#[ignore = "Requires dedicated TEST_POSTGRES_URL; run the DB suite single-threaded"]
 async fn auth_database_router_rotated_cookie_cannot_replace_live_successor() {
     let f = Fixture::new().await;
     let response = f

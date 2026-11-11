@@ -12,7 +12,7 @@ use utoipa::ToSchema;
 
 use crate::database::{
     db_client,
-    models::auth::{CurrentUser, Role, UserId},
+    models::auth::{CredentialKind, CurrentUser, Role, UserId},
     models::instrument::InstrumentDetails,
     queries::{
         background_job as jobs,
@@ -257,17 +257,30 @@ pub async fn brokers(Extension(current): Extension<CurrentUser>) -> Result<impl 
     path = "/api/prices",
     tag = "market",
     responses(
-        (status = 200, description = "Persistent price scheduler, queue, and current holding quote status", body = PricingStatus),
+        (status = 200, description = "Persistent price scheduler, queue, and current holding quote status; recorded refresh errors are detailed only for administrator browser sessions", body = PricingStatus),
         (status = 401, description = "Unauthorized"),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     ),
     security(("api_token" = []))
 )]
 pub async fn prices(Extension(current): Extension<CurrentUser>) -> Result<impl IntoResponse, ErrorResponse> {
-    let status = pricing::status(&current.id)
+    let status = price_status(&current).await?;
+    json_response(&status).map_err(|status| internal_error("SerializationError", status))
+}
+
+async fn price_status(current: &CurrentUser) -> Result<PricingStatus, ErrorResponse> {
+    let mut status = pricing::status(&current.id)
         .await
         .map_err(|e| internal_error("PriceStatusError", e))?;
-    json_response(&status).map_err(|status| internal_error("SerializationError", status))
+    if current.role != Role::Admin || current.credential != CredentialKind::BrowserSession {
+        for feed in &mut status.feeds {
+            if let Some(error) = &mut feed.last_error {
+                error.clear();
+                error.push_str("Price feed refresh failed; consult the instance operator.");
+            }
+        }
+    }
+    Ok(status)
 }
 
 fn supported_feed(value: &str) -> Result<Feed, ErrorResponse> {
@@ -328,9 +341,7 @@ pub async fn save_scheduler(
             .await
             .map_err(|e| internal_error("PriceScheduleError", e))?;
     }
-    let status = pricing::status(&current.id)
-        .await
-        .map_err(|e| internal_error("PriceStatusError", e))?;
+    let status = price_status(&current).await?;
     json_response(&status).map_err(|status| internal_error("SerializationError", status))
 }
 
@@ -363,9 +374,7 @@ pub async fn refresh_prices(Extension(current): Extension<CurrentUser>) -> Resul
     jobs::enqueue(&mut client, &config.feeds)
         .await
         .map_err(|e| internal_error("PriceRefreshError", e))?;
-    let status = pricing::status(&current.id)
-        .await
-        .map_err(|e| internal_error("PriceStatusError", e))?;
+    let status = price_status(&current).await?;
     Ok((StatusCode::ACCEPTED, Json(status)))
 }
 
@@ -392,9 +401,7 @@ pub async fn refresh_price_feed(
     jobs::enqueue(&mut client, &[feed])
         .await
         .map_err(|e| internal_error("PriceRefreshError", e))?;
-    let status = pricing::status(&current.id)
-        .await
-        .map_err(|e| internal_error("PriceStatusError", e))?;
+    let status = price_status(&current).await?;
     Ok((StatusCode::ACCEPTED, Json(status)))
 }
 
@@ -421,9 +428,7 @@ pub async fn reset_price_feed(
     price_scheduler::reset(&mut client, feed)
         .await
         .map_err(|e| internal_error("PriceResetError", e))?;
-    let status = pricing::status(&current.id)
-        .await
-        .map_err(|e| internal_error("PriceStatusError", e))?;
+    let status = price_status(&current).await?;
     Ok((StatusCode::ACCEPTED, Json(status)))
 }
 
@@ -441,7 +446,6 @@ mod tests {
     use super::*;
     use chrono::Duration;
     use rust_decimal_macros::dec;
-    use crate::database::models::auth::CredentialKind;
 
     fn current_user() -> Extension<CurrentUser> {
         Extension(CurrentUser {

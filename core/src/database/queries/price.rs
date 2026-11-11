@@ -520,8 +520,7 @@ pub async fn feed_status(client: &Client) -> anyhow::Result<Vec<PriceFeedStatus>
                 scheduled,
                 next_refresh_at: scheduled.then(|| row.get("next_refresh_at")),
                 last_success_at: row.try_get("last_success_at")?,
-                last_error: row.try_get::<_, Option<String>>("last_error")?
-                    .map(|_| "Price feed refresh failed; consult the instance operator.".to_string()),
+                last_error: row.try_get("last_error")?,
                 job_status: row.try_get("status")?,
                 attempts: row.try_get::<_, Option<i32>>("attempts")?.unwrap_or(0),
                 files_processed: row

@@ -132,9 +132,10 @@ const SchedulerControls = ({ data, disabled, onSave }: {
 
 const importActive = (feed: PriceFeedStatus) => feed.job_status === 'queued' || feed.job_status === 'running';
 
-const ExchangeImportStatus = ({ feed, controls, disabled, onAction }: {
+const ExchangeImportStatus = ({ feed, controls, expandError, disabled, onAction }: {
   feed: PriceFeedStatus;
   controls: boolean;
+  expandError: boolean;
   disabled: boolean;
   onAction: (feed: string, action: 'refresh' | 'reset') => Promise<boolean>;
 }) => {
@@ -165,9 +166,9 @@ const ExchangeImportStatus = ({ feed, controls, disabled, onAction }: {
           <dd className="mt-1 break-words">{timestamp(feed.next_refresh_at)}</dd>
         </div>}
       </dl>
-      {feed.last_error && <details className="mt-3 text-xs">
+      {feed.last_error && <details open={expandError} className="mt-3 text-xs">
         <summary className="cursor-pointer font-medium text-red-700 dark:text-red-300">Last recorded error</summary>
-        <p className="mt-2 break-words text-muted-foreground">{feed.last_error}</p>
+        <p className="mt-2 whitespace-pre-wrap break-words text-muted-foreground">{feed.last_error}</p>
       </details>}
       {controls && <div className="mt-3 flex flex-wrap gap-2">
         <Button type="button" variant="outline" size="sm" disabled={disabled || importActive(feed)} aria-label={`Refresh ${name} now`}
@@ -190,7 +191,8 @@ const ExchangeImportStatus = ({ feed, controls, disabled, onAction }: {
 
 export const PriceStatus = ({ controls = false }: { controls?: boolean }) => {
   const { auth, status } = useAuth();
-  const canManage = controls && status === 'ready' && auth?.stage === 'authenticated' && auth.user?.role === Role.Admin;
+  const isAdmin = status === 'ready' && auth?.stage === 'authenticated' && auth.user?.role === Role.Admin;
+  const canManage = controls && isAdmin;
   const { data, error, mutate } = useSwr<PricingStatus>(`${BASE_URL}/prices`, fetcher, {
     refreshInterval: status => status?.feeds.some(importActive) ? 2_000 : 60_000,
   });
@@ -258,7 +260,7 @@ export const PriceStatus = ({ controls = false }: { controls?: boolean }) => {
           {missing > 0 && ` · ${missing} missing prices`}
         </p>
         <div aria-label="Exchange imports" className="grid gap-3 sm:grid-cols-3">
-          {data.feeds.map(feed => <ExchangeImportStatus key={feed.feed} feed={feed} controls={canManage} disabled={busy || !!error} onAction={(key, action) =>
+          {data.feeds.map(feed => <ExchangeImportStatus key={feed.feed} feed={feed} controls={canManage} expandError={isAdmin} disabled={busy || !!error} onAction={(key, action) =>
             submit(`${BASE_URL}/prices/feeds/${encodeURIComponent(key)}/${action}`, 'POST',
               action === 'reset' ? `${exchangeNames[key] ?? key}: fresh attempt queued; completed checkpoints and prices are kept.` : `${exchangeNames[key] ?? key}: refresh queued.`)} />)}
         </div>

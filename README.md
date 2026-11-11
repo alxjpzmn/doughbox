@@ -30,7 +30,7 @@ If you need to take care of capital gains taxes in Austria, you can use Doughbox
 ## (Known) Limitations
 
 - EUR as base currency — it supports trades in other currencies, but the base currency needs to be EUR.
-- Automatic portfolio valuation remains opt-in and EUR-only for instruments imported as `Equity` (including ETFs); known bonds and derivatives remain excluded. MCP last-trade references are delayed, not live/executable quotes, bid/ask books, an NBBO, or official closing prices. Missing reports, paused schedules and feed failures can leave references stale or unavailable.
+- Automatic portfolio valuation is opt-in and EUR-only for instruments imported as `Equity` (including ETFs); known bonds and derivatives remain excluded. MCP last-trade references are delayed, not live/executable quotes, bid/ask books, an NBBO, or official closing prices. Missing reports, paused schedules and feed failures can leave references stale or unavailable.
 - Doughbox uses ISINs as primary identifier, so it's agnostic to the trading venue an instrument was bought. If it encounters a ticker symbol during the import, it attempts to convert it to an ISIN via the OpenFIGI API
 - Crypto isn't supported.
 - Custom physical gold, real estate, private loans, and interest-bearing cash accounts can be tracked manually in the web UI. They aren't considered for Taxation.
@@ -61,7 +61,9 @@ If you need to take care of capital gains taxes in Austria, you can use Doughbox
 | Cboe Europe     | BXE, CXE and DXE exchange streams; APA/TRF reporting excluded                                              | `CBOE-posttrade`     |
 | Euronext        | Equities and ETFs/funds across Amsterdam, Brussels, Dublin, Lisbon, Milan, Oslo and Paris, where available | `EURONEXT-posttrade` |
 
-Administrators select exchanges and manage refresh/reset schedules in the instance controls. Members can read shared feed status and their own quotes, but cannot control public workers. All five bulk feeds maintain one compact latest reference per `(ISIN, currency, feed)` across the market, including unheld instruments and empty portfolios. This does not create unrelated instruments, trades or accounting records. Portfolio source-report history is admitted from the equity/ETF ISIN union, while instrument names, pins, execution fallbacks and selected quote projections remain private to each owner.
+Administrators select exchanges and manage refresh/reset schedules in the instance controls. Members can read shared feed status and their own quotes, but cannot control public workers. All five bulk feeds maintain one compact latest reference per `(ISIN, currency, feed)` across the market, including unheld instruments and empty portfolios. This does not create unrelated instruments, trades or accounting records. Portfolio source-report history is admitted from the equity/ETF ISIN union, while instrument names, pins, execution fallbacks and selected quote projections are private to each owner.
+
+On **Data → Price Feeds**, administrator browser sessions see the full last recorded refresh error, expanded under the affected exchange. Members and personal API tokens receive only a generic failure message. Refresh/reset controls are in **Users & instance**.
 
 Compact storage keeps only current `mifid_latest_price` heads, not market-wide original-report history. `mifid_price_revision` keeps amendment/cancellation identity guards, so late originals cannot resurrect revoked references. Invalidating a persisted head also saves its full ordering boundary in `mifid_price_floor`. Until a candidate reaches that boundary, MCP returns unavailable rather than selecting a lower runner-up or backdated amendment: discarded competitors from earlier files cannot be reconstructed, even by replaying the original head. Fresh-file amendments/cancellations are still resolved against all per-file candidates before selecting a head.
 
