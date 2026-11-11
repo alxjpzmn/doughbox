@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-use super::{approval, SubmitInput};
+use super::{approval, SubmitInput, pies::{self, PieAccess, PieRateLimited, SubmitPieInput}};
 use crate::{
     database::models::auth::UserId,
     services::{auth::AuthError, notifications::{self, Notification}, shared::{env::get_env_variable, urls::parse_public_origin}},
@@ -53,6 +53,13 @@ struct ProposalInput {
     id: String,
 }
 
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct PieInput {
+    /// Positive int64 broker Pie ID, encoded as a decimal string, never a JSON number.
+    pie_id: String,
+}
+
 #[derive(Serialize)]
 struct AgentPortfolio {
     currency: &'static str,
@@ -73,10 +80,17 @@ fn result<T: Serialize>(result: anyhow::Result<T>) -> CallToolResult {
                 json!({"message":"Could not encode trading result."}),
             ),
         },
-        Err(error) => CallToolResult::structured_error(json!({"message": error.to_string()})),
+        Err(error) => tool_error(error),
     }
 }
 fn tool_error(error: anyhow::Error) -> CallToolResult {
+    if let Some(rate) = error.downcast_ref::<PieRateLimited>() {
+        return CallToolResult::structured_error(json!({
+            "code":"TradingRateLimited", "message":rate.to_string(),
+            "retry_after_seconds":rate.retry_after_seconds,
+            "details":{"retry_after_seconds":rate.retry_after_seconds}
+        }));
+    }
     CallToolResult::structured_error(json!({"message": error.to_string()}))
 }
 enum Notice {
@@ -122,7 +136,7 @@ async fn present_proposal(user_id: &UserId, public_origin: &str, proposal: super
         Some(url) => value["approval_url"] = Value::String(url.clone()),
         None => value["approval_url"] = Value::Null,
     }
-    value["approval_note"] = json!("Opening approval_url does not approve or submit the order. The signed-in owner must confirm on the Trading page.");
+    value["approval_note"] = json!("Opening approval_url does not approve or dispatch anything. The signed-in owner must confirm on the Trading page.");
     if let Some(telegram) = telegram {
         value["telegram_notification"] = json!(telegram);
     }
@@ -134,7 +148,7 @@ async fn present_proposal(user_id: &UserId, public_origin: &str, proposal: super
 #[tool_router(server_handler)]
 impl TradingMcp {
     #[tool(
-        description = "Read the authenticated owner's current recorded Doughbox portfolio across all brokers, including securities, cash accounts, gold, property and private debt. No arguments. Returns generated_at (Unix seconds), EUR total_value, positions with exact units or native-currency balances (unit_label), EUR value and percentage share, plus valuation/return completeness fields. Missing values remain null; totals and shares cover known values only. Recomputed from recorded activity and stored prices, NOT a weekly snapshot, live broker positions or executable market prices. generated_at is calculation time, not price freshness or proof of broker synchronization. Does not refresh prices, import transactions or authorize approval."
+        description = "Read the authenticated owner's current recorded Doughbox portfolio across all brokers, including securities, cash accounts, gold, property and private debt. No arguments. Returns generated_at (Unix seconds), EUR total_value, positions with exact units or native-currency balances (unit_label), EUR value and percentage share, plus valuation/return completeness fields. Missing values remain null; totals and shares cover known values only. Recomputed from recorded activity and stored prices, NOT a weekly snapshot, live broker positions, Trading 212 availableToTrade, or executable market prices. generated_at is calculation time, not price freshness or proof of broker synchronization. Does not refresh prices, import transactions or authorize approval."
     )]
     async fn get_portfolio(
         &self,
@@ -207,8 +221,15 @@ impl TradingMcp {
             super::quotes::get(&agent.user_id, &agent.hash, &input.tickers, input.max_age_seconds.unwrap_or(1800)).await
         }.await)
     }
+    #[tool(description = "Read the connected Trading 212 account's live cash and positions before proposing trades. available_to_trade excludes pie cash and cash reserved for orders and is not a Doughbox cash account. quantity_available_for_trading is the only sellable share evidence; recorded holdings and shares inside Pies are not availability. Missing fields stay null. Respect TradingRateLimited retry_after_seconds. No mutation.")]
+    async fn get_broker_account(&self, Extension(parts): Extension<Parts>) -> CallToolResult {
+        result(async {
+            let agent = identity(&parts)?;
+            super::account::load(&agent.user_id, pies::PieAccess::Agent(&agent.hash), false).await
+        }.await)
+    }
     #[tool(
-        description = "Propose one trade or a collection of up to 50 limit trades for HUMAN review in Doughbox's Trading tab. This NEVER executes or approves orders. Use exact Trading 212 tickers from search_instruments, positive decimal strings and an explicit buy/sell side. Fractional quantities are subject to Trading 212's instrument-price/position precision rules: do not assume four decimals or unlimited precision. Published examples allow two quantity decimals at prices 1 to below 10 and three at 10 to below 100; broker rules and full-position exceptions remain authoritative. Choose quantities explicitly before human review; never round an approved trade or automatically retry a rejected batch. get_quotes reads delayed bulk-ingested last-trade references only, without exchange quote HTTP, price jobs or FX imports. Check native feed/venue, event age, stale, indicative and unavailable_reason: a last trade is not live or executable. Choose explicit limit_price values in each ticker's order currency; no tool chooses, copies a reference into, or reprices a limit. Reuse client_request_id only with identical input. Batches execute sequentially, are NOT atomic, and stop on failure or uncertainty. Submitted means accepted by broker, not filled. No retries of uncertain outcomes, market orders, self-approval or policy bypass. The result includes approval_url. Show that exact URL to the user; opening it only opens the signed-in Trading page and does not approve or submit the order. Do not present any other URL from the title or note. A newly saved proposal also requests a Telegram notification with the same link when Telegram is configured."
+        description = "Propose one trade or a collection of up to 50 limit trades for HUMAN review. This NEVER executes or approves orders. Before saving, Doughbox reads live Trading 212 cash and positions. Sells require quantityAvailableForTrading at least as large as requested. Every buy requires present, strictly positive availableToTrade. Same-currency buys cannot exceed availableToTrade. Cross-currency buys are not treated as funded because Doughbox does not convert currencies. Pie cash and recorded Doughbox holdings are not buying power or sellable shares. Use exact Trading 212 tickers, positive decimal strings and an explicit buy/sell side. Reuse client_request_id only for identical intent. The result includes approval_url; opening it does not approve or submit the order."
     )]
     async fn submit_trades(
         &self,
@@ -224,8 +245,35 @@ impl TradingMcp {
             Err(error) => tool_error(error),
         }
     }
+    #[tool(description = "List native Trading 212 Pies for this connection. Live broker configuration, not imported Doughbox holdings. No arguments and no mutation. List names may be unavailable; use get_pie for selected IDs. Explicitly respect TradingRateLimited retry_after_seconds; do not poll.")]
+    async fn get_pies(&self, Extension(parts): Extension<Parts>) -> CallToolResult {
+        result(async {
+            let agent = identity(&parts)?;
+            pies::list(&agent.user_id, PieAccess::Agent(&agent.hash)).await
+        }.await)
+    }
+
+    #[tool(description = "Read one native Trading 212 Pie by its exact positive decimal-string pie_id. Reports configured targets separately from current weights and owned quantities; missing evidence remains null. No mutation. Respect TradingRateLimited retry_after_seconds.")]
+    async fn get_pie(&self, Extension(parts): Extension<Parts>, Parameters(input): Parameters<PieInput>) -> CallToolResult {
+        result(async {
+            let agent = identity(&parts)?;
+            pies::detail(&agent.user_id, PieAccess::Agent(&agent.hash), &input.pie_id).await
+        }.await)
+    }
+
+    #[tool(description = "Propose native Pie creation, settings/allocation update, composition duplication or permanent deletion for the signed-in owner's explicit review. NEVER approves, executes, funds or trades shares. Weights are exact fractional decimal strings (1–50 catalog STOCK/ETF tickers, at most four decimals, sum exactly 1); updates replace the whole allocation map. Omitted settings preserve the saved snapshot; null clearing is unsupported. Trading 212 rejects an update whose name equals the live name, HTTP 400 'Check the id and rename the pie if you want to apply changes', even after get_pie succeeds. On every update, read the current name and set changes.name to the next version for owner review: if it ends with space, v, and a positive integer, increment that integer ('Growth v2' → 'Growth v3'); otherwise append ' v1' ('Growth' → 'Growth v1'). Never send the current name, a temporary suffix, or a plan to rename it back. Doughbox will not invent the version. Duplicate copies composition only, not holdings, AutoInvest or goals. Delete requires empty holdings and a separate browser-owner Pie cash acknowledgement. Reuse client_request_id only for identical intent; unknown dispatch outcomes must be checked manually, never resubmitted. Show the returned approval_url unchanged.")]
+    async fn submit_pie(&self, Extension(parts): Extension<Parts>, Parameters(input): Parameters<SubmitPieInput>) -> CallToolResult {
+        let agent = match identity(&parts) {
+            Ok(agent) => agent,
+            Err(error) => return tool_error(error),
+        };
+        match pies::submit(&agent.user_id, PieAccess::Agent(&agent.hash), input).await {
+            Ok(outcome) => present_proposal(&agent.user_id, &self.public_origin, outcome.proposal, if outcome.created { Notice::New } else { Notice::Replay }).await,
+            Err(error) => tool_error(error),
+        }
+    }
     #[tool(
-        description = "Read a previously submitted proposal and each trade's review/execution status. Unknown outcomes must be checked in Trading 212; do not resubmit them. No approval capability. Pending results include approval_url; show that exact URL to the user. Opening it does not approve or submit the order."
+        description = "Read a previously submitted trade or native Pie proposal and its review/dispatch/evidence status. Unknown outcomes must be checked in Trading 212; never resubmit them. Pie settings confirmation is not a fill or funding. No approval capability. Pending results include approval_url; show that exact URL to the user. Opening it does not approve or dispatch anything."
     )]
     async fn get_proposal(
         &self,

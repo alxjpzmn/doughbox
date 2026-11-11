@@ -1,10 +1,10 @@
 import { useLayoutEffect, useRef, useState, type FormEvent } from 'react';
 import useSwr from 'swr';
-import { Link } from 'wouter';
+import { Link, useSearch } from 'wouter';
 import { ArrowClockwiseIcon, CheckCircleIcon, CircleDashedIcon, ClockIcon, SpinnerGapIcon, WarningCircleIcon, XCircleIcon } from '@phosphor-icons/react';
 import { BASE_URL, fetcher, getPrivateRequestEpoch, isCurrentPrivateRequestEpoch, sendMutateRequest, type HttpError } from '@/lib/http';
 import useAuth, { focusedProposalId } from '@/hooks/useAuth';
-import type { Proposal, TradeResult, TradingEnvironment, TradingState } from '@/types/trading';
+import type { Proposal, SubmitPieInput, TradeResult, TradingEnvironment, TradingState } from '@/types/trading';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -12,6 +12,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import TradingPies, { PieProposalCard } from '@/components/composite/trading-pies';
 
 const tradingUrl = `${BASE_URL}/trading`;
 const proposalStatuses: Record<Proposal['status'], string> = {
@@ -35,6 +36,11 @@ const tradeStatuses: Record<TradeResult['status'], { label: string; Icon: typeof
 };
 
 function errorMessage(failure: unknown): string {
+  const rateLimit = failure as Partial<HttpError> | null;
+  if (rateLimit?.error === 'TradingRateLimited' || rateLimit?.status === 429) {
+    const details = rateLimit.details as { retry_after_seconds?: number } | undefined;
+    return `Trading 212 request limit reached. Wait ${details?.retry_after_seconds ?? rateLimit.retryAfter ?? 'the indicated number of'} seconds before trying explicitly. Nothing is retried automatically.`;
+  }
   return failure && typeof failure === 'object' && 'message' in failure && typeof failure.message === 'string'
     ? failure.message : 'Trading is unavailable. Please refresh before taking further action.';
 }
@@ -72,8 +78,8 @@ function RefreshControl({ label, busy, disabled, feedback, onClick }: {
   </div>;
 }
 
-function ProposalCard({ proposal, disabled, busyAction, focused, onAction }: {
-  proposal: Proposal;
+function TradeProposalCard({ proposal, disabled, busyAction, focused, onAction }: {
+  proposal: Extract<Proposal, { kind: 'trades' }>;
   disabled: boolean;
   busyAction: string | null;
   focused?: boolean;
@@ -102,6 +108,15 @@ function ProposalCard({ proposal, disabled, busyAction, focused, onAction }: {
       <p className="text-xs text-muted-foreground"><time dateTime={proposal.created_at}>{new Date(proposal.created_at).toLocaleString()}</time> · {proposal.trades.length} {proposal.trades.length === 1 ? 'order' : 'orders'}</p>
     </CardHeader>
     <CardContent className="space-y-3">
+      {proposal.broker_account && <div className="space-y-1 rounded-md border p-3 text-sm">
+        <p className="font-medium">Live Trading 212 account at proposal time</p>
+        <p className="break-words text-xs text-muted-foreground">{proposal.broker_account.notice}</p>
+        <p className="tabular-nums">Available to trade: {proposal.broker_account.cash.available_to_trade ?? 'not reported'} {proposal.broker_account.currency}</p>
+        <p className="text-xs text-muted-foreground">Pie cash {proposal.broker_account.cash.in_pies ?? 'not reported'} · reserved {proposal.broker_account.cash.reserved_for_orders ?? 'not reported'}</p>
+        {proposal.broker_account.positions.length > 0 && <ul className="text-xs text-muted-foreground">
+          {proposal.broker_account.positions.map(position => <li key={position.ticker}>{position.ticker}: {position.quantity_available_for_trading ?? 'availability not reported'} available to trade{position.quantity_in_pies ? ` · ${position.quantity_in_pies} in Pies` : ''}</li>)}
+        </ul>}
+      </div>}
       <ul className="divide-y rounded-md border px-3">
         {proposal.trades.map((trade, index) => <li key={`${index}-${trade.ticker}`} className="space-y-2 py-3 text-sm">
           <div className="flex flex-wrap items-start justify-between gap-2">
@@ -132,8 +147,31 @@ function ProposalCard({ proposal, disabled, busyAction, focused, onAction }: {
   </Card>;
 }
 
+function ProposalCard({ proposal, disabled, readbackDisabled, busyAction, focused, onAction, onReconcile }: {
+  proposal: Proposal;
+  disabled: boolean;
+  readbackDisabled: boolean;
+  busyAction: string | null;
+  focused?: boolean;
+  onAction: (proposal: Proposal, action: 'approve' | 'discard', confirmEmpty?: boolean) => void;
+  onReconcile: (proposal: Extract<Proposal, { kind: 'pie' }>) => void;
+}) {
+  return proposal.kind === 'pie'
+    ? <PieProposalCard proposal={proposal} disabled={disabled} readbackDisabled={readbackDisabled} busyAction={busyAction} focused={focused} onAction={onAction} onReconcile={onReconcile} />
+    : <TradeProposalCard proposal={proposal} disabled={disabled} busyAction={busyAction} focused={focused} onAction={onAction} />;
+}
+
 export default function Trading() {
   const { requestReauthentication } = useAuth();
+  const search = useSearch();
+  const queryFocusedId = focusedProposalId(search);
+  const [createdFocus, setCreatedFocus] = useState<string | null>(null);
+  const [tab, setTab] = useState<string | null>(null);
+  const [pieReadVersion, setPieReadVersion] = useState(0);
+  useLayoutEffect(() => {
+    setCreatedFocus(null);
+    if (queryFocusedId) setTab('orders');
+  }, [queryFocusedId]);
   const mounted = useRef(false);
   useLayoutEffect(() => {
     mounted.current = true;
@@ -165,11 +203,12 @@ export default function Trading() {
   const executing = data?.proposals.some(proposal => proposal.status === 'executing') ?? false;
   const disabled = busy || stale || !data;
   const setupBlocked = !!data?.setup_error;
-  const ready = !!data?.configured && !!data?.agent_token_set;
+  const ready = !!data?.configured;
   const endpoint = data?.configured ? new URL(data.mcp_path, window.location.origin).href : null;
   const pending = data?.proposals.filter(proposal => proposal.status === 'pending') ?? [];
   const recent = data?.proposals.filter(proposal => proposal.status !== 'pending') ?? [];
-  const focusedId = focusedProposalId();
+  const focusedId = createdFocus ?? queryFocusedId;
+  const currency = typeof data?.account?.currency === 'string' ? data.account.currency : undefined;
   const focusedFound = !!focusedId && (pending.some(proposal => proposal.id === focusedId) || recent.some(proposal => proposal.id === focusedId));
 
   const refresh = async () => {
@@ -233,7 +272,7 @@ export default function Trading() {
         const uncertainOrder = action.startsWith('approve:') && code !== 'CsrfRejected' && code !== 'AuthenticationStateChanged';
         if (uncertainOrder || mutationSucceeded) setRefreshRequired(true);
         setFeedback({ error: true, message: uncertainOrder
-          ? `${errorMessage(failure)} The request may have taken effect. Refresh status before further actions; do not retry uncertain orders. Check the broker directly.`
+          ? `${errorMessage(failure)} The request may have taken effect. Refresh status before further actions; do not retry uncertain requests. Check the broker directly.`
           : mutationSucceeded
             ? `${errorMessage(failure)} The change succeeded, but trading status could not be refreshed. Refresh status before further actions.`
             : errorMessage(failure) });
@@ -298,16 +337,45 @@ export default function Trading() {
     });
   };
 
-  const proposalAction = async (proposal: Proposal, action: 'approve' | 'discard') => {
+  const proposalAction = async (proposal: Proposal, action: 'approve' | 'discard', confirmEmpty?: boolean) => {
     if (disabled || !data?.configured || setupBlocked || (action === 'approve' && executing)) return;
     await runMutation(`${action}:${proposal.id}`, async (epoch) => {
-      const response = await sendMutateRequest(`${tradingUrl}/proposals/${encodeURIComponent(proposal.id)}/${action}`);
+      if (proposal.kind === 'pie' && action === 'approve') setPieReadVersion(version => version + 1);
+      const response = await sendMutateRequest(`${tradingUrl}/proposals/${encodeURIComponent(proposal.id)}/${action}`,
+        action === 'approve' && proposal.kind === 'pie' && proposal.pie.mutation.action === 'delete' ? { confirm_empty_pie: confirmEmpty === true } : undefined);
       const result: Proposal = await response.json();
       assertCurrentRequest(epoch);
       return { message: action === 'discard' ? 'Proposal discarded.'
+        : result.kind === 'pie' ? `Pie request ${result.pie.status}. Review broker configuration evidence below; this does not report trades.`
         : result.trades.some(trade => trade.status === 'failed' || trade.status === 'unknown')
           ? 'Processing stopped with failed or uncertain orders. Review the results and check the broker; do not retry blindly.'
           : 'Proposal processed. Review each order below; submitted does not mean filled.' };
+    });
+  };
+
+  const submitPie = async (input: SubmitPieInput): Promise<boolean> => {
+    let created: Proposal | null = null;
+    await runMutation('pie-proposal', async (epoch) => {
+      const response = await sendMutateRequest(`${tradingUrl}/pie-proposals`, input);
+      const proposal: Proposal = await response.json();
+      assertCurrentRequest(epoch);
+      created = proposal;
+      setCreatedFocus(proposal.id);
+      setTab('orders');
+      return { message: 'Pie proposal prepared. Review its immutable configuration below; nothing has been approved or sent to the broker.' };
+    });
+    return created !== null;
+  };
+
+  const reconcilePie = async (proposal: Extract<Proposal, { kind: 'pie' }>) => {
+    if (!data?.configured || executing) return;
+    await runMutation(`reconcile:${proposal.id}`, async (epoch) => {
+      const response = await sendMutateRequest(`${tradingUrl}/proposals/${encodeURIComponent(proposal.id)}/reconcile`);
+      const result: Proposal = await response.json();
+      assertCurrentRequest(epoch);
+      return { message: result.kind === 'pie' && result.pie.status === 'confirmed'
+        ? `${result.pie.mutation.action === 'delete' ? 'Deletion' : 'Settings'} confirmed by broker lookup. No trades or funding are reported.`
+        : 'Broker state checked using reads only. Review the saved observation; no mutation was retried.' };
     });
   };
 
@@ -331,7 +399,7 @@ export default function Trading() {
       <h1 className="text-xl font-semibold">Trading</h1>
       <p className="mt-1 text-sm text-muted-foreground">{setupBlocked
         ? 'Your own account must have a password and enrolled authenticator before trading. Ask the server administrator to resolve the credential-encryption configuration before connecting Trading 212.'
-        : 'External agents can only propose trades. You review and approve each order or entire batch here; an agent token cannot approve or execute trades.'}</p>
+        : 'External agents can only read and propose. You review and approve each equity order, batch or native Pie change here; an agent token cannot approve or execute mutations.'}</p>
     </div>
     {!data && !error && <p role="status" className="text-sm text-muted-foreground">Loading trading…</p>}
     {(error || refreshRequired) && <div role="alert" className="space-y-2 rounded-lg border border-red-800/40 bg-red-50 p-3 text-sm text-red-950 dark:border-red-200/40 dark:bg-red-950 dark:text-red-50">
@@ -345,11 +413,17 @@ export default function Trading() {
       <RefreshControl label="Refresh setup status" busy={busyAction === 'refresh'} disabled={busy && busyAction !== 'refresh'} feedback={feedback} onClick={refresh} />
     </div>}
     {feedback && !feedback.refresh && <p role={feedback.error ? 'alert' : 'status'} className={`break-words text-sm ${feedback.error ? 'text-red-700 dark:text-red-300' : 'text-muted-foreground'}`}>{feedback.message}</p>}
-    {data && !setupBlocked && <Tabs defaultValue={focusedId || ready || pending.length > 0 || recent.length > 0 ? 'orders' : 'setup'} className="max-md:pb-28">
+    {data && !setupBlocked && <Tabs value={tab ?? (focusedId || ready || pending.length > 0 || recent.length > 0 ? 'orders' : 'setup')} onValueChange={setTab} className="max-md:pb-28">
       <TabsList dock className="mb-6 h-auto sm:w-fit" aria-label="Trading sections">
         <TabsTrigger value="orders" className="min-h-11">Orders</TabsTrigger>
+        <TabsTrigger value="pies" className="min-h-11">Pies</TabsTrigger>
         <TabsTrigger value="setup" className="min-h-11">Setup</TabsTrigger>
       </TabsList>
+      <TabsContent value="pies" forceMount hidden={tab !== 'pies'} className="space-y-4">
+        {data.configured
+          ? <TradingPies key={`${getPrivateRequestEpoch()}:${data.connection_generation}`} disabled={disabled || setupBlocked || executing} busyAction={busyAction} currency={currency} invalidation={pieReadVersion} onSubmit={submitPie} />
+          : <p className="rounded-md border p-4 text-sm text-muted-foreground">Connect Trading 212 in Setup to browse native Pies. An external-agent token is not required.</p>}
+      </TabsContent>
       <TabsContent value="setup" className="space-y-4">
       <Card>
         <CardHeader>
@@ -357,7 +431,7 @@ export default function Trading() {
           <CardDescription>Only Trading 212 is supported for now. Generate an API key ID and Secret Key using the <a href="https://helpcentre.trading212.com/hc/en-us/articles/14584770928157-Trading-212-API-key" target="_blank" rel="noopener noreferrer" className="underline">API key setup</a>, then see the <a href="https://docs.trading212.com/api" target="_blank" rel="noopener noreferrer" className="underline">API docs</a>. Demo is the default; live orders put real money at risk.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          {executing && <p role="status" className="text-sm text-muted-foreground">Orders are being submitted. Connection changes and further approvals are disabled until processing finishes.</p>}
+          {executing && <p role="status" className="text-sm text-muted-foreground">A broker request is being processed. Connection changes and further approvals are disabled until processing finishes.</p>}
           {data.configured && !editingConnection ? <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex min-w-0 flex-wrap items-center gap-2 text-sm">
               <Badge variant="outline" className={data.environment === 'live'
@@ -414,16 +488,18 @@ export default function Trading() {
       <Card>
         <CardHeader>
           <CardTitle>Agent access</CardTitle>
-          <CardDescription>Connect an external agent using the MCP endpoint and a separate Bearer token. Keep this token private; it grants read access to your whole recorded portfolio, trades and activity across brokers, including cash and manual assets, plus instrument search, quotes and trade proposals. It cannot approve orders.</CardDescription>
+          <CardDescription>Connect an external agent using the MCP endpoint and a separate Bearer token. Keep this token private; it grants read access to your whole recorded portfolio, trades and activity across brokers, including cash and manual assets, plus instrument search, quotes, native Pies and trade/Pie proposals. It cannot approve or execute mutations.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
           <p className="text-sm text-muted-foreground">Using the REST API instead of MCP? Create a separate read-only personal API token in Security for <code>GET /api/portfolio</code> and <code>GET /api/positions</code>. No broker connection is required. MCP tokens do not authorize REST requests.</p>
           <Button asChild variant="outline"><Link href="~/dashboard/security">Manage REST API tokens</Link></Button>
           {!data.configured ? <p className="text-sm text-muted-foreground">Connect a broker first to enable the MCP endpoint and agent token controls.</p> : <>
-            <Label htmlFor="trading-mcp-endpoint">MCP endpoint</Label>
-            <div className="flex flex-col gap-2 sm:flex-row">
-              <Input id="trading-mcp-endpoint" className="min-w-0" readOnly value={endpoint ?? ''} disabled={stale || setupBlocked} />
-              <Button type="button" variant="outline" disabled={disabled || setupBlocked || !endpoint} onClick={() => endpoint && copy(endpoint, 'endpoint')}>{copied === 'endpoint' ? <><CheckCircleIcon aria-hidden="true" />Copied</> : 'Copy endpoint'}</Button>
+            <div className="space-y-2">
+              <Label htmlFor="trading-mcp-endpoint" className="block">MCP endpoint</Label>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <Input id="trading-mcp-endpoint" className="min-w-0" readOnly value={endpoint ?? ''} disabled={stale || setupBlocked} />
+                <Button type="button" variant="outline" disabled={disabled || setupBlocked || !endpoint} onClick={() => endpoint && copy(endpoint, 'endpoint')}>{copied === 'endpoint' ? <><CheckCircleIcon aria-hidden="true" />Copied</> : 'Copy endpoint'}</Button>
+              </div>
             </div>
             <p className="text-xs text-muted-foreground">In your agent’s remote HTTP MCP settings, use this URL and an Authorization header of <code>Bearer &lt;agent token&gt;</code>.</p>
             <p className="text-xs text-muted-foreground">For a public hostname, the server administrator must include it in <code>TRADING_MCP_HOSTS</code>. Use HTTPS outside trusted local networks. Proposal responses link back to this page using the configured <code>DOUGHBOX_PUBLIC_URL</code>.</p>
@@ -451,8 +527,8 @@ export default function Trading() {
         {focusedId && <p role="status" className="text-sm text-muted-foreground">Opened from an approval link. Review the matching proposal below. Nothing is sent to the broker until you approve it here.</p>}
         {focusedId && !focusedFound && <p role="status" className="text-sm text-muted-foreground">This link does not match a pending or recent proposal. It may be older than the latest 50 processed proposals.</p>}
         {!error && !refreshRequired && <RefreshControl label="Refresh" busy={busyAction === 'refresh'} disabled={(busy && busyAction !== 'refresh') || isValidating} feedback={feedback} onClick={refresh} />}
-        {pending.length === 0 && <p className="rounded-md border p-4 text-sm text-muted-foreground">No proposals awaiting approval. A connected agent can submit a single order or a batch for your review.</p>}
-        {pending.map(proposal => <ProposalCard key={proposal.id} proposal={proposal} focused={proposal.id === focusedId} disabled={disabled || setupBlocked || !data.configured || executing || proposal.environment !== data.environment} busyAction={busyAction} onAction={proposalAction} />)}
+        {pending.length === 0 && <p className="rounded-md border p-4 text-sm text-muted-foreground">No proposals awaiting approval. Prepare a Pie proposal in Pies, or have a connected agent propose equity orders or native Pie changes.</p>}
+        {pending.map(proposal => <ProposalCard key={proposal.id} proposal={proposal} focused={proposal.id === focusedId} disabled={disabled || setupBlocked || !data.configured || executing || proposal.environment !== data.environment} readbackDisabled={disabled || setupBlocked || !data.configured || executing} busyAction={busyAction} onAction={proposalAction} onReconcile={reconcilePie} />)}
       </section>
       <details className="rounded-lg border p-4" open={recent.some(proposal => proposal.id === focusedId) ? true : undefined}>
         <summary className="cursor-pointer text-base font-semibold">Recent history ({recent.length})</summary>
@@ -460,8 +536,8 @@ export default function Trading() {
           {recent.length === 0
             ? <p className="rounded-md border bg-muted/30 p-3 text-sm text-muted-foreground">No processed or discarded proposals yet. Approved and discarded proposals will appear here.</p>
             : <>
-              <p className="text-xs text-muted-foreground">Open, filled, partial, cancelled, and rejected states are checked against <a href="https://docs.trading212.com/api/orders" target="_blank" rel="noopener noreferrer" className="underline">Trading 212’s orders API</a> and recent history. There is no automatic retry.</p>
-              {recent.map(proposal => <ProposalCard key={proposal.id} proposal={proposal} focused={proposal.id === focusedId} disabled busyAction={busyAction} onAction={proposalAction} />)}
+              <p className="text-xs text-muted-foreground">Equity order statuses are checked against Trading 212's orders API and recent history. Pie settings/absence confirmations are separate from trades and never mean fills. There is no automatic mutation retry.</p>
+              {recent.map(proposal => <ProposalCard key={proposal.id} proposal={proposal} focused={proposal.id === focusedId} disabled readbackDisabled={disabled || setupBlocked || !data.configured || executing} busyAction={busyAction} onAction={proposalAction} onReconcile={reconcilePie} />)}
             </>}
         </div>
       </details>

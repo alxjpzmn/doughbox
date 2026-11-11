@@ -22,7 +22,7 @@ mod latest;
 pub(crate) use latest::{latest_prices, LatestPrice};
 
 /// Bump when source admission or parser policy changes so available files replay.
-pub const PARSER_VERSION: &str = "mifid-bulk-v4";
+pub const PARSER_VERSION: &str = "mifid-bulk-v5";
 pub(super) const PROJECTION_LOCK: i64 = 0x4D49464944505243;
 const MAX_REPORT_BATCH: usize = 4096;
 

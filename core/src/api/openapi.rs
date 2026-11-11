@@ -75,6 +75,12 @@ impl Modify for SecurityAddon {
             components.add_security_scheme("browser_session", SecurityScheme::ApiKey(ApiKey::Cookie(ApiKeyValue::new("doughbox_session"))));
         }
         for (path,item) in &mut openapi.paths.paths {
+            if path == "/api/trading/proposals/{id}/approve" {
+                if let Some(utoipa::openapi::RefOr::T(body)) = item.post.as_mut().and_then(|operation| operation.request_body.as_mut()) {
+                    // Missing bytes are valid, but JSON null is not an approval object.
+                    body.required = Some(utoipa::openapi::Required::False);
+                }
+            }
             let administrator = path.starts_with("/api/admin/") || path.starts_with("/api/data-imports")
                 || path == "/api/prices/scheduler" || path == "/api/prices/refresh" || path.starts_with("/api/prices/feeds/");
             for operation in [&mut item.get,&mut item.post,&mut item.put,&mut item.patch,&mut item.delete,&mut item.head,&mut item.options].into_iter().flatten() {
@@ -199,6 +205,12 @@ impl Modify for SecurityAddon {
         trading::token,
         trading::approve,
         trading::discard,
+        trading::pies_list,
+        trading::pie_detail,
+        trading::broker_account,
+        trading::submit_pie,
+        trading::reconcile,
+        trading::instruments,
     ),
     components(schemas(
         LoginRequest, VerificationRequest, ReauthRequest, CodeType, EmptyRequest,
@@ -289,6 +301,18 @@ impl Modify for SecurityAddon {
         CreateAssetBalanceSnapshotRequest,
         UpdateAssetBalanceSnapshotRequest,
         CreateLinkedInterestRequest,
+        crate::services::trading::Proposal,
+        crate::services::trading::ProposalContent,
+        crate::services::trading::pies::SubmitPieInput,
+        crate::services::trading::pies::PieApprovalInput,
+        crate::services::trading::pies::PieOperationInput,
+        crate::services::trading::pies::PreparedPieMutation,
+        crate::services::trading::pies::PieResult,
+        crate::services::trading::pies::PieList,
+        crate::services::trading::pies::PieDetail,
+        crate::services::trading::account::BrokerAccountState,
+        crate::services::trading::account::BrokerCash,
+        crate::services::trading::account::BrokerPosition,
     )),
     tags(
         (name = "auth", description = "Username/password accounts, mandatory authenticator TOTP, durable browser sessions and offline recovery"),
@@ -298,7 +322,54 @@ impl Modify for SecurityAddon {
         (name = "market", description = "Existing instruments, manual EUR price pins, automatic pricing status, and brokers"),
         (name = "taxation", description = "Austrian capital-gains tax reports"),
         (name = "assets", description = "Custom assets, balances, valuations, and cash accounts"),
+        (name = "trading", description = "Browser-owner broker connection, explicit approval, and native Pie configuration. Personal and agent tokens cannot use these REST endpoints."),
     ),
     modifiers(&SecurityAddon)
 )]
 pub struct ApiDoc;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn browser_pie_contract_documents_security_optional_approval_and_tagged_responses() {
+        let document = serde_json::to_value(ApiDoc::openapi()).unwrap();
+        for (path, method) in [
+            ("/api/trading/pies", "get"), ("/api/trading/pies/{id}", "get"), ("/api/trading/account", "get"),
+            ("/api/trading/pie-proposals", "post"), ("/api/trading/proposals/{id}/reconcile", "post"),
+            ("/api/trading/instruments", "get"), ("/api/trading/proposals/{id}/approve", "post"),
+        ] {
+            assert_eq!(document["paths"][path][method]["security"], json!([{"browser_session":[]}]));
+        }
+        assert_ne!(document["paths"]["/api/trading/proposals/{id}/approve"]["post"]["requestBody"]["required"], true);
+        let schema = json!({
+            "$ref":"#/components/schemas/Proposal",
+            "components":document["components"]
+        });
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let base = json!({
+            "id":"11111111-1111-4111-8111-111111111111","client_request_id":"contract",
+            "title":"Review","note":"","environment":"demo","status":"pending","created_at":"2026-11-09T00:00:00Z"
+        });
+        let mut trades = base.clone();
+        trades["kind"] = json!("trades");
+        trades["trades"] = json!([]);
+        assert!(validator.is_valid(&trades), "{:?}", validator.iter_errors(&trades).collect::<Vec<_>>());
+        let mut pie = base;
+        pie["kind"] = json!("pie");
+        pie["pie"] = json!({
+            "mutation":{"action":"delete","pie_id":"20"},"before":null,"expected_settings":null,
+            "status":"pending","broker_pie_id":null,"error":null,"submitted_at":null,
+            "observation":null,"empty_confirmed_by_owner":false
+        });
+        assert!(validator.is_valid(&pie), "{:?}", validator.iter_errors(&pie).collect::<Vec<_>>());
+        pie["kind"] = json!("trades");
+        assert!(!validator.is_valid(&pie));
+        trades["kind"] = json!("pie");
+        assert!(!validator.is_valid(&trades));
+        trades["kind"] = json!("unknown");
+        assert!(!validator.is_valid(&trades));
+    }
+}

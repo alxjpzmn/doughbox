@@ -4,6 +4,8 @@ mod ledger;
 mod quotes;
 pub mod mcp;
 pub mod provider;
+pub mod pies;
+pub mod account;
 mod store;
 
 use anyhow::{ensure, Context};
@@ -72,10 +74,20 @@ pub struct Proposal {
     pub environment: String,
     pub status: String,
     pub created_at: DateTime<Utc>,
-    pub trades: Vec<TradeResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub broker_account: Option<account::BrokerAccountState>,
+    #[serde(flatten)]
+    pub content: ProposalContent,
+}
+
+#[derive(Serialize, ToSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ProposalContent {
+    Trades { trades: Vec<TradeResult> },
+    Pie { pie: pies::PieResult },
 }
 impl Proposal {
-    fn from_row(row: &Row) -> anyhow::Result<Self> {
+    pub(crate) fn from_row(row: &Row) -> anyhow::Result<Self> {
         Ok(Self {
             id: row.get("id"),
             client_request_id: row.get("client_request_id"),
@@ -84,7 +96,20 @@ impl Proposal {
             environment: row.get("environment"),
             status: row.get("status"),
             created_at: row.get("created_at"),
-            trades: serde_json::from_value(row.get("trades"))?,
+            broker_account: row.get::<_, Option<Value>>("broker_account").map(serde_json::from_value).transpose()?,
+            content: match row.get::<_, String>("kind").as_str() {
+                "trades" => {
+                    ensure!(row.get::<_, Option<Value>>("pie").is_none(), "Malformed trade proposal payload.");
+                    ProposalContent::Trades { trades: serde_json::from_value(row.get("trades"))? }
+                }
+                "pie" => {
+                    ensure!(row.get::<_, Value>("trades") == serde_json::json!([]), "Malformed Pie proposal trade payload.");
+                    let value: Value = row.get::<_, Option<Value>>("pie").context("Missing Pie proposal payload.")?;
+                    ensure!(value.is_object(), "Malformed Pie proposal payload.");
+                    ProposalContent::Pie { pie: serde_json::from_value(value)? }
+                }
+                _ => anyhow::bail!("Unknown trading proposal kind."),
+            },
         })
     }
 }
@@ -96,6 +121,7 @@ pub struct SubmitOutcome {
 #[derive(Serialize, ToSchema)]
 pub struct TradingState {
     configured: bool,
+    connection_generation: String,
     environment: Option<String>,
     account: Option<Value>,
     agent_token_set: bool,
@@ -130,6 +156,7 @@ pub async fn state(user_id: &UserId) -> anyhow::Result<TradingState> {
     }
     Ok(TradingState {
         configured: row.get::<_, Option<String>>("credentials").is_some(),
+        connection_generation: row.get("generation"),
         environment: row.get("environment"),
         account: row.get("account"),
         agent_token_set: row.get::<_, Option<String>>("agent_token_hash").is_some(),
@@ -144,7 +171,7 @@ fn tracked(status: &str) -> bool {
 }
 
 async fn reconcile_orders(user_id: &UserId, client: &tokio_postgres::Client, environment: &str, credentials: &str, proposals: &mut [Proposal]) -> anyhow::Result<()> {
-    let watching = proposals.iter().any(|proposal| proposal.status != "executing" && proposal.trades.iter().any(|trade| tracked(&trade.status) && trade.broker_order_id.is_some()));
+    let watching = proposals.iter().any(|proposal| proposal.status != "executing" && matches!(&proposal.content, ProposalContent::Trades { trades } if trades.iter().any(|trade| tracked(&trade.status) && trade.broker_order_id.is_some())));
     if !watching || !store::claim_poll(user_id, client, "last_pending_poll_at", "6 seconds").await? {
         return Ok(());
     }
@@ -155,8 +182,9 @@ async fn reconcile_orders(user_id: &UserId, client: &tokio_postgres::Client, env
     let mut missing = false;
     for proposal in proposals.iter_mut() {
         if proposal.status == "executing" { continue; }
+        let ProposalContent::Trades { trades } = &proposal.content else { continue };
         let mut updates = std::collections::HashMap::new();
-        for trade in &proposal.trades {
+        for trade in trades {
             let Some(id) = trade.broker_order_id.as_ref() else { continue };
             if !tracked(&trade.status) { continue; }
             if let Some(status) = pending_status.get(id) {
@@ -173,8 +201,9 @@ async fn reconcile_orders(user_id: &UserId, client: &tokio_postgres::Client, env
     let history: std::collections::HashMap<_, _> = broker.historical_order_statuses().await?.into_iter().collect();
     for proposal in proposals.iter_mut() {
         if proposal.status == "executing" { continue; }
+        let ProposalContent::Trades { trades } = &proposal.content else { continue };
         let mut updates = std::collections::HashMap::new();
-        for trade in &proposal.trades {
+        for trade in trades {
             let Some(id) = trade.broker_order_id.as_ref() else { continue };
             if !tracked(&trade.status) || pending_ids.contains(id) { continue; }
             if let Some(status) = history.get(id) {
@@ -262,19 +291,14 @@ fn positive_decimal(value: &str) -> anyhow::Result<Decimal> {
     );
     Ok(decimal)
 }
+fn validate_envelope(client_request_id: &str, title: &str, note: &str) -> anyhow::Result<()> {
+    ensure!(!client_request_id.trim().is_empty() && client_request_id.len() <= 200, "client_request_id must contain 1–200 characters.");
+    ensure!(!title.trim().is_empty() && title.len() <= 200, "Title must contain 1–200 characters.");
+    ensure!(note.len() <= 4000, "Note is limited to 4000 characters.");
+    Ok(())
+}
 fn validate(input: &SubmitInput) -> anyhow::Result<()> {
-    ensure!(
-        !input.client_request_id.trim().is_empty() && input.client_request_id.len() <= 200,
-        "client_request_id must contain 1–200 characters."
-    );
-    ensure!(
-        !input.title.trim().is_empty() && input.title.len() <= 200,
-        "Title must contain 1–200 characters."
-    );
-    ensure!(
-        input.note.len() <= 4000,
-        "Note is limited to 4000 characters."
-    );
+    validate_envelope(&input.client_request_id, &input.title, &input.note)?;
     ensure!(
         (1..=50).contains(&input.trades.len()),
         "Submit between 1 and 50 trades."
@@ -300,78 +324,71 @@ pub async fn submit(user_id: &UserId, hash: &str, input: SubmitInput) -> anyhow:
     let catalog = catalog::load(user_id, hash).await?;
     let mut client = db_client().await?;
     let tx = client.transaction().await?;
-    let outcome = submit_on(user_id, &tx, hash, input, catalog).await?;
-    tx.commit().await?;
-    Ok(outcome)
-}
-
-async fn submit_on(
-    user_id: &UserId,
-    tx: &Transaction<'_>,
-    hash: &str,
-    input: SubmitInput,
-    catalog: catalog::Catalog,
-) -> anyhow::Result<SubmitOutcome> {
-    let connection = store::agent_connection(user_id, tx, hash).await?;
-    let generation: String = connection.get("generation");
-    ensure!(
-        generation == catalog.generation,
-        "Connection changed. Submit a new proposal."
-    );
     let request = serde_json::to_value(&input)?;
-    if let Some(row) = tx
-        .query_opt(
-            "SELECT * FROM trading_proposals WHERE user_id=$1 AND generation=$2 AND client_request_id=$3",
-            &[&user_id.as_str(), &generation, &input.client_request_id],
-        )
-        .await?
-    {
-        ensure!(
-            row.get::<_, Value>("request") == request,
-            "Idempotency conflict: client_request_id already has different trades or text."
-        );
-        return Ok(SubmitOutcome {
-            proposal: Proposal::from_row(&row)?,
-            created: false,
-        });
+    let connection = store::agent_connection(user_id, &tx, hash).await?;
+    let generation: String = connection.get("generation");
+    ensure!(generation == catalog.generation, "Connection changed. Submit a new proposal.");
+    if let Some(row) = tx.query_opt("SELECT * FROM trading_proposals WHERE user_id=$1 AND generation=$2 AND client_request_id=$3", &[&user_id.as_str(), &generation, &input.client_request_id]).await? {
+        ensure!(row.get::<_, String>("kind") == "trades" && row.get::<_, Value>("request") == request, "Idempotency conflict: client_request_id already has different trades or text.");
+        return Ok(SubmitOutcome { proposal: Proposal::from_row(&row)?, created: false });
+    }
+    tx.commit().await?;
+    let broker_account = account::load(user_id, pies::PieAccess::Agent(hash), false).await?;
+    account::validate_trades(&input.trades, &catalog.instruments, &broker_account)?;
+    let tx = client.transaction().await?;
+    let connection = store::agent_connection(user_id, &tx, hash).await?;
+    ensure!(connection.get::<_, String>("generation") == generation, "Connection changed. Submit a new proposal.");
+    if let Some(row) = tx.query_opt("SELECT * FROM trading_proposals WHERE user_id=$1 AND generation=$2 AND client_request_id=$3", &[&user_id.as_str(), &generation, &input.client_request_id]).await? {
+        ensure!(row.get::<_, String>("kind") == "trades" && row.get::<_, Value>("request") == request, "Idempotency conflict: client_request_id already has different trades or text.");
+        return Ok(SubmitOutcome { proposal: Proposal::from_row(&row)?, created: false });
     }
     let instruments = catalog.instruments;
     let mut trades = Vec::with_capacity(input.trades.len());
     for trade in &input.trades {
-        let instrument = instruments
-            .iter()
-            .find(|i| i.ticker == trade.ticker)
-            .with_context(|| {
-                format!(
-                    "Unknown Trading 212 ticker: {}. Use search_instruments.",
-                    trade.ticker
-                )
-            })?;
-        trades.push(TradeResult {
-            trade: trade.clone(),
-            name: instrument.name.clone(),
-            currency: instrument.currency.clone(),
-            status: "pending".into(),
-            broker_order_id: None,
-            error: None,
-        });
+        let instrument = instruments.iter().find(|item| item.ticker == trade.ticker).with_context(|| format!("Unknown Trading 212 ticker: {}. Use search_instruments.", trade.ticker))?;
+        trades.push(TradeResult { trade: trade.clone(), name: instrument.name.clone(), currency: instrument.currency.clone(), status: "pending".into(), broker_order_id: None, error: None });
     }
     let id = uuid::Uuid::new_v4().to_string();
     let environment: String = connection.get("environment");
-    let row = tx.query_one("INSERT INTO trading_proposals (user_id,id,generation,client_request_id,request,title,note,environment,trades) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *", &[&user_id.as_str(),&id,&generation,&input.client_request_id,&request,&input.title,&input.note,&environment,&serde_json::to_value(trades)?]).await?;
-    Ok(SubmitOutcome {
-        proposal: Proposal::from_row(&row)?,
-        created: true,
-    })
+    let account_value = serde_json::to_value(&broker_account)?;
+    let row = tx.query_one("INSERT INTO trading_proposals (user_id,id,generation,client_request_id,request,title,note,environment,trades,broker_account) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *", &[&user_id.as_str(), &id, &generation, &input.client_request_id, &request, &input.title, &input.note, &environment, &serde_json::to_value(trades)?, &account_value]).await?;
+    let proposal = Proposal::from_row(&row)?;
+    tx.commit().await?;
+    Ok(SubmitOutcome { proposal, created: true })
+}
+
+async fn submit_on(user_id: &UserId, tx: &Transaction<'_>, hash: &str, input: SubmitInput, catalog: catalog::Catalog) -> anyhow::Result<SubmitOutcome> {
+    let connection = store::agent_connection(user_id, tx, hash).await?;
+    let generation: String = connection.get("generation");
+    ensure!(generation == catalog.generation, "Connection changed. Submit a new proposal.");
+    let request = serde_json::to_value(&input)?;
+    if let Some(row) = tx.query_opt("SELECT * FROM trading_proposals WHERE user_id=$1 AND generation=$2 AND client_request_id=$3", &[&user_id.as_str(), &generation, &input.client_request_id]).await? {
+        ensure!(row.get::<_, String>("kind") == "trades" && row.get::<_, Value>("request") == request, "Idempotency conflict: client_request_id already has different trades or text.");
+        return Ok(SubmitOutcome { proposal: Proposal::from_row(&row)?, created: false });
+    }
+    let mut trades = Vec::with_capacity(input.trades.len());
+    for trade in &input.trades {
+        let instrument = catalog.instruments.iter().find(|item| item.ticker == trade.ticker).with_context(|| format!("Unknown Trading 212 ticker: {}.", trade.ticker))?;
+        trades.push(TradeResult { trade: trade.clone(), name: instrument.name.clone(), currency: instrument.currency.clone(), status: "pending".into(), broker_order_id: None, error: None });
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    let environment: String = connection.get("environment");
+    let row = tx.query_one("INSERT INTO trading_proposals (user_id,id,generation,client_request_id,request,title,note,environment,trades) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *", &[&user_id.as_str(), &id, &generation, &input.client_request_id, &request, &input.title, &input.note, &environment, &serde_json::to_value(trades)?]).await?;
+    Ok(SubmitOutcome { proposal: Proposal::from_row(&row)?, created: true })
 }
 pub async fn search(user_id: &UserId, hash: &str, query: &str) -> anyhow::Result<Vec<Instrument>> {
-    ensure!(
-        (1..=100).contains(&query.trim().len()),
-        "Search query must contain 1–100 characters."
-    );
-    let instruments = catalog::load(user_id, hash).await?.instruments;
+    validate_search(query)?;
+    Ok(match_instruments(catalog::load(user_id, hash).await?.instruments, query))
+}
+
+fn validate_search(query: &str) -> anyhow::Result<()> {
+    ensure!((1..=100).contains(&query.trim().len()), "Search query must contain 1–100 characters.");
+    Ok(())
+}
+
+fn match_instruments(instruments: Vec<Instrument>, query: &str) -> Vec<Instrument> {
     let query = query.to_lowercase();
-    Ok(instruments
+    instruments
         .into_iter()
         .filter(|i| {
             i.ticker.to_lowercase().contains(&query)
@@ -379,7 +396,17 @@ pub async fn search(user_id: &UserId, hash: &str, query: &str) -> anyhow::Result
                 || i.isin.to_lowercase().contains(&query)
         })
         .take(50)
-        .collect())
+        .collect()
+}
+
+pub async fn browser_search(user_id: &UserId, query: &str) -> anyhow::Result<Vec<Instrument>> {
+    validate_search(query)?;
+    let mut client = db_client().await?;
+    let tx = client.transaction().await?;
+    let row = store::browser_connection(user_id, &tx).await?;
+    let instruments: Vec<Instrument> = serde_json::from_value(row.get("instruments")).context("Saved instrument catalog is incomplete; reconnect Trading 212.")?;
+    tx.commit().await?;
+    Ok(match_instruments(instruments, query))
 }
 pub async fn get_proposal(user_id: &UserId, hash: &str, id: &str) -> anyhow::Result<Proposal> {
     let mut client = db_client().await?;
@@ -387,18 +414,33 @@ pub async fn get_proposal(user_id: &UserId, hash: &str, id: &str) -> anyhow::Res
     store::agent_proposal(user_id, &tx, hash, id).await
 }
 
+pub async fn browser_proposal(user_id: &UserId, id: &str) -> anyhow::Result<Proposal> {
+    let client = db_client().await?;
+    let row = client.query_opt("SELECT * FROM trading_proposals WHERE user_id=$1 AND id=$2", &[&user_id.as_str(), &id]).await?.ok_or(AuthError::NotFound)?;
+    Proposal::from_row(&row)
+}
+
 pub async fn discard(user_id: &UserId, id: &str) -> anyhow::Result<Proposal> {
     store::discard(user_id, id).await
 }
-pub async fn approve(user_id: &UserId, id: String) -> anyhow::Result<Proposal> {
+pub async fn approve(user_id: &UserId, id: String, approval: pies::PieApprovalInput) -> anyhow::Result<Proposal> {
     check_setup()?;
-    // Already approved execution continues under its original owner if the browser
-    // disconnects or the account is disabled; durable per-leg markers prevent replay.
+    // Browser disconnect does not cancel an approved cycle. Session loss does.
     let user_id = user_id.clone();
-    tokio::spawn(async move { execute(&user_id, &id).await }).await?
+    tokio::spawn(async move { execute(&user_id, &id, approval).await }).await?
 }
-async fn execute(user_id: &UserId, id: &str) -> anyhow::Result<Proposal> {
-    let mut client = db_client().await?;
+async fn execute(user_id: &UserId, id: &str, approval: pies::PieApprovalInput) -> anyhow::Result<Proposal> {
+    let (mut client, session) = crate::database::db_connection().await?;
+    tokio::pin!(session);
+    let work = execute_locked(user_id, &mut client, id, approval);
+    tokio::pin!(work);
+    tokio::select! {
+        biased;
+        _ = &mut session => anyhow::bail!("Trading execution database session was lost; further work was cancelled. Check broker state before proposing another request."),
+        result = &mut work => result,
+    }
+}
+async fn execute_locked(user_id: &UserId, client: &mut tokio_postgres::Client, id: &str, approval: pies::PieApprovalInput) -> anyhow::Result<Proposal> {
     ensure!(
         store::execution_lock(user_id, &client).await?,
         "Another proposal is executing. Wait for it to finish."
@@ -428,6 +470,14 @@ async fn execute(user_id: &UserId, id: &str) -> anyhow::Result<Proposal> {
         row.get::<_, String>("generation") == generation,
         "Connection changed. Submit a new proposal."
     );
+    match &mut proposal.content {
+        ProposalContent::Pie { pie } if matches!(pie.mutation, pies::PreparedPieMutation::Delete { .. }) => {
+            ensure!(approval.confirm_empty_pie, "Confirm that this Pie's investments and Pie cash were emptied in Trading 212 before approving permanent deletion.");
+            pie.empty_confirmed_by_owner = true;
+            tx.execute("UPDATE trading_proposals SET pie=jsonb_set(pie,'{empty_confirmed_by_owner}','true') WHERE user_id=$1 AND id=$2 AND kind='pie'", &[&user_id.as_str(), &id]).await?;
+        }
+        _ => ensure!(!approval.confirm_empty_pie, "Empty-Pie acknowledgement is only valid for deletion."),
+    }
     let encrypted: Option<String> = connection.get("credentials");
     let credentials =
         provider::decrypt_credentials(&encrypted.context("Connect Trading 212 first.")?)?;
@@ -439,11 +489,26 @@ async fn execute(user_id: &UserId, id: &str) -> anyhow::Result<Proposal> {
     .await?;
     tx.commit().await?;
     proposal.status = "executing".into();
-    for index in 0..proposal.trades.len() {
+    match &mut proposal.content {
+        ProposalContent::Pie { pie } => pies::execute(user_id, client, &broker, &generation, id, pie).await?,
+        ProposalContent::Trades { trades } => {
+            let instruments: Vec<Instrument> = serde_json::from_value(connection.get("instruments")).context("Saved instrument catalog is incomplete; reconnect Trading 212.")?;
+            let blocked = match account::load(user_id, pies::PieAccess::Browser, true).await {
+                Ok(state) => account::validate_trades(&trades.iter().map(|trade| trade.trade.clone()).collect::<Vec<_>>(), &instruments, &state).err(),
+                Err(error) => Some(error),
+            };
+            if let Some(error) = blocked {
+                for trade in trades.iter_mut() {
+                    trade.status = "failed".into();
+                    trade.error = Some(format!("Trading 212 account state could not be verified before dispatch: {error} Nothing was sent."));
+                }
+                store::save_trades(user_id, client, id, trades).await?;
+            } else {
+                for index in 0..trades.len() {
         store::pace_submission(user_id, &client).await?;
-        proposal.trades[index].status = "submitting".into();
-        store::save_trades(user_id, &client, id, &proposal.trades).await?;
-        let trade = &proposal.trades[index].trade;
+        trades[index].status = "submitting".into();
+        store::save_trades(user_id, &client, id, trades).await?;
+        let trade = &trades[index].trade;
         let outcome = broker
             .submit_limit(
                 &trade.ticker,
@@ -456,8 +521,8 @@ async fn execute(user_id: &UserId, id: &str) -> anyhow::Result<Proposal> {
         store::mark_submission(user_id, &client).await?;
         let stop = match outcome {
             Ok(broker_id) => {
-                proposal.trades[index].status = "submitted".into();
-                proposal.trades[index].broker_order_id = Some(broker_id);
+                trades[index].status = "submitted".into();
+                trades[index].broker_order_id = Some(broker_id);
                 false
             }
             Err(error) => {
@@ -465,21 +530,24 @@ async fn execute(user_id: &UserId, id: &str) -> anyhow::Result<Proposal> {
                     SubmitError::Rejected(message) => ("failed", message),
                     SubmitError::Unknown(message) => ("unknown", message),
                 };
-                proposal.trades[index].status = status.into();
-                proposal.trades[index].error = Some(message);
+                trades[index].status = status.into();
+                trades[index].error = Some(message);
                 true
             }
         };
         if stop {
-            for remaining in &mut proposal.trades[index + 1..] {
+            for remaining in &mut trades[index + 1..] {
                 remaining.status = "discarded".into();
                 remaining.error =
                     Some("Not sent: an earlier trade failed or has an uncertain outcome.".into());
             }
         }
-        store::save_trades(user_id, &client, id, &proposal.trades).await?;
+        store::save_trades(user_id, &client, id, trades).await?;
         if stop {
             break;
+        }
+                }
+            }
         }
     }
     client
@@ -496,6 +564,7 @@ async fn execute(user_id: &UserId, id: &str) -> anyhow::Result<Proposal> {
 mod tests {
     use super::*;
     mod reconciliation;
+    mod pies;
     #[test]
     fn approved_amounts_cannot_round_or_change_sign() {
         for invalid in [

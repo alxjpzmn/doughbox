@@ -9,6 +9,29 @@ use serde_json::{json, Number, Value};
 
 use crate::services::shared::{env::get_env_variable, secrets};
 
+pub mod pies;
+pub mod account;
+
+#[cfg(test)]
+static TEST_BROKER_URL: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Dedicated, serialized test fixtures only; no production URL override exists.
+#[cfg(test)]
+pub(crate) fn set_test_broker_url(url: Option<String>) -> Result<()> {
+    if let Some(value) = &url {
+        let parsed = reqwest::Url::parse(value)?;
+        if parsed.scheme() != "http" || parsed.host_str() != Some("127.0.0.1")
+            || parsed.port().is_none() || parsed.path() != "/api/v0"
+            || parsed.query().is_some() || parsed.fragment().is_some()
+            || !parsed.username().is_empty() || parsed.password().is_some()
+        {
+            bail!("Test broker URL must be a loopback HTTP /api/v0 URL");
+        }
+    }
+    *TEST_BROKER_URL.lock().map_err(|_| anyhow!("Test broker URL lock poisoned"))? = url;
+    Ok(())
+}
+
 const CREDENTIALS_AAD: &[u8] = b"doughbox-trading212-v1";
 const MAX_REJECTION_BODY: usize = 16 * 1024;
 const MAX_REJECTION_FIELD_CHARS: usize = 400;
@@ -51,7 +74,7 @@ fn decrypt_with_key(encoded: &str, key: &[u8; 32]) -> Result<Credentials> {
         .map_err(|_| anyhow!("Decrypted trading credentials are invalid"))
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Instrument {
     pub ticker: String,
     pub name: String,
@@ -117,11 +140,23 @@ impl BrokerClient {
             "live" => "https://live.trading212.com/api/v0",
             _ => bail!("Trading environment must be demo or live"),
         };
+        #[cfg(test)]
+        let test_url = TEST_BROKER_URL.lock()
+            .map_err(|_| anyhow!("Test broker URL lock poisoned"))?.clone();
+        #[cfg(test)]
+        let base_url: Cow<'static, str> = test_url.clone().map(Cow::Owned)
+            .unwrap_or(Cow::Borrowed(base_url));
+        #[cfg(not(test))]
+        let base_url = Cow::Borrowed(base_url);
+        #[cfg(test)]
+        let https_only = test_url.is_none();
+        #[cfg(not(test))]
+        let https_only = true;
         if credentials.api_key.trim().is_empty() || credentials.api_secret.trim().is_empty() {
             bail!("Trading 212 API key and secret are required");
         }
         let client = reqwest::Client::builder()
-            .https_only(true)
+            .https_only(https_only)
             .redirect(reqwest::redirect::Policy::none())
             // Protocol-level automatic retries are unsafe for order submissions too.
             .retry(reqwest::retry::never())
@@ -132,7 +167,7 @@ impl BrokerClient {
             .map_err(|_| anyhow!("Trading 212 HTTP client could not be initialized"))?;
         Ok(Self {
             client,
-            base_url: Cow::Borrowed(base_url),
+            base_url,
             credentials,
         })
     }
@@ -383,8 +418,8 @@ async fn rejection_detail(
     ];
     // Redact longer overlapping secrets first, before truncation can expose a prefix.
     secrets.sort_unstable_by_key(|secret| std::cmp::Reverse(secret.len()));
-    let mut details = Vec::with_capacity(3);
-    for field in ["code", "message", "clarification"] {
+    let mut details = Vec::with_capacity(6);
+    for field in ["title", "detail", "type", "code", "message", "clarification", "error"] {
         let Some(text) = object.get(field).and_then(Value::as_str) else { continue; };
         if text.trim().is_empty() { continue; }
         let mut text = text.to_owned();
@@ -400,7 +435,7 @@ async fn rejection_detail(
         }
     }
     if details.is_empty() {
-        Cow::Borrowed("Broker JSON supplied no readable code, message or clarification; raw response omitted.")
+        Cow::Borrowed("Broker JSON supplied no readable title, detail, type, code, message or clarification; raw response omitted.")
     } else {
         Cow::Owned(details.join("; "))
     }
@@ -515,6 +550,27 @@ mod tests {
         assert!(message.contains("Quantity precision must be limited to 3 decimal places"));
         assert!(!message.chars().any(char::is_control));
         assert!(message.chars().count() <= 1300);
+        assert_eq!(fixture.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn problem_details_rejection_keeps_title_detail_and_type_only() {
+        let fixture = broker_fixture(StatusCode::BAD_REQUEST, json!({
+            "type":"/api-errors/instrument-shares",
+            "title":"Bad Request",
+            "status":400,
+            "detail":"instrumentShares must sum to 1; fixture-key was not accepted",
+            "instance":"/logs/untrusted-response",
+            "request":{"authorization":"fixture-secret"}
+        }).to_string()).await;
+        let error = fixture.broker.submit_limit("SANe_EQ", "buy", Decimal::ONE, Decimal::ONE, "DAY").await.unwrap_err();
+        let SubmitError::Rejected(message) = error else { panic!("problem details remain a definite rejection") };
+        assert!(message.contains("Bad Request"), "{message}");
+        assert!(message.contains("instrumentShares must sum to 1"), "{message}");
+        assert!(message.contains("/api-errors/instrument-shares"), "{message}");
+        assert!(message.contains("[redacted]"), "{message}");
+        assert!(!message.contains("fixture-key") && !message.contains("fixture-secret"), "{message}");
+        assert!(!message.contains("untrusted-response"), "{message}");
         assert_eq!(fixture.calls.load(Ordering::SeqCst), 1);
     }
 

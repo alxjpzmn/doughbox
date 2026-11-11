@@ -1333,3 +1333,181 @@ async fn auth_database_trading_agent_ledger_reads_filter_and_page_owner_records(
     assert_eq!(response(&router, request).await.0, StatusCode::UNAUTHORIZED);
     f.cleanup().await;
 }
+
+#[tokio::test]
+#[ignore = "Requires a dedicated TEST_POSTGRES_URL and process-global broker hook; run with --test-threads=1"]
+async fn auth_database_trading_pie_browser_agent_boundaries_and_contracts() {
+    use crate::services::trading::{self, provider::{self, Credentials}};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use axum::Json;
+
+    async fn rpc(router: &Router, token: &str, method: &str, params: Value) -> (StatusCode, Value) {
+        let mut request = bearer(Method::POST, "/api/trading/mcp", token,
+            json!({"jsonrpc":"2.0","id":1,"method":method,"params":params}));
+        request.headers_mut().insert(header::ACCEPT, "application/json, text/event-stream".parse().unwrap());
+        request.headers_mut().insert(header::HOST, "localhost".parse().unwrap());
+        let (status, _, body) = response(router, request).await;
+        (status, body)
+    }
+    struct BrokerGuard(tokio::task::JoinHandle<()>);
+    impl Drop for BrokerGuard {
+        fn drop(&mut self) {
+            self.0.abort();
+            provider::set_test_broker_url(None).unwrap();
+        }
+    }
+
+    let mut f = Fixture::new().await;
+    let _key = ScopedEnv::set("TRADING_MASTER_KEY", &"19".repeat(32));
+    let _hosts = ScopedEnv::set("TRADING_MCP_HOSTS", "localhost");
+    let bob = f.member().await;
+    let alice_session = f.alice_session().await;
+    let bob_session = f.issue(&bob).await;
+    let personal = f.service.create_api_token(&actor(&f.alice), &alice_session.session, "No broker authority".into(), ApiTokenScope::Write).await.unwrap();
+    let token = "doughbox_trading_pie-alice";
+    let writes = Arc::new(AtomicUsize::new(0));
+    let write_count = writes.clone();
+    let stub = Router::new()
+        .route("/api/v0/equity/pies", get(|| async { Json(json!([{"id":10}])) }).post(move || {
+            let count = write_count.clone();
+            async move { count.fetch_add(1, Ordering::SeqCst); Json(json!({"settings":{"id":30}})) }
+        }))
+        .route("/api/v0/equity/pies/{id}", get(|| async { Json(json!({
+            "settings":{"id":10,"name":"Alice Pie","dividendCashAction":"REINVEST","instrumentShares":{"AAPL_US_EQ":1}},
+            "instruments":[{"ticker":"AAPL_US_EQ","ownedQuantity":0,"currentShare":1,"expectedShare":1}]
+        })) }))
+        .route("/api/v0/equity/orders", get(|| async { Json(json!([])) }))
+        .route("/api/v0/equity/history/orders", get(|| async { Json(json!({"items":[]})) }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    provider::set_test_broker_url(Some(format!("http://{}/api/v0", listener.local_addr().unwrap()))).unwrap();
+    let broker_guard = BrokerGuard(tokio::spawn(async move { axum::serve(listener, stub).await.unwrap(); }));
+    let credentials = provider::encrypt_credentials(&Credentials { api_key:"fixture".into(), api_secret:"secret".into() }).unwrap();
+    f.db.execute(
+        "UPDATE trading_connection SET generation='pie-auth',environment='demo',credentials=$2,
+         account='{\"id\":\"auth-fixture\",\"currency\":\"USD\"}',instruments=$3,agent_token_hash=$4,agent_auth_version=1 WHERE user_id=$1",
+        &[&f.alice.id.as_str(), &credentials,
+          &json!([{"ticker":"AAPL_US_EQ","name":"Apple","currency":"USD","isin":"US0378331005"}]),
+          &trading::token_hash(token)],
+    ).await.unwrap();
+    let router = crate::api::routes::create_router(f.service.clone()).unwrap();
+    let input = json!({"client_request_id":"pie-auth-create","title":"Review new Pie","operation":{"action":"create","settings":{
+        "name":"New Pie","dividend_cash_action":"REINVEST","instrument_shares":{"AAPL_US_EQ":"1"}}}});
+
+    // Real MCP consumer schemas retain the trade contract and expose only read/propose Pie authority.
+    let (status, listing) = rpc(&router, token, "tools/list", json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    let tools = listing["result"]["tools"].as_array().unwrap();
+    for name in ["get_pies","get_pie","submit_pie","submit_trades","get_proposal"] {
+        assert!(tools.iter().any(|tool| tool["name"] == name), "{listing}");
+    }
+    assert!(!tools.iter().any(|tool| {
+        let name = tool["name"].as_str().unwrap();
+        name.contains("approve") || name.contains("execute") || ["create_pie","update_pie","delete_pie","duplicate_pie"].contains(&name)
+    }));
+    let pie_schema = &tools.iter().find(|tool| tool["name"] == "submit_pie").unwrap()["inputSchema"];
+    let validator = jsonschema::validator_for(pie_schema).unwrap();
+    assert!(validator.is_valid(&input));
+    for field in ["icon","goal","end_date"] {
+        let mut explicit_null = input.clone();
+        explicit_null["operation"]["settings"][field] = Value::Null;
+        assert!(!validator.is_valid(&explicit_null), "Explicit null must not clear {field}");
+    }
+    for field in ["name","icon","goal","end_date","instrument_shares","dividend_cash_action"] {
+        let mut explicit_null = input.clone();
+        explicit_null["operation"] = json!({"action":"update","pie_id":"10","changes":{(field):Value::Null}});
+        assert!(!validator.is_valid(&explicit_null), "Explicit null must not clear {field}");
+    }
+    let mut forbidden = input.clone();
+    forbidden["confirm_empty_pie"] = json!(true);
+    assert!(!validator.is_valid(&forbidden));
+    let trade_schema = &tools.iter().find(|tool| tool["name"] == "submit_trades").unwrap()["inputSchema"];
+    let validator = jsonschema::validator_for(trade_schema).unwrap();
+    assert!(validator.is_valid(&json!({"client_request_id":"old","title":"Trade","trades":[{
+        "ticker":"AAPL_US_EQ","side":"buy","quantity":"1","limit_price":"100"}]})));
+    assert!(!validator.is_valid(&input));
+
+    let (status, submitted) = rpc(&router, token, "tools/call", json!({"name":"submit_pie","arguments":input})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(submitted["result"]["isError"], false, "{submitted}");
+    let proposal = &submitted["result"]["structuredContent"];
+    assert_eq!(proposal["kind"], "pie");
+    assert_eq!(proposal["pie"]["status"], "pending");
+    assert!(proposal.get("trades").is_none());
+    let id = proposal["id"].as_str().unwrap();
+    assert_eq!(writes.load(Ordering::SeqCst), 0, "Agent proposal creation must not dispatch");
+    let (_, replay) = rpc(&router, token, "tools/call", json!({"name":"submit_pie","arguments":input})).await;
+    assert_eq!(replay["result"]["structuredContent"]["id"], id);
+    assert_eq!(replay["result"]["structuredContent"]["telegram_notification"], "not_repeated");
+
+    // Every browser-only new path rejects both personal and agent bearer credentials.
+    for (method, path, body) in [
+        (Method::GET, "/api/trading/pies".into(), Value::Null),
+        (Method::GET, "/api/trading/pies/10".into(), Value::Null),
+        (Method::GET, "/api/trading/instruments?query=Apple".into(), Value::Null),
+        (Method::POST, "/api/trading/pie-proposals".into(), input.clone()),
+        (Method::POST, format!("/api/trading/proposals/{id}/reconcile"), Value::Null),
+        (Method::POST, format!("/api/trading/proposals/{id}/approve"), Value::Null),
+    ] {
+        assert_eq!(response(&router, bearer(method.clone(), &path, token, body.clone())).await.0, StatusCode::UNAUTHORIZED);
+        assert_eq!(response(&router, bearer(method, &path, &personal.token, body)).await.0, StatusCode::FORBIDDEN);
+    }
+    for (path, body) in [
+        ("/api/trading/pie-proposals".into(), input.clone()),
+        (format!("/api/trading/proposals/{id}/reconcile"), Value::Null),
+        (format!("/api/trading/proposals/{id}/approve"), Value::Null),
+    ] {
+        let mut request = browser(Method::POST, &path, &alice_session, body);
+        request.headers_mut().remove("x-csrf-token");
+        assert_eq!(response(&router, request).await.0, StatusCode::FORBIDDEN);
+    }
+    let (status, _, state) = response(&router, browser(Method::GET, "/api/trading", &bob_session, Value::Null)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!state["proposals"].as_array().unwrap().iter().any(|p| p["id"] == id));
+    for action in ["approve","discard","reconcile"] {
+        let mut request = browser(Method::POST, &format!("/api/trading/proposals/{id}/{action}"), &bob_session, Value::Null);
+        *request.body_mut() = Body::empty();
+        assert!(response(&router, request).await.0.is_client_error());
+    }
+    assert_eq!(f.db.query_one("SELECT status FROM trading_proposals WHERE id=$1", &[&id]).await.unwrap().get::<_, String>(0), "pending");
+    let (status, _, instruments) = response(&router, browser(Method::GET, "/api/trading/instruments?query=Apple", &alice_session, Value::Null)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(instruments[0]["ticker"], "AAPL_US_EQ");
+
+    // Shared pacing is typed consistently and never revokes valid agent/browser authority.
+    assert_eq!(response(&router, browser(Method::GET, "/api/trading/pies", &alice_session, Value::Null)).await.0, StatusCode::OK);
+    let (status, headers, rate) = response(&router, browser(Method::GET, "/api/trading/pies", &alice_session, Value::Null)).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(rate["error"], "TradingRateLimited");
+    assert!(rate["details"]["retry_after_seconds"].as_u64().unwrap() > 0);
+    assert!(headers.contains_key(header::RETRY_AFTER));
+    let (_, rate) = rpc(&router, token, "tools/call", json!({"name":"get_pies","arguments":{}})).await;
+    assert_eq!(rate["result"]["isError"], true);
+    assert_eq!(rate["result"]["structuredContent"]["code"], "TradingRateLimited");
+    assert!(rate["result"]["structuredContent"]["details"]["retry_after_seconds"].as_u64().unwrap() > 0);
+
+    // Historical empty trade approvals accept genuinely empty bytes even with JSON Content-Type.
+    let trade_id = uuid::Uuid::new_v4().to_string();
+    f.db.execute("INSERT INTO trading_proposals(user_id,id,generation,client_request_id,request,title,note,environment,trades) VALUES($1,$2,'pie-auth','empty-http','{}','Empty history','','demo','[]')",
+        &[&f.alice.id.as_str(), &trade_id]).await.unwrap();
+    let mut nonempty = browser(Method::POST, &format!("/api/trading/proposals/{trade_id}/approve"), &alice_session, json!({}));
+    assert_eq!(response(&router, nonempty).await.0, StatusCode::BAD_REQUEST);
+    nonempty = browser(Method::POST, &format!("/api/trading/proposals/{trade_id}/approve"), &alice_session, Value::Null);
+    *nonempty.body_mut() = Body::empty();
+    let (status, _, approved) = response(&router, nonempty).await;
+    assert_eq!(status, StatusCode::OK, "{approved}");
+    assert_eq!(approved["kind"], "trades");
+    assert_eq!(approved["status"], "completed");
+    assert_eq!(writes.load(Ordering::SeqCst), 0);
+
+    // Generation replacement invalidates pending Pie snapshots and previous agent authority.
+    trading::disconnect(&f.alice.id).await.unwrap();
+    assert_eq!(rpc(&router, token, "tools/list", json!({})).await.0, StatusCode::UNAUTHORIZED);
+    let (status, _, state) = response(&router, browser(Method::GET, "/api/trading", &alice_session, Value::Null)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_ne!(state["connection_generation"], "pie-auth");
+    let invalidated = state["proposals"].as_array().unwrap().iter().find(|p| p["id"] == id).unwrap();
+    assert_eq!(invalidated["status"], "discarded");
+    assert_eq!(invalidated["pie"]["status"], "discarded");
+    drop(broker_guard);
+    f.cleanup().await;
+}
