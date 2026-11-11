@@ -3,6 +3,7 @@ use std::collections::{BTreeSet, HashSet};
 use chrono::{Duration as ChronoDuration, Utc};
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
+use serde_json::Value;
 use tokio_postgres::{Client, NoTls};
 
 use super::*;
@@ -1040,14 +1041,12 @@ async fn pricing_database_latest_upgrade_preserves_trading_and_portfolio_with_co
             SELECT isin, currency, id, executed_at FROM market_price_report WHERE id = 'saved-report';",
     ).await.unwrap();
     let state_sql = "SELECT
-        (SELECT (to_jsonb(c) - ARRAY['user_id', 'singleton', 'agent_auth_version', 'agent_token_hash'])::text FROM trading_connection c),
-        (SELECT (to_jsonb(p) - 'user_id')::text FROM trading_proposals p),
         (SELECT (to_jsonb(i) - 'user_id')::text FROM instrument i),
         (SELECT jsonb_agg(to_jsonb(s) ORDER BY feed)::text FROM price_feed_schedule s),
         (SELECT to_jsonb(r)::text FROM market_price_report r),
         (SELECT to_jsonb(s)::text FROM price_scheduler_settings s)";
     let before = db.query_one(state_sql, &[]).await.unwrap();
-    let before: Vec<String> = (0..6).map(|i| before.get(i)).collect();
+    let before: Vec<String> = (0..4).map(|i| before.get(i)).collect();
     refinery::embed_migrations!("migrations");
     migrations::runner().set_target(refinery::Target::Version(29)).run_async(&mut db).await.unwrap();
     db.batch_execute(
@@ -1058,7 +1057,7 @@ async fn pricing_database_latest_upgrade_preserves_trading_and_portfolio_with_co
     assert_eq!(upgrade.applied_migrations().len(), 1);
     migrations::runner().run_async(&mut db).await.unwrap();
     let after = db.query_one(state_sql, &[]).await.unwrap();
-    let after: Vec<String> = (0..6).map(|i| after.get(i)).collect();
+    let after: Vec<String> = (0..4).map(|i| after.get(i)).collect();
     assert_eq!(before, after);
     let migrated_owner = legacy_owner(&db).await;
     for table in ["trading_connection", "trading_proposals", "instrument"] {
@@ -1072,6 +1071,18 @@ async fn pricing_database_latest_upgrade_preserves_trading_and_portfolio_with_co
          FROM trading_connection WHERE user_id = $1", &[&migrated_owner.as_str()],
     ).await.unwrap();
     assert!(revoked_agent.get::<_, bool>(0));
+    let connection = db.query_one("SELECT generation,credentials,instruments FROM trading_connection WHERE user_id=$1", &[&migrated_owner.as_str()]).await.unwrap();
+    assert_eq!(connection.get::<_, String>("generation"), "saved-generation");
+    assert_eq!(connection.get::<_, Option<String>>("credentials").as_deref(), Some("saved-encrypted-credentials"));
+    assert_eq!(connection.get::<_, Value>("instruments"), serde_json::json!([{"ticker":"TEST","isin":"saved-holding"}]));
+    let row = db.query_one("SELECT * FROM trading_proposals WHERE user_id=$1 AND id='saved-proposal'", &[&migrated_owner.as_str()]).await.unwrap();
+    assert_eq!(row.get::<_, String>("generation"), "saved-generation");
+    assert_eq!(row.get::<_, String>("client_request_id"), "saved-request");
+    assert_eq!(row.get::<_, Value>("request"), serde_json::json!({}));
+    assert_eq!(row.get::<_, Value>("trades"), serde_json::json!([]));
+    assert_eq!(row.get::<_, String>("kind"), "trades");
+    assert_eq!(row.get::<_, Option<Value>>("pie"), None);
+    assert!(matches!(crate::services::trading::Proposal::from_row(&row).unwrap().content, crate::services::trading::ProposalContent::Trades { trades } if trades.is_empty()));
     assert!(db.query_one("SELECT to_regclass('mifid_quote_cache')::text", &[]).await.unwrap().get::<_, Option<String>>(0).is_none());
     let latest = price::latest_prices(&db, &["saved-holding".into(), "obsolete-book".into()]).await.unwrap();
     let saved = latest.iter().find(|reference| reference.isin == "saved-holding").unwrap();

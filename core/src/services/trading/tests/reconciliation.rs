@@ -34,7 +34,7 @@ async fn owner(db: &Client, username: &str) -> UserId {
     user_id
 }
 
-async fn connect_schema(schema: &str) -> Client {
+pub(super) async fn connect_schema(schema: &str) -> Client {
     let url = std::env::var("TEST_POSTGRES_URL").unwrap();
     let (db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
@@ -102,8 +102,9 @@ async fn trading_database_stale_poll_preserves_later_accepted_leg_and_approved_v
 
     // state() read this before awaiting broker HTTP; execute() then accepted leg two.
     let mut polled = load_proposal(&user_id, &db).await;
-    assert_eq!(polled.trades[1].status, "pending");
-    assert_eq!(polled.trades[1].broker_order_id, None);
+    let ProposalContent::Trades { trades: polled_trades } = &polled.content else { panic!("expected Trades") };
+    assert_eq!(polled_trades[1].status, "pending");
+    assert_eq!(polled_trades[1].broker_order_id, None);
     let mut executed = initial.clone();
     executed[1].status = "submitted".into();
     executed[1].broker_order_id = Some("102".into());
@@ -121,17 +122,18 @@ async fn trading_database_stale_poll_preserves_later_accepted_leg_and_approved_v
         .await
         .unwrap();
     assert_eq!(polled.status, "completed");
-    assert_eq!(polled.trades[0].status, "open");
-    assert_eq!(polled.trades[0].error, None);
-    assert_eq!(polled.trades[1].status, "submitted");
-    assert_eq!(polled.trades[1].broker_order_id.as_deref(), Some("102"));
-    for (actual, approved) in polled.trades.iter().zip(&initial) {
+    let ProposalContent::Trades { trades: polled_trades } = &polled.content else { panic!("expected Trades") };
+    assert_eq!(polled_trades[0].status, "open");
+    assert_eq!(polled_trades[0].error, None);
+    assert_eq!(polled_trades[1].status, "submitted");
+    assert_eq!(polled_trades[1].broker_order_id.as_deref(), Some("102"));
+    for (actual, approved) in polled_trades.iter().zip(&initial) {
         assert_eq!(actual.trade, approved.trade);
         assert_eq!(actual.name, approved.name);
         assert_eq!(actual.currency, approved.currency);
     }
     assert_eq!(
-        serde_json::to_value(&polled.trades[1]).unwrap(),
+        serde_json::to_value(&polled_trades[1]).unwrap(),
         serde_json::to_value(&executed[1]).unwrap()
     );
     assert_eq!(
@@ -190,19 +192,21 @@ async fn trading_database_poll_matches_current_ids_and_never_regresses_terminal_
     let current = store::reconcile_order_statuses(&user_id, &db, user_id.as_str(), &terminal)
         .await
         .unwrap();
-    assert_eq!(current.trades[0].status, "filled");
-    assert_eq!(current.trades[1].status, "cancelled");
+    let ProposalContent::Trades { trades: current_trades } = &current.content else { panic!("expected Trades") };
+    assert_eq!(current_trades[0].status, "filled");
+    assert_eq!(current_trades[1].status, "cancelled");
     let stale = (101..=108).map(|id| (id.to_string(), "open".into())).collect();
     let current = store::reconcile_order_statuses(&user_id, &db, user_id.as_str(), &stale)
         .await
         .unwrap();
-    assert_eq!(current.trades[0].status, "filled");
-    assert_eq!(current.trades[1].status, "cancelled");
-    assert_eq!(current.trades[2].status, "open");
-    assert_eq!(current.trades[2].error, None);
+    let ProposalContent::Trades { trades: current_trades } = &current.content else { panic!("expected Trades") };
+    assert_eq!(current_trades[0].status, "filled");
+    assert_eq!(current_trades[1].status, "cancelled");
+    assert_eq!(current_trades[2].status, "open");
+    assert_eq!(current_trades[2].error, None);
     for index in 3..trades.len() {
         assert_eq!(
-            serde_json::to_value(&current.trades[index]).unwrap(),
+            serde_json::to_value(&current_trades[index]).unwrap(),
             serde_json::to_value(&trades[index]).unwrap()
         );
     }
@@ -218,13 +222,15 @@ async fn trading_database_poll_matches_current_ids_and_never_regresses_terminal_
     let current = store::reconcile_order_statuses(&user_id, &db, user_id.as_str(), &stale)
         .await
         .unwrap();
-    assert_eq!(current.trades[2].broker_order_id.as_deref(), Some("203"));
-    assert_eq!(current.trades[2].status, "open");
+    let ProposalContent::Trades { trades: current_trades } = &current.content else { panic!("expected Trades") };
+    assert_eq!(current_trades[2].broker_order_id.as_deref(), Some("203"));
+    assert_eq!(current_trades[2].status, "open");
     let matching = HashMap::from([("203".into(), "partial".into())]);
     let current = store::reconcile_order_statuses(&user_id, &db, user_id.as_str(), &matching)
         .await
         .unwrap();
-    assert_eq!(current.trades[2].status, "partial");
+    let ProposalContent::Trades { trades: current_trades } = &current.content else { panic!("expected Trades") };
+    assert_eq!(current_trades[2].status, "partial");
     assert_eq!(
         serde_json::to_value(&current).unwrap(),
         serde_json::to_value(load_proposal(&user_id, &db).await).unwrap()
@@ -262,8 +268,9 @@ async fn tenant_isolation_database_trading_execution_recovery_and_reconnect_are_
     store::recover_on(&alice, &db).await.unwrap();
     let recovered = load_proposal(&alice, &db).await;
     assert_eq!(recovered.status, "completed");
-    assert_eq!(recovered.trades[0].status, "unknown");
-    assert_eq!(recovered.trades[1].status, "discarded");
+    let ProposalContent::Trades { trades: recovered_trades } = &recovered.content else { panic!("expected Trades") };
+    assert_eq!(recovered_trades[0].status, "unknown");
+    assert_eq!(recovered_trades[1].status, "discarded");
     assert_eq!(load_proposal(&bob, &db).await.status, "executing");
 
     // Reconnect A while B's execution lock is held, without touching B's proposals.

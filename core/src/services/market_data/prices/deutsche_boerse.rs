@@ -264,9 +264,15 @@ fn download_redirect(location: &str, file: &SourceFile) -> anyhow::Result<Url> {
 }
 
 #[derive(Deserialize)]
+#[serde(untagged)]
+enum PriceNotation {
+    Legacy(i32),
+    Rts(String),
+}
+
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RawReport {
-    message_id: String,
     instrument_identification_code: String,
     transaction_identification_code: String,
     venue_of_publication: Option<String>,
@@ -280,7 +286,8 @@ struct RawReport {
     #[serde(default)]
     price_currency: String,
     #[serde(default)]
-    price_notation: Option<i32>,
+    price_notation: Option<PriceNotation>,
+    #[serde(default)]
     mmt_modification_ind: String,
     #[serde(default)]
     mmt_trading_mode: String,
@@ -300,6 +307,88 @@ struct RawReport {
 
 fn flag_is(value: &str, allowed: &[&str]) -> bool {
     value.is_empty() || allowed.contains(&value)
+}
+
+fn legacy_conditions(raw: &RawReport) -> anyhow::Result<(i32, bool)> {
+    let revision = match raw.mmt_modification_ind.as_str() {
+        "-" => 0,
+        "A" => 1,
+        "C" => 2,
+        other => bail!("Unknown price modification indicator: {other}"),
+    };
+    let eligible = matches!(raw.price_notation, Some(PriceNotation::Legacy(1)))
+        && matches!(raw.mmt_trading_mode.as_str(), "2" | "3" | "4" | "O" | "K" | "I" | "U" | "P")
+        && flag_is(&raw.mmt_price_forming_ind, &["-", "P"])
+        && flag_is(&raw.mmt_benchmark_refprc_ind, &["-"])
+        && flag_is(&raw.mmt_transaction_category, &["-", "R"])
+        && flag_is(&raw.mmt_negot_trans_pretrd_waiv_ind, &["-"])
+        && flag_is(&raw.mmt_pub_mode_def_reason, &["-"]);
+    Ok((revision, eligible))
+}
+
+fn rts_conditions(raw: &RawReport) -> anyhow::Result<(i32, bool)> {
+    // The current view-service schema uses opaque message IDs and harmonized,
+    // comma-separated RTS flags instead of the legacy MMT columns.
+    // https://mvs.deutsche-boerse.com/
+    let flags = match raw.additional_fields.get("flags") {
+        None => "",
+        Some(serde_json::Value::String(flags)) => flags.as_str(),
+        _ => bail!("Invalid RTS price flags"),
+    };
+    ensure!(
+        flags.is_empty() || flags.split(',').all(|flag|
+            flag.len() == 4 && flag.bytes().all(|b| b.is_ascii_uppercase())),
+        "Invalid RTS price flags"
+    );
+    let cancelled = flags.split(',').any(|flag| flag == "CANC");
+    let amended = flags.split(',').any(|flag| flag == "AMND");
+    ensure!(!(cancelled && amended), "Contradictory RTS price revision flags");
+    let revision = if cancelled { 2 } else if amended { 1 } else { 0 };
+    let eligible = raw.additional_fields.get("rts").and_then(|v| v.as_u64()) == Some(1)
+        && matches!(&raw.price_notation, Some(PriceNotation::Rts(code)) if code == "MONE")
+        && matches!(raw.additional_fields.get("tradingSystem").and_then(|v| v.as_str()),
+            Some("CLOB" | "QDTS" | "PATS" | "RFQT" | "HYBR" | "OTHR" | "RETL"))
+        // Unknown/special conditions are retained for correction identity, not
+        // silently admitted as ordinary price-forming equity executions.
+        && flags.split(',').all(|flag| matches!(flag, "" | "ALGO" | "AMND"));
+    Ok((revision, eligible))
+}
+fn valid_price_isin(code: &str) -> bool {
+    code.len() == 12 && code.bytes().all(|b| b.is_ascii_alphanumeric())
+}
+
+/// RTS message IDs are `{MIC}{ISIN}{currency}{suffix}`. CEF can leave
+/// `instrumentIdentificationCode` empty while that prefix still matches the
+/// execution venue and price currency. Do not invent any other identifier.
+fn embedded_rts_isin(message_id: &str, venue: &str, currency: &str) -> Option<String> {
+    if venue.len() != 4
+        || !venue.bytes().all(|b| b.is_ascii_alphanumeric())
+        || currency.is_empty()
+        || !message_id.starts_with(venue)
+    {
+        return None;
+    }
+    let rest = &message_id[venue.len()..];
+    let isin = rest.get(..12)?;
+    let after = rest.get(12..)?;
+    if !valid_price_isin(isin) || !after.starts_with(currency) {
+        return None;
+    }
+    Some(isin.to_owned())
+}
+
+fn price_isin(raw: &RawReport, message_id: &str, line: usize) -> anyhow::Result<String> {
+    let code = raw.instrument_identification_code.as_str();
+    if valid_price_isin(code) {
+        return Ok(code.to_owned());
+    }
+    if code.is_empty() {
+        if let Some(isin) = embedded_rts_isin(message_id, &raw.venue_of_execution, &raw.price_currency)
+        {
+            return Ok(isin);
+        }
+    }
+    bail!("Invalid price ISIN at line {line}")
 }
 
 pub fn parse_gzip(
@@ -341,27 +430,34 @@ fn parse_reader(
         }
         let value: serde_json::Value = serde_json::from_str(line)
             .with_context(|| format!("Invalid price JSON at line {index}"))?;
-        match value.get("messageId").and_then(|v| v.as_str()) {
-            Some("posttrade") => {}
-            // The provider mixes quote indications into some post-trade batches.
-            // They have no execution identity and must never become valuations.
-            Some("pretrade") => continue,
-            Some(message) => bail!("Unknown price message {message:?} at line {index}"),
-            None => bail!("Missing or invalid price messageId at line {index}"),
-        }
+        let message = value.get("messageId").and_then(|v| v.as_str())
+            .filter(|message| !message.trim().is_empty())
+            .with_context(|| format!("Missing or invalid price messageId at line {index}"))?
+            .to_owned();
+        let rts = match value.get("rts") {
+            Some(rts) => {
+                ensure!(matches!(rts.as_u64(), Some(1 | 2)), "Unknown price RTS at line {index}");
+                ensure!(
+                    !matches!(message.as_str(), "pretrade" | "posttrade")
+                        && !value.as_object().unwrap().keys().any(|key| key.starts_with("mmt")),
+                    "Mixed legacy/RTS price schema at line {index}"
+                );
+                true
+            }
+            None => match message.as_str() {
+                "posttrade" => false,
+                // Legacy post-trade batches can contain quote indications.
+                "pretrade" => continue,
+                _ => bail!("Unknown price message {message:?} at line {index}"),
+            },
+        };
         let raw: RawReport = serde_json::from_value(value)
             .with_context(|| format!("Invalid price report at line {index}"))?;
-        ensure!(raw.message_id == "posttrade", "Unexpected price message");
-        ensure!(
-            raw.instrument_identification_code.len() == 12
-                && raw.instrument_identification_code.bytes().all(|b| b.is_ascii_alphanumeric()),
-            "Invalid price ISIN"
-        );
-        let revision = match raw.mmt_modification_ind.as_str() {
-            "-" => 0,
-            "A" => 1,
-            "C" => 2,
-            other => bail!("Unknown price modification indicator: {other}"),
+        let isin = price_isin(&raw, &message, index)?;
+        let (revision, conditions_eligible) = if rts {
+            rts_conditions(&raw)?
+        } else {
+            legacy_conditions(&raw)?
         };
         let publisher = match raw.venue_of_publication {
             Some(publisher) => publisher,
@@ -388,21 +484,12 @@ fn parse_reader(
         let eligible = revision != 2
             && raw.price_currency.len() == 3
             && raw.price_currency.bytes().all(|b| b.is_ascii_uppercase())
-            && raw.price_notation == Some(1)
+            && conditions_eligible
             && price > Decimal::ZERO
             && raw.quantity.is_some_and(|q| q >= Decimal::ZERO)
             && raw.trading_date_and_time <= now
             && raw.publication_date_and_time <= now
-            && matches!(
-                raw.mmt_trading_mode.as_str(),
-                "2" | "3" | "4" | "O" | "K" | "I" | "U" | "P"
-            )
             && !matches!(raw.venue_of_execution.as_str(), "XOFF" | "SINT")
-            && flag_is(&raw.mmt_price_forming_ind, &["-", "P"])
-            && flag_is(&raw.mmt_benchmark_refprc_ind, &["-"])
-            && flag_is(&raw.mmt_transaction_category, &["-", "R"])
-            && flag_is(&raw.mmt_negot_trans_pretrd_waiv_ind, &["-"])
-            && flag_is(&raw.mmt_pub_mode_def_reason, &["-"])
             && raw.additional_fields.iter().all(|(key, value)| {
                 if key == "mmtAlgoInd" {
                     return value
@@ -429,7 +516,7 @@ fn parse_reader(
         );
         emit(PriceReport {
             id: blake3::hash(identity.as_bytes()).to_hex().to_string(),
-            isin: raw.instrument_identification_code,
+            isin,
             transaction_id: raw.transaction_identification_code,
             publisher,
             venue: raw.venue_of_execution,
@@ -976,6 +1063,106 @@ mod tests {
         assert!(!reports[1].eligible);
     }
 
+    // First record of DGAT-posttrade-2026-11-09T20_59.json.gz.
+    const RTS_TRADE: &str = r#"{"messageId":"XGATDE0005470306EUR6AF2341486515384","rts":1,"tradingDateAndTime":"2026-11-09T20:58:59.976000000Z","instrumentIdentificationCode":"DE0005470306","price":62.3,"priceCurrency":"EUR","priceNotation":"MONE","quantity":15,"venueOfExecution":"XGAT","publicationDateAndTime":"2026-11-09T20:59:00.054000000Z","venueOfPublication":"XCEF","transactionIdentificationCode":"XGATDE000547030620261109205859976934","flags":"ALGO","tradingSystem":"OTHR"}"#;
+
+    fn rts_report(value: serde_json::Value) -> anyhow::Result<PriceReport> {
+        Ok(collected(Feed::Tradegate, &value.to_string(), "2026-11-09T21:10:00Z".parse().unwrap())?.remove(0))
+    }
+
+    #[test]
+    fn reported_rts_record_preserves_monetary_price_quantity_and_execution_identity() {
+        let report = rts_report(serde_json::from_str(RTS_TRADE).unwrap()).unwrap();
+        assert!(report.eligible);
+        assert_eq!(report.price, dec!(62.3));
+        assert_eq!(report.quantity, Some(dec!(15)));
+        assert_eq!(report.currency, "EUR");
+        assert_eq!(report.isin, "DE0005470306");
+        assert_eq!(report.executed_at.timestamp_subsec_nanos(), 976000000);
+        assert_eq!(report.published_ns, "2026-11-09T20:59:00.054Z".parse::<DateTime<Utc>>().unwrap().timestamp_nanos_opt().unwrap());
+        assert_eq!(report.id, blake3::hash(b"DGAT-posttrade|XCEF|2026-11-09|XGATDE000547030620261109205859976934").to_hex().to_string());
+    }
+
+    #[test]
+    fn rts_flags_and_asset_class_never_turn_special_reports_into_equity_candidates() {
+        let original: serde_json::Value = serde_json::from_str(RTS_TRADE).unwrap();
+        for (field, value) in [
+            ("flags", serde_json::json!("ALGO,NPFT")),
+            ("flags", serde_json::json!("BENC")),
+            ("flags", serde_json::json!("NEWF")),
+            ("rts", serde_json::json!(2)),
+            ("priceNotation", serde_json::json!("PERC")),
+            ("priceNotation", serde_json::json!(1)),
+            ("tradingSystem", serde_json::json!("UNKNOWN")),
+            ("quantity", serde_json::Value::Null),
+        ] {
+            let mut value_with_condition = original.clone();
+            value_with_condition[field] = value;
+            assert!(!rts_report(value_with_condition).unwrap().eligible, "{field}");
+        }
+        let mut unflagged = original.clone();
+        unflagged.as_object_mut().unwrap().remove("flags");
+        unflagged["quantity"] = serde_json::json!(0);
+        let report = rts_report(unflagged).unwrap();
+        assert!(report.eligible);
+        assert_eq!(report.quantity, Some(Decimal::ZERO));
+        for flags in [serde_json::json!("AMND,CANC"), serde_json::json!("ALGO,,AMND"), serde_json::json!(["ALGO"]), serde_json::Value::Null] {
+            let mut invalid = original.clone();
+            invalid["flags"] = flags;
+            assert!(rts_report(invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn rts_amendments_and_cancellations_keep_legacy_transaction_identity() {
+        let original: serde_json::Value = serde_json::from_str(RTS_TRADE).unwrap();
+        let mut legacy = original.clone();
+        legacy["messageId"] = serde_json::json!("posttrade");
+        legacy["priceNotation"] = serde_json::json!(1);
+        legacy["mmtModificationInd"] = serde_json::json!("-");
+        legacy["mmtTradingMode"] = serde_json::json!("U");
+        legacy.as_object_mut().unwrap().remove("rts");
+        legacy.as_object_mut().unwrap().remove("flags");
+        let legacy = rts_report(legacy).unwrap();
+        assert!(legacy.eligible);
+        let mut amendment = original.clone();
+        amendment["messageId"] = serde_json::json!("another-opaque-message-id");
+        amendment["flags"] = serde_json::json!("ALGO,AMND,NPFT");
+        let amendment = rts_report(amendment).unwrap();
+        assert_eq!(amendment.id, legacy.id);
+        assert_eq!(amendment.revision, 1);
+        assert!(!amendment.eligible);
+        let mut cancellation = original;
+        cancellation["flags"] = serde_json::json!("CANC");
+        cancellation["price"] = serde_json::Value::Null;
+        cancellation["quantity"] = serde_json::Value::Null;
+        cancellation.as_object_mut().unwrap().remove("venueOfPublication");
+        let cancellation = rts_report(cancellation).unwrap();
+        assert_eq!(cancellation.id, legacy.id);
+        assert_eq!(cancellation.revision, 2);
+        assert!(!cancellation.eligible);
+    }
+
+    #[test]
+    fn rts_discriminator_does_not_accept_unknown_or_mixed_schemas() {
+        let original: serde_json::Value = serde_json::from_str(RTS_TRADE).unwrap();
+        for (field, value) in [
+            ("rts", serde_json::json!(3)),
+            ("rts", serde_json::json!("1")),
+            ("rts", serde_json::Value::Null),
+            ("messageId", serde_json::json!("")),
+            ("messageId", serde_json::json!("pretrade")),
+            ("mmtModificationInd", serde_json::json!("C")),
+        ] {
+            let mut invalid = original.clone();
+            invalid[field] = value;
+            assert!(rts_report(invalid).is_err(), "{field}");
+        }
+        let mut unidentified = original;
+        unidentified.as_object_mut().unwrap().remove("transactionIdentificationCode");
+        assert!(rts_report(unidentified).is_err());
+    }
+
     #[test]
     fn unknown_schema_and_modifications_fail_closed() {
         let now = Utc::now();
@@ -996,6 +1183,43 @@ mod tests {
             assert!(parse_ndjson(Feed::Xetra, &value.to_string(), now, |_| Ok(())).is_err());
         }
     }
+
+    #[test]
+    fn empty_rts_isin_is_recovered_only_from_matching_message_id() {
+        // DFRA-posttrade-2026-11-09T07_00.json.gz, line 1.
+        const OMITTED: &str = r#"{"messageId":"FRABNO0010196140EUR6AF16F718642C69E","rts":1,"tradingDateAndTime":"2026-11-09T07:00:01.390985587Z","instrumentIdentificationCode":"","price":1.218,"priceCurrency":"EUR","priceNotation":"MONE","quantity":200,"notionalCurrency":"EUR","venueOfExecution":"FRAB","publicationDateAndTime":"2026-11-09T07:00:01.401519000Z","venueOfPublication":"XCEF","transactionIdentificationCode":"3000000000000000069970179420760139098558700000000001","flags":"ALGO","tradingSystem":"OTHR"}"#;
+        let now = "2026-11-09T08:00:00Z".parse().unwrap();
+        let reports = collected(
+            Feed::Frankfurt,
+            &format!("{OMITTED}\n{RTS_TRADE}\n"),
+            now,
+        )
+        .unwrap();
+        assert_eq!(reports.len(), 2);
+        assert_eq!(reports[0].isin, "NO0010196140");
+        assert_eq!(reports[0].venue, "FRAB");
+        assert_eq!(reports[0].currency, "EUR");
+        assert!(reports[0].eligible);
+        assert_eq!(reports[1].isin, "DE0005470306");
+
+        let mut mismatched: serde_json::Value = serde_json::from_str(OMITTED).unwrap();
+        mismatched["venueOfExecution"] = serde_json::json!("XGAT");
+        let error = collected(Feed::Frankfurt, &mismatched.to_string(), now).unwrap_err();
+        assert!(error.to_string().contains("Invalid price ISIN at line 1"), "{error}");
+
+        let mut garbage: serde_json::Value = serde_json::from_str(OMITTED).unwrap();
+        garbage["instrumentIdentificationCode"] = serde_json::json!("NOT-AN-ISIN!");
+        let error = collected(Feed::Frankfurt, &garbage.to_string(), now).unwrap_err();
+        assert!(error.to_string().contains("Invalid price ISIN at line 1"), "{error}");
+
+        let mut explicit: serde_json::Value = serde_json::from_str(OMITTED).unwrap();
+        explicit["instrumentIdentificationCode"] = serde_json::json!("DE0007164600");
+        explicit["venueOfExecution"] = serde_json::json!("XGAT");
+        let kept = collected(Feed::Frankfurt, &explicit.to_string(), now).unwrap();
+        assert_eq!(kept[0].isin, "DE0007164600");
+        assert_eq!(kept[0].venue, "XGAT");
+    }
+
 
     #[test]
     fn source_files_cannot_escape_the_fixed_download_origin() {

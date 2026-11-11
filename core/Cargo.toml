@@ -53,3 +53,4 @@ totp-rs = { version = "5.7.0", features = ["qr", "zeroize"] }
 
 [dev-dependencies]
 tokio = { version = "1.54.1", features = ["test-util"] }
+jsonschema = { version = "0.37", default-features = false }
