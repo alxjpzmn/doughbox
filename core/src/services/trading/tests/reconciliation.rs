@@ -28,8 +28,8 @@ async fn owner(db: &Client, username: &str) -> UserId {
         &[&user_id.as_str(), &username],
     ).await.unwrap();
     db.execute(
-        "INSERT INTO trading_connection (user_id,generation,environment,credentials) VALUES ($1,'test','demo','fixture-credentials')",
-        &[&user_id.as_str()],
+        "INSERT INTO trading_connection (user_id,generation,environment,credentials,account) VALUES ($1,'test','demo','fixture-credentials',jsonb_build_object('id',$2::text,'currency','USD'))",
+        &[&user_id.as_str(), &username],
     ).await.unwrap();
     user_id
 }
@@ -146,7 +146,7 @@ async fn trading_database_stale_poll_preserves_later_accepted_leg_and_approved_v
 #[tokio::test]
 #[ignore = "Requires an isolated TEST_POSTGRES_URL; also run in CI"]
 async fn trading_database_poll_cannot_change_executing_proposal() {
-    let (db, schema) = test_database().await;
+    let (mut db, schema) = test_database().await;
     let user_id = owner(&db, "fixture").await;
     let trades = vec![
         trade("submitted", Some("101"), "1.23456789"),
@@ -162,7 +162,7 @@ async fn trading_database_poll_cannot_change_executing_proposal() {
     assert_eq!(serde_json::to_value(load_proposal(&user_id, &db).await).unwrap(), before);
 
     // An executing-only state must not claim a poll or decrypt credentials/call HTTP.
-    reconcile_orders(&user_id, &db, "demo", "not encrypted credentials", std::slice::from_mut(&mut returned))
+    reconcile_orders(&user_id, &mut db, "demo", "not encrypted credentials", "test", &serde_json::json!({"id":"fixture","currency":"USD"}), std::slice::from_mut(&mut returned))
         .await
         .unwrap();
     assert_eq!(serde_json::to_value(&returned).unwrap(), before);
@@ -275,13 +275,13 @@ async fn tenant_isolation_database_trading_execution_recovery_and_reconnect_are_
 
     // Reconnect A while B's execution lock is held, without touching B's proposals.
     db.execute("UPDATE trading_proposals SET status='pending' WHERE user_id=$1", &[&alice.as_str()]).await.unwrap();
+    db.execute("INSERT INTO trading_rate_limit(environment,scope_kind,scope_id,bucket,next_at,blocked_until,interval_millis) VALUES('demo','account','alice','pending_orders',clock_timestamp()+interval '6 seconds','epoch',6000)", &[]).await.unwrap();
     let tx = db.transaction().await.unwrap();
-    store::replace_connection_on(&alice, &tx, None).await.unwrap();
+    store::replace_connection_on(&alice, &tx, None, None).await.unwrap();
     tx.commit().await.unwrap();
     assert_eq!(load_proposal(&alice, &db).await.status, "discarded");
-    store::mark_submission(&alice, &db).await.unwrap();
-    assert!(store::claim_poll(&alice, &db, "last_pending_poll_at", "6 seconds").await.unwrap());
-    assert!(!store::claim_poll(&alice, &db, "last_pending_poll_at", "6 seconds").await.unwrap());
+    // Replacing one owner's connection cannot clear the broker account's shared cooldown.
+    assert!(db.query_one("SELECT next_at > clock_timestamp() FROM trading_rate_limit WHERE environment='demo' AND scope_kind='account' AND scope_id='alice' AND bucket='pending_orders'", &[]).await.unwrap().get::<_, bool>(0));
     let after_connection: Value = db.query_one(
         "SELECT to_jsonb(c) FROM trading_connection c WHERE user_id=$1", &[&bob.as_str()],
     ).await.unwrap().get(0);
@@ -293,12 +293,27 @@ async fn tenant_isolation_database_trading_execution_recovery_and_reconnect_are_
     assert_eq!(after_proposals, bob_proposals);
     let unknown = store::reconcile_order_statuses(&alice, &db, bob.as_str(), &HashMap::new()).await;
     assert!(matches!(unknown.err().unwrap().downcast_ref::<AuthError>(), Some(AuthError::NotFound)));
-    assert!(store::claim_poll(&bob, &other, "last_pending_poll_at", "6 seconds").await.unwrap());
+    assert_eq!(db.query_one("SELECT COUNT(*) FROM trading_rate_limit WHERE scope_id='bob'", &[]).await.unwrap().get::<_, i64>(0), 0);
     // Interrupted execution can still be safely finalized after account disable.
     other.execute("UPDATE auth_users SET status='disabled' WHERE id=$1", &[&bob.as_str()]).await.unwrap();
     store::recover_on(&bob, &other).await.unwrap();
     assert_eq!(load_proposal(&bob, &db).await.status, "completed");
     drop(other);
+    cleanup(&db, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "Requires an isolated TEST_POSTGRES_URL; also run in CI"]
+async fn trading_database_poll_rejects_replaced_generation_before_status_write() {
+    let (mut db, schema) = test_database().await;
+    let user = owner(&db, "stale-owner").await;
+    insert_proposal(&user, &db, "completed", &[trade("submitted", Some("101"), "1")]).await;
+    db.execute("UPDATE trading_connection SET generation='replacement' WHERE user_id=$1", &[&user.as_str()]).await.unwrap();
+    let updates = HashMap::from([("101".into(), "filled".into())]);
+    assert!(reconcile_current_statuses(&user, &mut db, "test", user.as_str(), &updates).await.is_err());
+    let proposal = load_proposal(&user, &db).await;
+    let ProposalContent::Trades { trades } = proposal.content else { panic!("expected Trades") };
+    assert_eq!(trades[0].status, "submitted");
     cleanup(&db, &schema).await;
 }
 

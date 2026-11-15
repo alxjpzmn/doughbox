@@ -1,7 +1,7 @@
 use super::super::errors::ErrorResponse;
 use crate::{
     database::models::auth::{AuthSession, CurrentUser},
-    services::{auth::{require_browser, AuthError}, trading::{self, ConnectInput, Proposal, TradingState, provider::Instrument, pies::{self, PieAccess, PieApprovalInput, PieDetail, PieList, PieRateLimited, SubmitPieInput}}},
+    services::{auth::{require_browser, AuthError}, trading::{self, ConnectInput, Proposal, TradingState, provider::Instrument, rate_limits::BrokerRateLimited, pies::{self, PieAccess, PieApprovalInput, PieDetail, PieList, SubmitPieInput}}},
 };
 use axum::{
     body::to_bytes,
@@ -36,7 +36,7 @@ fn approval_input(bytes: &[u8]) -> Result<PieApprovalInput, Response> {
 }
 
 fn failure(error: anyhow::Error) -> Response {
-    if let Some(rate) = error.downcast_ref::<PieRateLimited>() {
+    if let Some(rate) = error.downcast_ref::<BrokerRateLimited>() {
         let mut response = (StatusCode::TOO_MANY_REQUESTS, Json(TradingRateLimitResponse {
             status:429, error:"TradingRateLimited", message:rate.to_string(),
             details:TradingRateLimitDetails { retry_after_seconds:rate.retry_after_seconds },
@@ -156,6 +156,7 @@ pub async fn instruments(Extension(current): Extension<CurrentUser>, Query(input
 
 pub fn router() -> Router {
     Router::new()
+        .merge(super::trading_sync::router())
         .route("/trading", get(state))
         .route("/trading/connection", put(connect).delete(disconnect))
         .route("/trading/agent-token", post(token))
@@ -220,8 +221,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn typed_pie_pacing_response_keeps_retry_information() {
-        let response = failure(PieRateLimited { retry_after_seconds: 71 }.into());
+    async fn typed_broker_pacing_response_keeps_retry_information() {
+        let response = failure(BrokerRateLimited { retry_after_seconds: 71 }.into());
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(response.headers()[header::RETRY_AFTER], "71");
         let bytes = to_bytes(response.into_body(), 4096).await.unwrap();

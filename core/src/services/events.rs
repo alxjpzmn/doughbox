@@ -75,6 +75,18 @@ pub struct PortfolioEvent {
     pub total_currency: String,
     pub broker: String,
     pub tax_supported: bool,
+    /// Creation method recorded when the ledger row was first reconciled.
+    /// Later observations cannot change it.
+    pub import_source: Option<String>,
+    pub imported_at: Option<DateTime<Utc>>,
+}
+
+fn import_provenance(row: &Row) -> anyhow::Result<(Option<String>, Option<DateTime<Utc>>)> {
+    if row.columns().iter().any(|column| column.name() == "import_source") {
+        Ok((row.try_get("import_source")?, row.try_get("imported_at")?))
+    } else {
+        Ok((None, None))
+    }
 }
 
 /// Build an owner's timeline; shared OeKB cache rows enter only for that
@@ -137,7 +149,10 @@ async fn query_interest(
         .query(
             "SELECT i.date, i.amount, i.currency, i.principal, i.withholding_tax, \
              i.withholding_tax_currency, i.amount_eur, i.broker, i.asset_id, \
-              i.tax_treatment, a.name, a.unit_label, i.id FROM interest i LEFT JOIN asset a ON a.user_id = i.user_id AND a.id = i.asset_id \
+             i.tax_treatment, a.name, a.unit_label, i.id, \
+             provenance.created_via AS import_source, provenance.imported_at \
+             FROM interest i LEFT JOIN asset a ON a.user_id = i.user_id AND a.id = i.asset_id \
+             LEFT JOIN t212_activity_event provenance ON provenance.user_id = i.user_id AND provenance.interest_id = i.id \
              WHERE i.user_id = $1 AND i.date >= $2 AND i.date < $3",
             &[&user_id.as_str(), start_date, end_date],
         )
@@ -243,8 +258,11 @@ async fn query_dividends(
 ) -> anyhow::Result<Vec<Row>> {
     Ok(client
         .query(
-            "select date, amount, currency, isin, withholding_tax, withholding_tax_currency, \
-             amount_eur, broker, id FROM dividend WHERE user_id = $1 AND date >= $2 AND date < $3",
+            "SELECT d.date, d.amount, d.currency, d.isin, d.withholding_tax, d.withholding_tax_currency, \
+             d.amount_eur, d.broker, d.id, provenance.created_via AS import_source, provenance.imported_at \
+             FROM dividend d LEFT JOIN t212_activity_event provenance \
+               ON provenance.user_id = d.user_id AND provenance.dividend_id = d.id \
+             WHERE d.user_id = $1 AND d.date >= $2 AND d.date < $3",
             &[&user_id.as_str(), start_date, end_date],
         )
         .await?)
@@ -258,9 +276,11 @@ async fn query_trades(
 ) -> anyhow::Result<Vec<Row>> {
     Ok(client
         .query(
-            "select date, units, avg_price_per_unit, currency, isin, direction, withholding_tax, \
-             withholding_tax_currency, eur_avg_price_per_unit, broker, hash FROM trade \
-             WHERE user_id = $1 AND date >= $2 AND date < $3",
+            "SELECT t.date, t.units, t.avg_price_per_unit, t.currency, t.isin, t.direction, t.withholding_tax, \
+             t.withholding_tax_currency, t.eur_avg_price_per_unit, t.broker, t.hash, \
+             provenance.created_via AS import_source, provenance.imported_at FROM trade t \
+             LEFT JOIN t212_activity_event provenance ON provenance.user_id = t.user_id AND provenance.trade_hash = t.hash \
+             WHERE t.user_id = $1 AND t.date >= $2 AND t.date < $3",
             &[&user_id.as_str(), start_date, end_date],
         )
         .await?)
@@ -274,8 +294,10 @@ async fn query_fx_conversions(
 ) -> anyhow::Result<Vec<Row>> {
     Ok(client
         .query(
-            "select date, from_amount, to_amount, from_currency, to_currency, broker, id \
-             FROM fx_conversion WHERE user_id = $1 AND date >= $2 AND date < $3",
+            "SELECT f.date, f.from_amount, f.to_amount, f.from_currency, f.to_currency, f.broker, f.id, \
+             provenance.created_via AS import_source, provenance.imported_at FROM fx_conversion f \
+             LEFT JOIN t212_activity_event provenance ON provenance.user_id = f.user_id AND provenance.fx_conversion_id = f.id \
+             WHERE f.user_id = $1 AND f.date >= $2 AND f.date < $3",
             &[&user_id.as_str(), start_date, end_date],
         )
         .await?)
@@ -375,6 +397,7 @@ async fn process_interest_rows(
             (None, None)
         };
 
+        let (import_source, imported_at) = import_provenance(row)?;
         let event = PortfolioEvent {
             event_id: Some(try_get_col(row, 12, "id", &ctx)?),
             date,
@@ -396,6 +419,8 @@ async fn process_interest_rows(
             total_currency: "EUR".to_string(),
             broker: broker.unwrap_or_else(|| "Manual".to_string()),
             tax_supported,
+            import_source,
+            imported_at,
         };
         events.push(event);
     }
@@ -429,6 +454,8 @@ fn process_fund_report_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent
             total_currency: currency.clone(),
             broker: "OeKB Fund Report".to_string(),
             tax_supported: true,
+            import_source: None,
+            imported_at: None,
         };
         events.push(event);
     }
@@ -479,6 +506,7 @@ async fn process_dividend_rows(
         let (applied_fx_rate, withholding_tax_percent) =
             income_tax_values(amount, withholding_tax, &event_currency, &withholding_tax_currency, date, read_only_client).await?;
 
+        let (import_source, imported_at) = import_provenance(row)?;
         let event = PortfolioEvent {
             event_id: Some(try_get_col(row, 8, "id", &ctx)?),
             date,
@@ -496,6 +524,8 @@ async fn process_dividend_rows(
             total_currency: "EUR".to_string(),
             broker,
             tax_supported: true,
+            import_source,
+            imported_at,
         };
         events.push(event);
     }
@@ -633,6 +663,7 @@ async fn process_trade_rows(
             None
         };
 
+        let (import_source, imported_at) = import_provenance(row)?;
         let event = PortfolioEvent {
             event_id: Some(try_get_col(row, 10, "hash", &ctx)?),
             date,
@@ -654,6 +685,8 @@ async fn process_trade_rows(
             total_currency: event_currency.clone(),
             broker,
             tax_supported: true,
+            import_source,
+            imported_at,
         };
         events.push(event);
     }
@@ -674,6 +707,7 @@ fn process_fx_conversion_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEve
         let broker: String = try_get_col(row, 5, "broker", &ctx)?;
 
         anyhow::ensure!(from_amount > dec!(0) && to_amount > dec!(0), "FX conversion amounts must be positive on {}", date);
+        let (import_source, imported_at) = import_provenance(row)?;
         let event = PortfolioEvent {
             event_id: Some(try_get_col(row, 6, "id", &ctx)?),
             date,
@@ -695,6 +729,8 @@ fn process_fx_conversion_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEve
             total_currency: to_currency.clone(),
             broker,
             tax_supported: true,
+            import_source,
+            imported_at,
         };
         events.push(event);
     }
@@ -734,6 +770,8 @@ fn process_asset_trade_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEvent
                 total_currency: "EUR".to_string(),
                 broker: row.try_get("broker")?,
                 tax_supported: false,
+                import_source: None,
+                imported_at: None,
             })
         })
         .collect()
@@ -773,6 +811,8 @@ fn process_asset_transaction_rows(rows: Vec<Row>) -> anyhow::Result<Vec<Portfoli
                 total_currency: "EUR".to_string(),
                 broker: "Manual".to_string(),
                 tax_supported: false,
+                import_source: None,
+                imported_at: None,
             })
         })
         .collect()
@@ -809,6 +849,8 @@ fn process_asset_snapshot_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioEv
                 total_currency: "EUR".to_string(),
                 broker: "Manual".to_string(),
                 tax_supported: false,
+                import_source: None,
+                imported_at: None,
             })
         })
         .collect()
@@ -840,6 +882,8 @@ fn process_asset_valuation_rows(rows: Vec<Row>) -> anyhow::Result<Vec<PortfolioE
                 total_currency: "EUR".to_string(),
                 broker: "Manual".to_string(),
                 tax_supported: false,
+                import_source: None,
+                imported_at: None,
             })
         })
         .collect()

@@ -1,12 +1,12 @@
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tabled::Tabled;
 use typeshare::typeshare;
 use utoipa::ToSchema;
 
 #[typeshare]
-#[derive(Debug, Tabled, Clone, Serialize, ToSchema)]
+#[derive(Debug, Tabled, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Trade {
     pub broker: String,
     pub date: DateTime<Utc>,

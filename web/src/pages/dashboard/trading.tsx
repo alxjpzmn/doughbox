@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef, useState, type FormEvent } from 'react';
-import useSwr from 'swr';
+import useSwr, { useSWRConfig } from 'swr';
 import { Link, useSearch } from 'wouter';
 import { ArrowClockwiseIcon, CheckCircleIcon, CircleDashedIcon, ClockIcon, SpinnerGapIcon, WarningCircleIcon, XCircleIcon } from '@phosphor-icons/react';
 import { BASE_URL, fetcher, getPrivateRequestEpoch, isCurrentPrivateRequestEpoch, sendMutateRequest, type HttpError } from '@/lib/http';
@@ -13,6 +13,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import TradingPies, { PieProposalCard } from '@/components/composite/trading-pies';
+import { Trading212SyncPanel, tradingSyncUrl } from '@/components/composite/trading212-sync';
 
 const tradingUrl = `${BASE_URL}/trading`;
 const proposalStatuses: Record<Proposal['status'], string> = {
@@ -163,6 +164,7 @@ function ProposalCard({ proposal, disabled, readbackDisabled, busyAction, focuse
 
 export default function Trading() {
   const { requestReauthentication } = useAuth();
+  const { mutate: mutateCache } = useSWRConfig();
   const search = useSearch();
   const queryFocusedId = focusedProposalId(search);
   const [createdFocus, setCreatedFocus] = useState<string | null>(null);
@@ -171,7 +173,13 @@ export default function Trading() {
   useLayoutEffect(() => {
     setCreatedFocus(null);
     if (queryFocusedId) setTab('orders');
-  }, [queryFocusedId]);
+    else if (new URLSearchParams(search).get('section') === 'setup') setTab('setup');
+  }, [queryFocusedId, search]);
+  useLayoutEffect(() => {
+    if (tab === 'setup' && window.location.hash === '#t212-history-sync') {
+      document.getElementById('t212-history-sync')?.scrollIntoView();
+    }
+  }, [tab]);
   const mounted = useRef(false);
   useLayoutEffect(() => {
     mounted.current = true;
@@ -222,6 +230,7 @@ export default function Trading() {
         assertCurrentRequest(epoch);
         return state;
       }, { revalidate: false });
+      await mutateCache(tradingSyncUrl);
       assertCurrentRequest(epoch);
       setRefreshRequired(false);
       setFeedback({ error: false, message: 'Trading status refreshed.', refresh: true });
@@ -253,6 +262,7 @@ export default function Trading() {
           mutationSucceeded = true;
           message = result.message;
           const state = result.state ?? await fetcher(tradingUrl) as TradingState;
+          if (action === 'connection' || action === 'disconnect') await mutateCache(tradingSyncUrl);
           assertCurrentRequest(epoch);
           return state;
         } catch (error) {
@@ -413,7 +423,7 @@ export default function Trading() {
       <RefreshControl label="Refresh setup status" busy={busyAction === 'refresh'} disabled={busy && busyAction !== 'refresh'} feedback={feedback} onClick={refresh} />
     </div>}
     {feedback && !feedback.refresh && <p role={feedback.error ? 'alert' : 'status'} className={`break-words text-sm ${feedback.error ? 'text-red-700 dark:text-red-300' : 'text-muted-foreground'}`}>{feedback.message}</p>}
-    {data && !setupBlocked && <Tabs value={tab ?? (focusedId || ready || pending.length > 0 || recent.length > 0 ? 'orders' : 'setup')} onValueChange={setTab} className="max-md:pb-28">
+    {data && <Tabs value={tab ?? (focusedId || ready || pending.length > 0 || recent.length > 0 ? 'orders' : 'setup')} onValueChange={setTab} className="max-md:pb-28">
       <TabsList dock className="mb-6 h-auto sm:w-fit" aria-label="Trading sections">
         <TabsTrigger value="orders" className="min-h-11">Orders</TabsTrigger>
         <TabsTrigger value="pies" className="min-h-11">Pies</TabsTrigger>
@@ -485,6 +495,7 @@ export default function Trading() {
           </form>}
         </CardContent>
       </Card>
+      <Trading212SyncPanel key={data?.connection_generation} />
       <Card>
         <CardHeader>
           <CardTitle>Agent access</CardTitle>

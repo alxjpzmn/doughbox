@@ -1,8 +1,8 @@
-use anyhow::{anyhow, ensure};
+use anyhow::{ensure, Context};
 
 use super::{
-    provider::{self, BrokerClient, Instrument},
-    store,
+    provider::{self, Instrument},
+    rate_limits::{AdmissionMode, BrokerAccess}, store,
 };
 use crate::database::{db_client, models::auth::UserId};
 
@@ -34,24 +34,11 @@ pub(super) async fn load(user_id: &UserId, hash: &str) -> anyhow::Result<Catalog
 
     let environment: String = connection.get("environment");
     let encrypted: String = connection.get("credentials");
-    // Claim before HTTP, including failed attempts, without keeping the row locked over HTTP.
-    // Sixty seconds leaves margin over Trading 212's documented 1 request / 50s limit.
-    let claimed = tx.execute(
-        "UPDATE trading_connection SET last_instruments_request_at=clock_timestamp() WHERE user_id=$1 AND generation=$2 AND agent_token_hash=$3 AND credentials IS NOT NULL AND last_instruments_request_at <= clock_timestamp() - interval '60 seconds'",
-        &[&user_id.as_str(), &generation, &hash],
-    ).await?;
-    ensure!(
-        claimed == 1,
-        "Trading instrument catalog ISIN backfill is already in progress or rate limited. Retry after at least 60 seconds."
-    );
+    let account = connection.get::<_, Option<serde_json::Value>>("account").context("Saved broker account is missing; reconnect Trading 212.")?;
     tx.commit().await?;
 
-    let broker = BrokerClient::new(&environment, provider::decrypt_credentials(&encrypted)?)?;
-    let instruments = broker.instruments().await.map_err(|error| {
-        anyhow!(
-        "Trading instrument catalog ISIN backfill failed: {error}. Retry after at least 60 seconds."
-    )
-    })?;
+    let broker = super::broker_client(&environment, provider::decrypt_credentials(&encrypted)?, &account, AdmissionMode::Try, BrokerAccess::Agent { user_id: user_id.clone(), generation: generation.clone(), token_hash: hash.to_owned() }).await?;
+    let instruments = broker.instruments().await.context("Trading instrument catalog ISIN backfill failed.")?;
     ensure!(
         !instruments.is_empty(),
         "Trading 212 returned no supported instruments during catalog ISIN backfill. Retry after at least 60 seconds."

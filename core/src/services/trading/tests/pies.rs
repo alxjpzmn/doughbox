@@ -168,7 +168,7 @@ impl Fixture {
         })
         .unwrap();
         let catalog = json!([{"ticker":"AAPL_US_EQ","name":"Apple","currency":"USD","isin":"US0378331005"},{"ticker":"MSFT_US_EQ","name":"Microsoft","currency":"USD","isin":"US5949181045"}]);
-        db.execute("INSERT INTO trading_connection(user_id,generation,environment,credentials,instruments,agent_token_hash,agent_auth_version) VALUES($1,'test','demo',$2,$3,'agent',1)",&[&user.as_str(),&encrypted,&catalog]).await.unwrap();
+        db.execute("INSERT INTO trading_connection(user_id,generation,environment,credentials,account,instruments,agent_token_hash,agent_auth_version) VALUES($1,'test','demo',$2,'{\"id\":\"pie-account\",\"currency\":\"USD\"}',$3,'agent',1)",&[&user.as_str(),&encrypted,&catalog]).await.unwrap();
         let stub = Stub::default();
         stub.state
             .lock()
@@ -197,7 +197,7 @@ impl Fixture {
         }
     }
     async fn fresh_gate(&self) {
-        self.db.execute("UPDATE trading_connection SET pie_request_next_at='epoch',pie_list_next_at='epoch' WHERE user_id=$1",&[&self.user.as_str()]).await.unwrap();
+        self.db.execute("UPDATE trading_rate_limit SET next_at='epoch',blocked_until='epoch' WHERE environment='demo'", &[]).await.unwrap();
     }
     async fn load(&self, id: &str) -> Proposal {
         Proposal::from_row(
@@ -502,7 +502,7 @@ async fn recovery_reconnect_and_order_reconciliation_preserve_selected_payload()
     let credentials: String = connection.get("credentials");
     let instruments: Value = connection.get("instruments");
     let tx = fixture.db.transaction().await.unwrap();
-    store::replace_connection_on(&fixture.user, &tx, None)
+    store::replace_connection_on(&fixture.user, &tx, None, None)
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -515,6 +515,7 @@ async fn recovery_reconnect_and_order_reconciliation_preserve_selected_payload()
         &fixture.user,
         &tx,
         Some(("demo", &credentials, &json!({"id":"usd-account","currency":"USD"}), &instruments)),
+        None,
     ).await.unwrap();
     tx.commit().await.unwrap();
     assert_eq!(pie(&fixture.load(&proposal.id).await).account_currency.as_deref(), Some("EUR"));
@@ -574,50 +575,53 @@ async fn terminated_execution_session_cancels_readback_and_recovers_unknown_with
 
 #[tokio::test]
 #[ignore = "isolated TEST_POSTGRES_URL; dedicated process --test-threads=1"]
-async fn shared_pacing_claim_is_atomic_owner_and_generation_scoped() {
+async fn shared_pacing_claim_is_atomic_and_generation_scoped() {
+    use super::super::rate_limits::{BrokerBudget, BrokerRateLimited, BrokerRateScope};
     let fixture = Fixture::new().await;
-    let other = reconciliation::connect_schema(&fixture.schema).await;
     let (a, b) = tokio::join!(
-        store::claim_pie_request(
-            &fixture.user,
-            &fixture.db,
-            "test",
-            store::PieBucket::Request
-        ),
-        store::claim_pie_request(&fixture.user, &other, "test", store::PieBucket::Request)
+        service::detail(&fixture.user, PieAccess::Browser, "10"),
+        service::detail(&fixture.user, PieAccess::Browser, "10"),
     );
     assert!(a.is_ok() ^ b.is_ok());
     let error = a.err().or_else(|| b.err()).unwrap();
-    assert!((1..=6).contains(
-        &error
-            .downcast_ref::<service::PieRateLimited>()
-            .unwrap()
-            .retry_after_seconds
-    ));
-    assert!(
-        store::claim_pie_request(&fixture.user, &fixture.db, "old", store::PieBucket::List)
-            .await
-            .is_err()
-    );
-    store::extend_pie_rate_limit(
-        &fixture.user,
-        &fixture.db,
-        "test",
-        store::PieBucket::Request,
-        100,
-    )
-    .await
-    .unwrap();
-    let error = store::claim_pie_request(&fixture.user, &other, "test", store::PieBucket::Request)
-        .await
-        .unwrap_err();
-    assert!(
-        error
-            .downcast_ref::<service::PieRateLimited>()
-            .unwrap()
-            .retry_after_seconds
-            >= 99
-    );
+    assert!((1..=6).contains(&error.downcast_ref::<BrokerRateLimited>().unwrap().retry_after_seconds));
+    assert_eq!(fixture.stub.state.lock().unwrap().reads, 1);
+    let context = |generation: &str| BrokerRequestContext {
+        scope: BrokerRateScope::account("demo", "pie-account"),
+        mode: AdmissionMode::Try,
+        access: BrokerAccess::Owner { user_id: fixture.user.clone(), generation: generation.to_owned() },
+    };
+    let stale = BrokerBudget::new(context("old"));
+    assert!(stale.admit("pie_list", true).await.is_err());
+    let budget = BrokerBudget::new(context("test"));
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(reqwest::header::RETRY_AFTER, "100".parse().unwrap());
+    budget.observe("pie_request", reqwest::StatusCode::TOO_MANY_REQUESTS, &headers).await.unwrap();
+    let error = service::detail(&fixture.user, PieAccess::Browser, "10").await.unwrap_err();
+    assert!(error.downcast_ref::<BrokerRateLimited>().unwrap().retry_after_seconds >= 99);
+    assert_eq!(fixture.stub.state.lock().unwrap().reads, 1);
+    fixture.close().await;
+}
+
+#[tokio::test]
+#[ignore = "isolated TEST_POSTGRES_URL; dedicated process --test-threads=1"]
+async fn acknowledged_pie_mutation_survives_owner_disable_before_response() {
+    let fixture = Fixture::new().await;
+    let proposal = service::submit(&fixture.user, PieAccess::Browser, create_input("disable-after-send")).await.unwrap().proposal;
+    fixture.stub.state.lock().unwrap().block_write = true;
+    let user = fixture.user.clone();
+    let id = proposal.id.clone();
+    let task = tokio::spawn(async move { approve(&user, id, PieApprovalInput::default()).await });
+    fixture.stub.entered.notified().await;
+    fixture.db.execute("UPDATE auth_users SET status='disabled' WHERE id=$1", &[&fixture.user.as_str()]).await.unwrap();
+    fixture.stub.release.notify_one();
+    let result = task.await.unwrap().unwrap();
+    assert_eq!(result.status, "completed");
+    assert_eq!(pie(&result).status, PieStatus::Submitted);
+    assert_eq!(pie(&result).broker_pie_id.as_deref(), Some("101"));
+    assert_eq!(pie(&fixture.load(&proposal.id).await).status, PieStatus::Submitted);
+    assert_eq!(fixture.stub.state.lock().unwrap().writes.len(), 1);
+    assert_eq!(fixture.stub.state.lock().unwrap().reads, 0);
     fixture.close().await;
 }
 

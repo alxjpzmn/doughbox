@@ -1,3 +1,5 @@
+use tokio_postgres::GenericClient;
+
 use crate::{
     database::{db_client, models::fx_conversion::FxConversion, queries::QueryFilter},
     services::shared::util::hash_string,
@@ -18,13 +20,22 @@ pub async fn add_fx_conversion_to_db(user_id: &crate::database::models::auth::Us
         .as_str(),
     );
 
-    client.execute(
-            "INSERT INTO fx_conversion (user_id, id, date, broker, from_amount, to_amount, from_currency, to_currency, date_added, fees) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT(user_id,id) DO NOTHING",
-            &[&user_id.as_str(), &hash, &fx_conversion.date, &fx_conversion.broker, &fx_conversion.from_amount, &fx_conversion.to_amount, &fx_conversion.from_currency, &fx_conversion.to_currency, &fx_conversion.date_added, &fx_conversion.fees],
-        )
-    .await?;
+    insert_with_id(user_id, &client, &hash, &fx_conversion).await?;
 
     Ok(())
+}
+
+pub async fn insert_with_id(
+    user_id: &crate::database::models::auth::UserId,
+    db: &(impl GenericClient + Sync),
+    id: &str,
+    fx_conversion: &FxConversion,
+) -> anyhow::Result<bool> {
+    let inserted = db.execute(
+        "INSERT INTO fx_conversion (user_id, id, date, broker, from_amount, to_amount, from_currency, to_currency, date_added, fees) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT(user_id,id) DO NOTHING",
+        &[&user_id.as_str(), &id, &fx_conversion.date, &fx_conversion.broker, &fx_conversion.from_amount, &fx_conversion.to_amount, &fx_conversion.from_currency, &fx_conversion.to_currency, &fx_conversion.date_added, &fx_conversion.fees],
+    ).await?;
+    Ok(inserted == 1)
 }
 
 pub async fn get_fx_conversions(user_id: &crate::database::models::auth::UserId, filter: QueryFilter) -> anyhow::Result<Vec<FxConversion>> {

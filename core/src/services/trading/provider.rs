@@ -8,9 +8,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Number, Value};
 
 use crate::services::shared::{env::get_env_variable, secrets};
+use super::rate_limits::{self, BrokerBudget, BrokerRateLimited, BrokerRequestContext};
 
 pub mod pies;
 pub mod account;
+pub mod history;
 
 #[cfg(test)]
 static TEST_BROKER_URL: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
@@ -131,10 +133,18 @@ pub struct BrokerClient {
     client: reqwest::Client,
     base_url: Cow<'static, str>,
     credentials: Credentials,
+    budget: Option<BrokerBudget>,
 }
 
 impl BrokerClient {
-    pub fn new(environment: &str, credentials: Credentials) -> Result<Self> {
+    pub fn new(
+        environment: &str,
+        credentials: Credentials,
+        context: BrokerRequestContext,
+    ) -> Result<Self> {
+        if context.scope.environment != environment || !matches!(context.scope.kind.as_str(), "account" | "key") || context.scope.id.trim().is_empty() {
+            bail!("Trading 212 request budget does not match this connection");
+        }
         let base_url = match environment {
             "demo" => "https://demo.trading212.com/api/v0",
             "live" => "https://live.trading212.com/api/v0",
@@ -169,7 +179,60 @@ impl BrokerClient {
             client,
             base_url,
             credentials,
+            budget: Some(BrokerBudget::new(context)),
         })
+    }
+
+    /// Low-level transport fixtures only. Service fixtures must use `new` and SQL admission.
+    #[cfg(test)]
+    fn transport_only(
+        client: reqwest::Client,
+        base_url: Cow<'static, str>,
+        credentials: Credentials,
+    ) -> Self {
+        Self { client, base_url, credentials, budget: None }
+    }
+
+    pub(crate) async fn identify_account(&mut self, broker_account_id: &str) -> Result<()> {
+        if let Some(budget) = &mut self.budget {
+            budget.promote(broker_account_id, &rate_limits::key_hash(&self.credentials)).await?;
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn admit(&self, bucket: &str, read: bool) -> Result<()> {
+        if let Some(budget) = &self.budget {
+            return budget.admit(bucket, read).await;
+        }
+        #[cfg(test)]
+        return Ok(());
+        #[cfg(not(test))]
+        bail!("Trading 212 request budget is unavailable")
+    }
+
+    pub(crate) async fn authorize(&self, read: bool) -> Result<()> {
+        if let Some(budget) = &self.budget {
+            return budget.authorize(read).await;
+        }
+        #[cfg(test)]
+        return Ok(());
+        #[cfg(not(test))]
+        bail!("Trading 212 request budget is unavailable")
+    }
+
+    pub(crate) async fn observe(
+        &self,
+        bucket: &str,
+        status: StatusCode,
+        headers: &reqwest::header::HeaderMap,
+    ) -> Result<u64> {
+        if let Some(budget) = &self.budget {
+            return budget.observe(bucket, status, headers).await;
+        }
+        #[cfg(test)]
+        return Ok(rate_limits::response_retry_after(bucket, status, headers));
+        #[cfg(not(test))]
+        bail!("Trading 212 request budget is unavailable")
     }
 
     fn request(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
@@ -182,11 +245,19 @@ impl BrokerClient {
     }
 
     async fn get_json<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T> {
-        let response = self
-            .request(reqwest::Method::GET, path)
-            .send()
-            .await
+        let bucket = get_bucket(path)?;
+        let request = self.request(reqwest::Method::GET, path);
+        self.admit(bucket, true).await?;
+        self.authorize(true).await?;
+        let response = request.send().await
             .map_err(|_| anyhow!("Trading 212 could not be reached"))?;
+        let observed = self.observe(bucket, response.status(), response.headers()).await;
+        let authorized = self.authorize(true).await;
+        let retry_after_seconds = observed?;
+        authorized?;
+        if response.status() == StatusCode::TOO_MANY_REQUESTS {
+            return Err(BrokerRateLimited { retry_after_seconds }.into());
+        }
         if !response.status().is_success() {
             let status = response.status();
             if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
@@ -197,10 +268,10 @@ impl BrokerClient {
             }
             bail!("Trading 212 request failed (HTTP {})", status.as_u16());
         }
-        response
-            .json()
-            .await
-            .map_err(|_| anyhow!("Trading 212 returned an invalid response"))
+        let value = response.json().await
+            .map_err(|_| anyhow!("Trading 212 returned an invalid response"))?;
+        self.authorize(true).await?;
+        Ok(value)
     }
 
     pub async fn account(&self) -> Result<Value> {
@@ -248,11 +319,12 @@ impl BrokerClient {
         time_validity: &str,
     ) -> std::result::Result<String, SubmitError> {
         let payload = limit_payload(ticker, side, quantity, limit_price, time_validity)?;
-        let mut response = self.post_limit(&payload).await?;
-        if response.status() == StatusCode::TOO_MANY_REQUESTS {
-            // 429 means this request was refused, so one later attempt cannot duplicate it.
-            tokio::time::sleep(rate_limit_wait(response.headers())).await;
-            response = self.post_limit(&payload).await?;
+        let (mut response, observed) = self.post_limit(&payload).await?;
+        if response.status() == StatusCode::TOO_MANY_REQUESTS && observed {
+            // Only an actual refusal is replayable; the second send claims shared admission.
+            // Approved execution uses Wait in its owned request context.
+            drop(response);
+            response = self.post_limit(&payload).await?.0;
         }
         match submission_status(response.status()) {
             Ok(()) => {}
@@ -272,14 +344,22 @@ impl BrokerClient {
         submission_id(&body)
     }
 
-    async fn post_limit(&self, payload: &Value) -> std::result::Result<reqwest::Response, SubmitError> {
-        self.request(reqwest::Method::POST, "/equity/orders/limit")
-            .json(payload)
-            .send()
-            .await
-            .map_err(|_| SubmitError::Unknown(
-                "Trading 212 order submission could not be confirmed; do not retry automatically".into(),
-            ))
+    async fn post_limit(
+        &self,
+        payload: &Value,
+    ) -> std::result::Result<(reqwest::Response, bool), SubmitError> {
+        let request = self.request(reqwest::Method::POST, "/equity/orders/limit").json(payload);
+        self.admit("limit_order", false).await.map_err(SubmitError::NotSent)?;
+        self.authorize(false).await.map_err(SubmitError::NotSent)?;
+        let response = request.send().await.map_err(|_| SubmitError::Unknown(
+            "Trading 212 order submission could not be confirmed; do not retry automatically".into(),
+        ))?;
+        let observed = self.observe("limit_order", response.status(), response.headers()).await.is_ok();
+        if !observed {
+            // Do not erase an acknowledged dispatch or expose database diagnostics.
+            tracing::warn!("Trading 212 rate-limit response observation failed");
+        }
+        Ok((response, observed))
     }
 
     pub async fn pending_order_statuses(&self) -> Result<Vec<(String, String)>> {
@@ -295,6 +375,8 @@ impl BrokerClient {
 
 #[derive(Debug)]
 pub enum SubmitError {
+    /// Admission/authority failed before dispatch; preserve typed rate-limit errors.
+    NotSent(anyhow::Error),
     Rejected(String),
     Unknown(String),
 }
@@ -302,12 +384,20 @@ pub enum SubmitError {
 impl fmt::Display for SubmitError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::NotSent(error) => fmt::Display::fmt(error, formatter),
             Self::Rejected(message) | Self::Unknown(message) => formatter.write_str(message),
         }
     }
 }
 
-impl std::error::Error for SubmitError {}
+impl std::error::Error for SubmitError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::NotSent(error) => Some(error.as_ref()),
+            _ => None,
+        }
+    }
+}
 
 fn limit_payload(
     ticker: &str,
@@ -354,14 +444,14 @@ fn limit_payload(
     }))
 }
 
-fn rate_limit_wait(headers: &reqwest::header::HeaderMap) -> std::time::Duration {
-    let seconds = headers
-        .get(reqwest::header::RETRY_AFTER)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(3)
-        .clamp(3, 30);
-    std::time::Duration::from_secs(seconds)
+fn get_bucket(path: &str) -> Result<&'static str> {
+    match path.split_once('?').map_or(path, |(path, _)| path) {
+        "/equity/account/summary" => Ok("account_summary"),
+        "/equity/metadata/instruments" => Ok("instruments"),
+        "/equity/orders" => Ok("pending_orders"),
+        "/equity/history/orders" | "/equity/history/dividends" | "/equity/history/transactions" => Ok("order_history"),
+        _ => bail!("Trading 212 GET endpoint has no rate-limit bucket"),
+    }
 }
 
 fn submission_status(status: StatusCode) -> std::result::Result<(), SubmitError> {
@@ -484,14 +574,20 @@ mod tests {
     }
 
     async fn broker_fixture(status: StatusCode, body: String) -> BrokerFixture {
+        broker_sequence_fixture(vec![(status, body)]).await
+    }
+
+    async fn broker_sequence_fixture(replies: Vec<(StatusCode, String)>) -> BrokerFixture {
         use axum::{routing::post, Router};
         let calls = Arc::new(AtomicUsize::new(0));
         let received = calls.clone();
+        let replies = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::from(replies)));
         let app = Router::new().route("/api/v0/equity/orders/limit", post(move || {
-            let body = body.clone();
+            let replies = replies.clone();
             let received = received.clone();
             async move {
                 received.fetch_add(1, Ordering::SeqCst);
+                let (status, body) = replies.lock().unwrap().pop_front().expect("unexpected replay");
                 let body = axum::body::Body::from_stream(futures::stream::once(
                     async move { Ok::<_, std::io::Error>(body) }
                 ));
@@ -502,15 +598,15 @@ mod tests {
         let base_url = Cow::Owned(format!("http://{}/api/v0", listener.local_addr().unwrap()));
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         BrokerFixture {
-            broker: BrokerClient {
-                client: reqwest::Client::builder()
+            broker: BrokerClient::transport_only(
+                reqwest::Client::builder()
                     .redirect(reqwest::redirect::Policy::none())
                     .retry(reqwest::retry::never())
                     .timeout(Duration::from_secs(2))
                     .build().unwrap(),
                 base_url,
-                credentials: Credentials { api_key: "fixture-key".into(), api_secret: "fixture-secret".into() },
-            },
+                Credentials { api_key: "fixture-key".into(), api_secret: "fixture-secret".into() },
+            ),
             calls, server,
         }
     }
@@ -612,12 +708,12 @@ mod tests {
             ).await.unwrap();
             socket.shutdown().await.unwrap();
         });
-        let broker = BrokerClient {
-            client: reqwest::Client::builder().timeout(Duration::from_secs(2))
+        let broker = BrokerClient::transport_only(
+            reqwest::Client::builder().timeout(Duration::from_secs(2))
                 .retry(reqwest::retry::never()).build().unwrap(),
             base_url,
-            credentials: Credentials { api_key: "fixture-key".into(), api_secret: "fixture-secret".into() },
-        };
+            Credentials { api_key: "fixture-key".into(), api_secret: "fixture-secret".into() },
+        );
         let error = broker.submit_limit("SANe_EQ", "buy", Decimal::ONE, Decimal::ONE, "DAY")
             .await.unwrap_err();
         server.await.unwrap();
@@ -637,6 +733,45 @@ mod tests {
             assert!(!message.contains("untrusted-rejection"));
             assert_eq!(fixture.calls.load(Ordering::SeqCst), 1);
         }
+    }
+
+    #[tokio::test]
+    async fn actual_429_is_retried_exactly_once_and_acknowledgement_is_preserved() {
+        let fixture = broker_sequence_fixture(vec![
+            (StatusCode::TOO_MANY_REQUESTS, "{}".into()),
+            (StatusCode::CREATED, r#"{"id":9223372036854775807}"#.into()),
+        ]).await;
+        let id = fixture.broker.submit_limit(
+            "SANe_EQ", "buy", Decimal::ONE, Decimal::ONE, "DAY",
+        ).await.unwrap();
+        assert_eq!(id, "9223372036854775807");
+        assert_eq!(fixture.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn second_429_is_definite_rejection_without_a_third_send() {
+        let fixture = broker_sequence_fixture(vec![
+            (StatusCode::TOO_MANY_REQUESTS, "{}".into()),
+            (StatusCode::TOO_MANY_REQUESTS, "{}".into()),
+        ]).await;
+        let result = fixture.broker.submit_limit(
+            "SANe_EQ", "buy", Decimal::ONE, Decimal::ONE, "DAY",
+        ).await;
+        assert!(matches!(result, Err(SubmitError::Rejected(_))));
+        assert_eq!(fixture.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn order_history_queries_share_one_fixed_bucket() {
+        for path in [
+            "/equity/history/orders",
+            "/equity/history/orders?limit=50",
+            "/equity/history/orders?cursor=123&limit=10",
+        ] {
+            assert_eq!(get_bucket(path).unwrap(), "order_history");
+        }
+        assert_eq!(get_bucket("/equity/orders?cursor=123").unwrap(), "pending_orders");
+        assert!(get_bucket("/unmapped").is_err());
     }
 
     #[test]

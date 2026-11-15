@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
-use tokio_postgres::Client;
+use tokio_postgres::{Client, GenericClient};
 
 use crate::{
     database::{
@@ -95,7 +95,7 @@ pub async fn update_instrument_price(user_id: &UserId, instrument: Instrument) -
 
 pub(crate) async fn record_execution_price(
     user_id: &UserId,
-    client: &tokio_postgres::Client,
+    client: &(impl GenericClient + Sync),
     instrument: &Instrument,
 ) -> anyhow::Result<()> {
     let query = "

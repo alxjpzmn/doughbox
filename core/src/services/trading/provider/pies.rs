@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, fmt, str::FromStr};
 
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use reqwest::{Method, StatusCode};
 use serde_json::{Map, Number, Value};
 
@@ -10,10 +10,11 @@ use crate::services::trading::pies::{
     PieSettings, PieSummary, PieValueResult,
 };
 
-/// Only RateLimited and Rejected prove the mutation was refused. Unknown must
-/// never be automatically replayed. A GET 404 is represented by Ok(None) only.
+/// NotSent proves no dispatch; RateLimited and Rejected prove broker refusal.
+/// Unknown must never be replayed. A GET 404 is represented by Ok(None) only.
 #[derive(Debug)]
 pub enum PieBrokerError {
+    NotSent(anyhow::Error),
     Rejected(String),
     Unknown(String),
     /// A selected source could not be decoded/identified; never try another ID.
@@ -27,6 +28,7 @@ pub enum PieBrokerError {
 impl fmt::Display for PieBrokerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::NotSent(error) => fmt::Display::fmt(error, f),
             Self::Rejected(message)
             | Self::Unknown(message)
             | Self::MalformedResponse(message)
@@ -34,7 +36,14 @@ impl fmt::Display for PieBrokerError {
         }
     }
 }
-impl std::error::Error for PieBrokerError {}
+impl std::error::Error for PieBrokerError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::NotSent(error) => Some(error.as_ref()),
+            _ => None,
+        }
+    }
+}
 
 type Result<T, E = PieBrokerError> = std::result::Result<T, E>;
 
@@ -221,40 +230,6 @@ fn payload(settings: &PieCreateSettings) -> Result<Value> {
     Ok(Value::Object(body))
 }
 
-fn retry_after(headers: &reqwest::header::HeaderMap, fallback: u64) -> u64 {
-    let Some(raw) = headers
-        .get(reqwest::header::RETRY_AFTER)
-        .and_then(|v| v.to_str().ok())
-    else {
-        return fallback;
-    };
-    if let Ok(seconds) = raw.parse::<u64>() {
-        return seconds.max(fallback);
-    }
-    // HTTP-date (IMF-fixdate and obsolete RFC 2822 variants), rounded up.
-    let date = DateTime::parse_from_rfc2822(raw)
-        .map(|date| date.with_timezone(&Utc))
-        .ok()
-        .or_else(|| {
-            chrono::NaiveDateTime::parse_from_str(raw, "%A, %d-%b-%y %H:%M:%S GMT")
-                .ok()
-                .map(|date| date.and_utc())
-        })
-        .or_else(|| {
-            chrono::NaiveDateTime::parse_from_str(raw, "%a %b %e %H:%M:%S %Y")
-                .ok()
-                .map(|date| date.and_utc())
-        });
-    date.map(|date| {
-        let millis = date.signed_duration_since(Utc::now()).num_milliseconds();
-        if millis <= 0 {
-            fallback
-        } else {
-            ((millis as u64).saturating_add(999) / 1000).max(fallback)
-        }
-    })
-    .unwrap_or(fallback)
-}
 
 impl BrokerClient {
     async fn pie_request(
@@ -265,20 +240,39 @@ impl BrokerClient {
         list: bool,
         absent: bool,
     ) -> Result<Option<reqwest::Response>> {
+        let read = method == Method::GET;
+        let bucket = if list { "pie_list" } else { "pie_request" };
         let mut request = self.request(method, path);
         if let Some(body) = body {
             request = request.json(&body);
         }
+        self.admit(bucket, read).await.map_err(PieBrokerError::NotSent)?;
+        self.authorize(read).await.map_err(PieBrokerError::NotSent)?;
         let response = request.send().await.map_err(|_| PieBrokerError::Unknown(
             "Trading 212 Pie request could not be confirmed; do not retry mutations automatically".into()))?;
         let status = response.status();
+        let observed = self.observe(bucket, status, response.headers()).await;
+        let delay = if read {
+            // Observation is attempted even when authorization has become stale.
+            let authorized = self.authorize(true).await;
+            let delay = observed.map_err(PieBrokerError::NotSent)?;
+            authorized.map_err(PieBrokerError::NotSent)?;
+            delay
+        } else {
+            match observed {
+                Ok(delay) => delay,
+                Err(_) => {
+                    tracing::warn!("Trading 212 rate-limit response observation failed");
+                    if list { 31 } else { 6 }
+                }
+            }
+        };
         if status == StatusCode::OK {
             return Ok(Some(response));
         }
         if absent && status == StatusCode::NOT_FOUND {
             return Ok(None);
         }
-        let delay = retry_after(response.headers(), if list { 31 } else { 6 });
         if status.is_client_error() && status != StatusCode::REQUEST_TIMEOUT {
             let diagnostic = rejection_detail(response, &self.credentials).await;
             let message = format!(
@@ -308,10 +302,8 @@ impl BrokerClient {
             .iter()
             .map(summary)
             .collect::<Result<Vec<_>>>()?;
-        Ok(PieList {
-            fetched_at: Utc::now(),
-            items,
-        })
+        self.authorize(true).await.map_err(PieBrokerError::NotSent)?;
+        Ok(PieList { fetched_at: Utc::now(), items })
     }
     pub async fn pie(&self, pie_id: &str) -> Result<Option<PieDetail>> {
         check_id(pie_id)?;
@@ -331,9 +323,10 @@ impl BrokerClient {
             .json()
             .await
             .map_err(|_| PieBrokerError::MalformedResponse(malformed().to_string()))?;
-        detail(&value, Some(pie_id))
-            .map(Some)
-            .map_err(|error| PieBrokerError::MalformedResponse(error.to_string()))
+        let detail = detail(&value, Some(pie_id))
+            .map_err(|error| PieBrokerError::MalformedResponse(error.to_string()))?;
+        self.authorize(true).await.map_err(PieBrokerError::NotSent)?;
+        Ok(Some(detail))
     }
     pub async fn create_pie(&self, settings: &PieCreateSettings) -> Result<PieDetail> {
         let response = self
@@ -534,19 +527,19 @@ mod tests {
         let base_url = Cow::Owned(format!("http://{}/api/v0", listener.local_addr().unwrap()));
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         Fixture {
-            broker: BrokerClient {
-                client: reqwest::Client::builder()
+            broker: BrokerClient::transport_only(
+                reqwest::Client::builder()
                     .redirect(reqwest::redirect::Policy::none())
                     .retry(reqwest::retry::never())
                     .timeout(Duration::from_secs(2))
                     .build()
                     .unwrap(),
                 base_url,
-                credentials: Credentials {
+                Credentials {
                     api_key: "fixture-key".into(),
                     api_secret: "fixture-secret".into(),
                 },
-            },
+            ),
             calls,
             server,
         }
@@ -787,18 +780,4 @@ mod tests {
         assert_eq!(fixture.calls.lock().unwrap().len(), 1);
     }
 
-    #[test]
-    fn retry_after_never_shortens_longer_delays_and_invalid_values_use_bucket_interval() {
-        let mut headers = reqwest::header::HeaderMap::new();
-        assert_eq!(retry_after(&headers, 31), 31);
-        headers.insert("retry-after", "invalid".parse().unwrap());
-        assert_eq!(retry_after(&headers, 6), 6);
-        headers.insert("retry-after", "120".parse().unwrap());
-        assert_eq!(retry_after(&headers, 6), 120);
-        headers.insert("retry-after", "1".parse().unwrap());
-        assert_eq!(retry_after(&headers, 6), 6);
-        let future = (Utc::now() + chrono::Duration::seconds(180)).to_rfc2822();
-        headers.insert("retry-after", future.parse().unwrap());
-        assert!(retry_after(&headers, 6) >= 179);
-    }
 }

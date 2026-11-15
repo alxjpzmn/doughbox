@@ -1,402 +1,229 @@
-use anyhow::anyhow;
-use rust_decimal::Decimal;
-use rust_decimal_macros::dec;
-use std::{io::Cursor, str::FromStr};
+mod prepare;
+mod reconcile;
 
-use chrono::{NaiveDate, Utc};
-use csv::ReaderBuilder;
+pub(crate) use prepare::{
+    canonical_decimal, canonical_timestamp, fingerprint_native, prepare_trading212_csv,
+    PreparedT212Batch, PreparedT212Row, T212Financial,
+};
+pub(crate) use reconcile::{apply_trading212_batch, candidates_for_rows, create_event, insert_financial, legacy_income_key_matches, Candidate};
 
 use crate::{
-    database::{
-        models::{
-            dividend::Dividend, fx_conversion::FxConversion, interest::InterestPayment,
-            trade::Trade,
-        },
-        queries::{
-            composite::add_trade_to_db, dividend::add_dividend_to_db,
-            fx_conversion::add_fx_conversion_to_db, interest::add_interest_to_db,
-        },
-    },
-    services::{market_data::fx_rates::convert_amount, parsers::parse_timestamp},
+    database::{db_client, models::auth::UserId},
+    services::trading::sync::{T212ImportContext, T212ImportOutcome},
 };
 
-#[derive(Debug, PartialEq, Eq)]
-enum RecordType {
-    Dividend,
-    EquityTrade,
-    CashInterest,
-    ShareInterest,
-    CashTransfer,
-    FxConversion,
-    Unmatched,
+/// All financial preparation (including external FX enrichment) precedes the
+/// owner-wide ingestion transaction. API workers use these phases separately
+/// so their session-lock client also owns all financial/checkpoint writes.
+pub async fn extract_trading212_record(
+    user_id: &UserId,
+    file_content: &[u8],
+    context: &T212ImportContext,
+) -> anyhow::Result<T212ImportOutcome> {
+    let prepared = prepare_trading212_csv(user_id, file_content).await?;
+    apply_trading212_batch(user_id, &mut db_client().await?, prepared, context).await
 }
-
-fn detect_record_type(action: &str) -> RecordType {
-    if action.contains("Dividend") {
-        RecordType::Dividend
-    } else if action == "Withdrawal" || action == "Deposit" {
-        RecordType::CashTransfer
-    } else if action == "Interest on cash" {
-        RecordType::CashInterest
-    } else if action == "Lending interest" {
-        RecordType::ShareInterest
-    } else if action.contains("buy") || action.contains("sell") {
-        RecordType::EquityTrade
-    } else if action == "Currency conversion" {
-        RecordType::FxConversion
-    } else {
-        RecordType::Unmatched
-    }
-}
-
-fn find_column_index(
-    headers: &csv::StringRecord,
-    column_name: &str,
-    required: bool,
-) -> anyhow::Result<Option<usize>> {
-    let idx = headers.iter().position(|h| h == column_name);
-    if required {
-        idx.ok_or_else(|| anyhow!("Missing required column: {}", column_name))
-            .map(Some)
-    } else {
-        Ok(idx)
-    }
-}
-
-fn find_column_index_any(
-    headers: &csv::StringRecord,
-    column_names: &[&str],
-) -> anyhow::Result<usize> {
-    for name in column_names {
-        if let Some(idx) = headers.iter().position(|h| h == *name) {
-            return Ok(idx);
-        }
-    }
-    Err(anyhow!(
-        "Missing required column: {}",
-        column_names.join(" or ")
-    ))
-}
-
-fn optional_field<'a>(record: &'a csv::StringRecord, idx: Option<usize>) -> Option<&'a str> {
-    idx.and_then(|i| record.get(i))
-        .filter(|value| !value.is_empty())
-}
-
-fn field_decimal_or_zero(record: &csv::StringRecord, idx: Option<usize>) -> Decimal {
-    optional_field(record, idx)
-        .and_then(|value| value.parse::<Decimal>().ok())
-        .unwrap_or(dec!(0))
-}
-
-fn field_string_or(record: &csv::StringRecord, idx: Option<usize>, fallback: &str) -> String {
-    optional_field(record, idx)
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| fallback.to_string())
-}
-
-fn parse_fx_from_notes(notes: &str) -> anyhow::Result<(Decimal, String, Decimal, String)> {
-    let parts: Vec<&str> = notes.split("->").collect();
-    if parts.len() != 2 {
-        return Err(anyhow!("Unable to parse FX conversion notes: {}", notes));
-    }
-
-    let parse_side = |side: &str| -> anyhow::Result<(Decimal, String)> {
-        let tokens: Vec<&str> = side.trim().split_whitespace().collect();
-        if tokens.len() != 2 {
-            return Err(anyhow!("Unable to parse FX conversion side: {}", side));
-        }
-        Ok((tokens[0].parse::<Decimal>()?, tokens[1].to_string()))
-    };
-
-    let (from_amount, from_currency) = parse_side(parts[0])?;
-    let (to_amount, to_currency) = parse_side(parts[1])?;
-    Ok((from_amount, from_currency, to_amount, to_currency))
-}
-
-pub async fn extract_trading212_record(user_id: &crate::database::models::auth::UserId, file_content: &[u8]) -> anyhow::Result<()> {
-    let broker = "Trading212".to_string();
-
-    let cursor = Cursor::new(file_content);
-    let mut rdr = ReaderBuilder::new().has_headers(true).from_reader(cursor);
-    let headers = rdr.headers()?.clone();
-
-    let action_idx = find_column_index(&headers, "Action", true)?.unwrap();
-    let amount_idx = find_column_index(&headers, "Total", true)?.unwrap();
-    let share_count_idx = find_column_index(&headers, "No. of shares", true)?.unwrap();
-    let price_per_share_idx = find_column_index(&headers, "Price / share", true)?.unwrap();
-    let id_idx = find_column_index(&headers, "ID", true)?.unwrap();
-    let isin_idx = find_column_index(&headers, "ISIN", true)?.unwrap();
-    let currency_total_idx = find_column_index(&headers, "Currency (Total)", true)?.unwrap();
-    let currency_price_idx =
-        find_column_index(&headers, "Currency (Price / share)", true)?.unwrap();
-    let timestamp_idx = find_column_index_any(&headers, &["Time", "Time (UTC)"])?;
-    let fees_idx = find_column_index(&headers, "Currency conversion fee", true)?.unwrap();
-    let fees_currency_idx =
-        find_column_index(&headers, "Currency (Currency conversion fee)", false)?;
-    let fx_rate_idx = find_column_index(&headers, "Exchange rate", true)?.unwrap();
-
-    let withholding_tax_idx = find_column_index(&headers, "Withholding tax", false)?;
-    let withholding_tax_currency_idx =
-        find_column_index(&headers, "Currency (Withholding tax)", false)?;
-    let notes_idx = find_column_index(&headers, "Notes", false)?;
-    let currency_conversion_from_idx = find_column_index(
-        &headers,
-        "Currency (Currency conversion from amount)",
-        false,
-    )?;
-    let currency_conversion_to_idx =
-        find_column_index(&headers, "Currency (Currency conversion to amount)", false)?;
-    let currency_conversion_from_amount_idx =
-        find_column_index(&headers, "Currency conversion from amount", false)?;
-    let currency_conversion_to_amount_idx =
-        find_column_index(&headers, "Currency conversion to amount", false)?;
-
-    for result in rdr.records() {
-        let record = result?;
-        let action = &record[action_idx];
-
-        let record_type = detect_record_type(action);
-        match record_type {
-            RecordType::Dividend => {
-                let date = parse_timestamp(&record[timestamp_idx])?;
-                let amount = record[share_count_idx].parse::<Decimal>()?
-                    * record[price_per_share_idx].parse::<Decimal>()?;
-                let dividend = Dividend {
-                    isin: record[isin_idx].to_string(),
-                    date,
-                    amount,
-                    broker: broker.clone(),
-                    currency: record[currency_price_idx].to_string(),
-                    amount_eur: convert_amount(
-                        amount,
-                        &date.date_naive(),
-                        &record[currency_price_idx],
-                        "EUR",
-                    )
-                    .await?,
-                    withholding_tax: field_decimal_or_zero(&record, withholding_tax_idx),
-                    withholding_tax_currency: field_string_or(
-                        &record,
-                        withholding_tax_currency_idx,
-                        &record[currency_price_idx],
-                    ),
-                };
-                if add_dividend_to_db(user_id, dividend.clone(), None).await? {
-                    println!("💵 Dividend added: {:?}", dividend);
-                }
-            }
-            RecordType::FxConversion => {
-                let from_notes = optional_field(&record, notes_idx)
-                    .and_then(|notes| parse_fx_from_notes(notes).ok());
-                let from_amount = optional_field(&record, currency_conversion_from_amount_idx)
-                    .and_then(|value| value.parse::<Decimal>().ok())
-                    .or_else(|| from_notes.as_ref().map(|parsed| parsed.0))
-                    .ok_or_else(|| anyhow!("Missing FX conversion from amount"))?;
-                let from_currency = optional_field(&record, currency_conversion_from_idx)
-                    .map(|value| value.to_string())
-                    .or_else(|| from_notes.as_ref().map(|parsed| parsed.1.clone()))
-                    .ok_or_else(|| anyhow!("Missing FX conversion from currency"))?;
-                let to_amount = optional_field(&record, currency_conversion_to_amount_idx)
-                    .and_then(|value| value.parse::<Decimal>().ok())
-                    .or_else(|| from_notes.as_ref().map(|parsed| parsed.2))
-                    .unwrap_or(dec!(0));
-                let to_currency = optional_field(&record, currency_conversion_to_idx)
-                    .map(|value| value.to_string())
-                    .or_else(|| from_notes.as_ref().map(|parsed| parsed.3.clone()))
-                    .unwrap_or_else(|| "Unknown".to_string());
-
-                let fx_conversion = FxConversion {
-                    date: parse_timestamp(&record[timestamp_idx])?,
-                    broker: broker.clone(),
-                    from_amount,
-                    to_amount,
-                    from_currency,
-                    to_currency,
-                    date_added: Utc::now(),
-                    fees: record[fees_idx].parse::<Decimal>().unwrap_or(dec!(-0.0)) * -dec!(1.0),
-                };
-                add_fx_conversion_to_db(user_id, fx_conversion).await?;
-            }
-            RecordType::EquityTrade => {
-                let date = parse_timestamp(&record[timestamp_idx])?;
-                let trade = Trade {
-                    broker: broker.clone(),
-                    date,
-                    isin: record[isin_idx].to_string(),
-                    avg_price_per_unit: record[price_per_share_idx].parse::<Decimal>()?,
-                    eur_avg_price_per_unit: convert_amount(
-                        record[price_per_share_idx].parse::<Decimal>()?
-                            / record[fx_rate_idx].parse::<Decimal>()?,
-                        &date.date_naive(),
-                        &record[currency_total_idx],
-                        "EUR",
-                    )
-                    .await?,
-                    units: if record[price_per_share_idx].is_empty() {
-                        dec!(0.0)
-                    } else {
-                        record[share_count_idx].parse::<Decimal>()?
-                    },
-                    direction: if record[action_idx].contains("buy") {
-                        "Buy".to_string()
-                    } else {
-                        "Sell".to_string()
-                    },
-                    security_type: "Equity".to_string(),
-                    currency: record[currency_price_idx].to_string(),
-                    date_added: Utc::now(),
-                    fees: convert_amount(
-                        record[fees_idx].parse::<Decimal>().unwrap_or(dec!(0.0)),
-                        &date.date_naive(),
-                        optional_field(&record, fees_currency_idx)
-                            .unwrap_or(&record[currency_total_idx]),
-                        "EUR",
-                    )
-                    .await?,
-                    withholding_tax: field_decimal_or_zero(&record, withholding_tax_idx),
-                    withholding_tax_currency: field_string_or(
-                        &record,
-                        withholding_tax_currency_idx,
-                        &record[currency_total_idx],
-                    ),
-                };
-                add_trade_to_db(user_id, trade, Some(record[id_idx].to_string())).await?;
-            }
-            RecordType::CashInterest => {
-                let amount = if record[currency_total_idx].to_string() == "EUR" {
-                    record[amount_idx].parse::<Decimal>()?
-                } else {
-                    convert_amount(
-                        record[amount_idx].parse::<Decimal>()?,
-                        &NaiveDate::from_str(
-                            parse_timestamp(&record[timestamp_idx])?
-                                .date_naive()
-                                .to_string()
-                                .as_str(),
-                        )?,
-                        &record[currency_total_idx],
-                        "EUR",
-                    )
-                    .await?
-                };
-
-                let interest_payment = InterestPayment {
-                    date: parse_timestamp(&record[timestamp_idx])?,
-                    amount: record[amount_idx].parse::<Decimal>()?,
-                    broker: broker.clone(),
-                    principal: "Cash".to_string(),
-                    currency: record[currency_total_idx].to_string(),
-                    amount_eur: amount,
-                    withholding_tax: field_decimal_or_zero(&record, withholding_tax_idx),
-                    withholding_tax_currency: field_string_or(
-                        &record,
-                        withholding_tax_currency_idx,
-                        &record[currency_total_idx],
-                    ),
-                };
-                if add_interest_to_db(user_id, interest_payment.clone(), None).await? {
-                    println!("💵 Interest payment added: {:?}", interest_payment);
-                }
-            }
-
-            RecordType::ShareInterest => {
-                let amount = if record[currency_total_idx].to_string() == "EUR" {
-                    record[amount_idx].parse::<Decimal>()?
-                } else {
-                    convert_amount(
-                        record[amount_idx].parse::<Decimal>()?,
-                        &NaiveDate::from_str(
-                            parse_timestamp(&record[timestamp_idx])?
-                                .date_naive()
-                                .to_string()
-                                .as_str(),
-                        )?,
-                        &record[currency_total_idx],
-                        "EUR",
-                    )
-                    .await?
-                };
-
-                let interest_payment = InterestPayment {
-                    date: parse_timestamp(&record[timestamp_idx])?,
-                    amount: record[amount_idx].parse::<Decimal>()?,
-                    broker: broker.clone(),
-                    principal: "Shares".to_string(),
-                    currency: record[currency_total_idx].to_string(),
-                    amount_eur: amount,
-                    withholding_tax: field_decimal_or_zero(&record, withholding_tax_idx),
-                    withholding_tax_currency: field_string_or(
-                        &record,
-                        withholding_tax_currency_idx,
-                        &record[currency_total_idx],
-                    ),
-                };
-                if add_interest_to_db(user_id, interest_payment.clone(), None).await? {
-                    println!("💵 Interest payment added: {:?}", interest_payment);
-                }
-            }
-            RecordType::CashTransfer => continue,
-            RecordType::Unmatched => continue,
-        }
-    }
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rust_decimal_macros::dec;
+    use chrono::Timelike;
+    use serde_json::json;
+    use std::collections::BTreeMap;
+    use crate::services::parsers::parse_timestamp;
 
-    #[test]
-    fn parse_fx_notes() {
-        let (from_amount, from_currency, to_amount, to_currency) =
-            parse_fx_from_notes("30 USD -> 27.40 EUR").unwrap();
-        assert_eq!(from_amount, dec!(30));
-        assert_eq!(from_currency, "USD");
-        assert_eq!(to_amount, dec!(27.40));
-        assert_eq!(to_currency, "EUR");
+    const HEADERS: &[&str] = &[
+        "Action", "Time", "ID", "ISIN", "No. of shares", "Price / share",
+        "Currency (Price / share)", "Total", "Currency (Total)", "Exchange rate",
+        "Currency conversion fee", "Currency (Currency conversion fee)",
+        "Withholding tax", "Currency (Withholding tax)", "Notes",
+        "Currency conversion from amount", "Currency (Currency conversion from amount)",
+        "Currency conversion to amount", "Currency (Currency conversion to amount)",
+    ];
+
+    fn owner() -> UserId { UserId::from_database("t212-prepare-tests".to_owned()) }
+
+    fn row(action: &str, id: &str, timestamp: &str) -> Vec<String> {
+        [action, timestamp, id, "US0000000001", "2", "5", "EUR", "9", "EUR", "1",
+            "0.25", "EUR", "1", "EUR", "", "", "", "", ""]
+            .into_iter().map(str::to_owned).collect()
+    }
+
+    fn csv(headers: &[&str], rows: &[Vec<String>]) -> Vec<u8> {
+        let mut writer = csv::Writer::from_writer(Vec::new());
+        writer.write_record(headers).unwrap();
+        for row in rows { writer.write_record(row).unwrap(); }
+        writer.into_inner().unwrap()
     }
 
     #[test]
-    fn parse_fx_notes_rejects_malformed() {
-        assert!(parse_fx_from_notes("30 USD").is_err());
-        assert!(parse_fx_from_notes("USD -> EUR").is_err());
+    fn canonical_identity_normalizes_decimal_time_and_ignores_evidence() {
+        assert_eq!(canonical_decimal(dec!(-0.000)), "0");
+        assert_eq!(canonical_decimal(dec!(12.3400)), "12.34");
+        let mut payload = json!({
+            "version": 1, "kind": "trade", "timestamp": "2025-01-01T01:00:00.123456789+01:00",
+            "isin": "US0000000001", "direction": "Buy", "units": "2.00", "unit_price": "5.000",
+            "currency": "USD", "fees": "1", "fees_currency": "USD",
+        });
+        let fingerprint = fingerprint_native(&payload).unwrap();
+        let expected = json!(["t212-event-v1", "trade", "2025-01-01T00:00:00.123456Z",
+            "US0000000001", "Buy", "2", "5", "USD"]);
+        assert_eq!(fingerprint, blake3::hash(&serde_json::to_vec(&expected).unwrap()).to_hex().to_string());
+        payload["timestamp"] = json!("2025-01-01T00:00:00.123456Z");
+        payload["units"] = json!("2");
+        payload["unit_price"] = json!("5");
+        payload["fees"] = json!("99");
+        assert_eq!(fingerprint, fingerprint_native(&payload).unwrap());
+        payload["direction"] = json!("Sell");
+        assert_ne!(fingerprint, fingerprint_native(&payload).unwrap());
+        assert_eq!(canonical_timestamp(parse_timestamp("2025-01-01 00:00:00").unwrap()),
+            "2025-01-01T00:00:00.000000Z");
     }
 
     #[test]
-    fn detect_trading212_record_types() {
-        assert!(matches!(
-            detect_record_type("Dividend (Ordinary)"),
-            RecordType::Dividend
-        ));
-        assert_eq!(
-            detect_record_type("Interest on cash"),
-            RecordType::CashInterest
-        );
-        assert_eq!(
-            detect_record_type("Lending interest"),
-            RecordType::ShareInterest
-        );
-        assert_eq!(detect_record_type("Market buy"), RecordType::EquityTrade);
-        assert_eq!(detect_record_type("Limit sell"), RecordType::EquityTrade);
-        assert_eq!(
-            detect_record_type("Currency conversion"),
-            RecordType::FxConversion
-        );
-        assert_eq!(detect_record_type("Deposit"), RecordType::CashTransfer);
-        assert_eq!(detect_record_type("Withdrawal"), RecordType::CashTransfer);
-        assert_eq!(detect_record_type("Something else"), RecordType::Unmatched);
+    fn currency_principal_and_unambiguous_fields_are_identity() {
+        let mut payload = json!({"version": 1, "kind": "interest",
+            "timestamp": "2025-01-01T00:00:00Z", "principal": "Cash", "amount": "1.00", "currency": "EUR"});
+        let original = fingerprint_native(&payload).unwrap();
+        payload["currency"] = json!("USD");
+        assert_ne!(original, fingerprint_native(&payload).unwrap());
+        payload["currency"] = json!("EUR");
+        payload["principal"] = json!("Shares");
+        assert_ne!(original, fingerprint_native(&payload).unwrap());
+        payload["amount"] = json!("not a number");
+        assert!(fingerprint_native(&payload).is_err());
+        payload["version"] = json!(2);
+        assert!(fingerprint_native(&payload).is_err());
     }
 
-    #[test]
-    fn optional_csv_fields() {
-        let record = csv::StringRecord::from(vec!["", "12.5", "EUR"]);
-        assert_eq!(optional_field(&record, Some(0)), None);
-        assert_eq!(optional_field(&record, Some(1)), Some("12.5"));
-        assert_eq!(field_decimal_or_zero(&record, Some(0)), dec!(0));
-        assert_eq!(field_decimal_or_zero(&record, Some(1)), dec!(12.5));
-        assert_eq!(field_string_or(&record, Some(0), "USD"), "USD");
-        assert_eq!(field_string_or(&record, Some(2), "USD"), "EUR");
+    #[tokio::test]
+    async fn named_headers_empty_reports_and_skipped_actions() {
+        let owner = owner();
+        assert!(prepare_trading212_csv(&owner, b"").await.is_err());
+        assert!(prepare_trading212_csv(&owner, b"Action,Time\n").await.is_err());
+        for time_header in ["Time", "Time (UTC)"] {
+            let mut headers = HEADERS.to_vec();
+            headers[1] = time_header;
+            let empty = prepare_trading212_csv(&owner, &csv(&headers, &[])).await.unwrap();
+            assert!(empty.rows.is_empty());
+            assert!(empty.skipped_actions.is_empty());
+            let mut skipped = row("Deposit", "merchant information", "invalid timestamp");
+            skipped[7] = "invalid amount".to_owned();
+            let batch = prepare_trading212_csv(&owner, &csv(&headers, &[
+                skipped.clone(), skipped, row("Withdrawal", "", ""), row("Card spending", "", ""),
+            ])).await.unwrap();
+            assert!(batch.rows.is_empty());
+            assert_eq!(batch.skipped_actions, BTreeMap::from([
+                ("Deposit".to_owned(), 2), ("Withdrawal".to_owned(), 1), ("Card spending".to_owned(), 1),
+            ]));
+        }
+    }
+
+    #[tokio::test]
+    async fn gross_income_native_evidence_and_fee_conventions() {
+        let timestamp = "2025-01-01 00:00:00.123456789";
+        let mut fx = row("Currency conversion", "fx-ID", timestamp);
+        fx[14] = "30 USD -> 27.40 EUR".to_owned();
+        let batch = prepare_trading212_csv(&owner(), &csv(HEADERS, &[
+            row("Market buy", "trade-ID", timestamp), row("Dividend (Ordinary)", "div-ID", timestamp),
+            row("Interest on cash", "cash-ID", timestamp), row("Lending interest", "shares-ID", timestamp), fx,
+        ])).await.unwrap();
+        assert_eq!(batch.rows.len(), 5);
+        for (index, row) in batch.rows.iter().enumerate() {
+            assert_eq!(row.row_number, index as i32 + 1);
+            assert!(row.raw_id.is_some());
+            assert_eq!(row.native_payload["timestamp"], "2025-01-01T00:00:00.123456Z");
+            assert_eq!(row.financial.date().nanosecond(), 123_456_000);
+            assert_eq!(row.original_timestamp, timestamp);
+        }
+        match &batch.rows[0].financial {
+            T212Financial::Trade(trade) => {
+                assert_eq!(trade.avg_price_per_unit, dec!(5));
+                assert_eq!(trade.eur_avg_price_per_unit, dec!(5));
+                assert_eq!(trade.fees, dec!(0.25));
+            }
+            _ => panic!("expected trade"),
+        }
+        assert_eq!(batch.rows[0].native_payload["fees"], "0.25");
+        match &batch.rows[1].financial {
+            T212Financial::Dividend(dividend) => {
+                assert_eq!(dividend.amount, dec!(10));
+                assert_eq!(dividend.amount_eur, dec!(10));
+                assert_eq!(dividend.withholding_tax, dec!(1));
+            }
+            _ => panic!("expected dividend"),
+        }
+        assert_eq!(batch.rows[1].native_payload["amount"], "10");
+        assert_eq!(batch.rows[1].native_payload["withholding_tax"], "1");
+        match &batch.rows[4].financial {
+            T212Financial::Fx(fx) => {
+                assert_eq!(fx.from_amount, dec!(30));
+                assert_eq!(fx.to_amount, dec!(27.4));
+                assert_eq!(fx.fees, dec!(-0.25));
+            }
+            _ => panic!("expected FX"),
+        }
+    }
+
+    #[tokio::test]
+    async fn occurrence_is_timestamp_local_stable_and_preserves_opaque_ids() {
+        let time = "2025-01-01 00:00:00";
+        let batch = prepare_trading212_csv(&owner(), &csv(HEADERS, &[
+            row("Interest on cash", "z", time), row("Interest on cash", "  ", time),
+            row("Interest on cash", " A ", time), row("Interest on cash", "z", time),
+            row("Interest on cash", "next", "2025-01-01 00:00:01"),
+        ])).await.unwrap();
+        assert_eq!(batch.rows.iter().map(|row| row.occurrence).collect::<Vec<_>>(), vec![3, 1, 2, 4, 1]);
+        assert_eq!(batch.rows[1].raw_id, None);
+        assert_eq!(batch.rows[2].raw_id.as_deref(), Some(" A "));
+        assert_eq!(batch.rows[0].fingerprint, batch.rows[3].fingerprint);
+        assert_ne!(batch.rows[0].row_number, batch.rows[3].row_number);
+    }
+
+    #[tokio::test]
+    async fn malformed_supported_rows_and_invalid_csv_fail_closed() {
+        let time = "2025-01-01 00:00:00";
+        for (action, column, value) in [
+            ("Market buy", 4, ""), ("Market buy", 5, "invalid"), ("Market buy", 9, "0"),
+            ("Market buy", 6, ""), ("Dividend", 4, ""), ("Dividend", 5, ""),
+            ("Interest on cash", 7, ""), ("Lending interest", 8, "Unknown"),
+            ("Interest on cash", 1, "not a time"),
+        ] {
+            let mut malformed = row(action, "bad", time);
+            malformed[column] = value.to_owned();
+            // The first row would need ECB enrichment if validation were interleaved.
+            let mut valid = row("Interest on cash", "valid", time);
+            valid[8] = "USD".to_owned();
+            assert!(prepare_trading212_csv(&owner(), &csv(HEADERS, &[valid, malformed])).await.is_err());
+        }
+        let mut invalid = csv(HEADERS, &[]);
+        invalid.extend_from_slice(b"\"unterminated");
+        assert!(prepare_trading212_csv(&owner(), &invalid).await.is_err());
+        let mut invalid = csv(HEADERS, &[]);
+        invalid.extend_from_slice(b"only,two\n");
+        assert!(prepare_trading212_csv(&owner(), &invalid).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn fx_named_fields_and_notes_require_both_positive_sides() {
+        let mut named = row("Currency conversion", "opaque-FX", "2025-01-01 00:00:00");
+        named[15] = "30.00".to_owned();
+        named[16] = "USD".to_owned();
+        named[17] = "27.40".to_owned();
+        named[18] = "EUR".to_owned();
+        named[14] = "unrelated free text".to_owned();
+        let batch = prepare_trading212_csv(&owner(), &csv(HEADERS, &[named.clone()])).await.unwrap();
+        assert_eq!(batch.rows[0].native_payload["from_amount"], "30");
+        assert_eq!(batch.rows[0].native_payload["to_amount"], "27.4");
+        for (column, value) in [(15, "0"), (17, "-1"), (17, ""), (18, "Unknown"), (18, "")] {
+            let mut invalid = named.clone();
+            invalid[column] = value.to_owned();
+            assert!(prepare_trading212_csv(&owner(), &csv(HEADERS, &[invalid])).await.is_err());
+        }
+        for notes in ["30 USD", "30 USD -> 0 EUR", "30 USD -> 27 Unknown", "USD -> EUR"] {
+            let mut invalid = row("Currency conversion", "", "2025-01-01 00:00:00");
+            invalid[14] = notes.to_owned();
+            assert!(prepare_trading212_csv(&owner(), &csv(HEADERS, &[invalid])).await.is_err());
+        }
     }
 }

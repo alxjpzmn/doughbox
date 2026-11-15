@@ -23,6 +23,11 @@ pub struct StatementImportJob {
     pub finished_at: Option<DateTime<Utc>>,
     /// Failures can follow partial writes; review existing transactions before retrying.
     pub error: Option<String>,
+    pub t212_batch_id: Option<String>,
+    pub inserted_count: Option<i32>,
+    pub matched_count: Option<i32>,
+    pub review_count: Option<i32>,
+    pub skipped_count: Option<i32>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -35,4 +40,5 @@ pub struct StatementImportsStatus {
 pub struct StatementImportFile {
     pub filename: String,
     pub contents: Vec<u8>,
+    pub trading212_account_id: Option<String>,
 }

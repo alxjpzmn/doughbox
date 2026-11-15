@@ -566,6 +566,12 @@ export interface PortfolioEvent {
 	total_currency: string;
 	broker: string;
 	tax_supported: boolean;
+	/**
+	 * Creation method recorded when the ledger row was first reconciled.
+	 * Later observations cannot change it.
+	 */
+	import_source?: string;
+	imported_at?: Date;
 }
 
 export interface SecurityHistoryGap {
@@ -871,7 +877,7 @@ export interface WeightedCashInterestSummary {
  * These functions allow for flexible encoding and decoding of data, ensuring that complex types are properly handled when converting between TS objects and JSON
  */
 export const ReviverFunc = (key: string, value: unknown): unknown => {
-    if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/.test(value) && (key === "archived_at" || key === "as_of" || key === "consumed_at" || key === "created_at" || key === "date" || key === "date_added" || key === "expires_at" || key === "from_date" || key === "interest_rate_updated_at" || key === "last_price_update" || key === "last_seen_at" || key === "last_sent_at" || key === "last_success_at" || key === "next_refresh_at" || key === "next_report_at" || key === "received_at" || key === "revoked_at" || key === "until_date" || key === "updated_at" || key === "valuation_date")) {
+    if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/.test(value) && (key === "archived_at" || key === "as_of" || key === "consumed_at" || key === "created_at" || key === "date" || key === "date_added" || key === "expires_at" || key === "from_date" || key === "imported_at" || key === "interest_rate_updated_at" || key === "last_price_update" || key === "last_seen_at" || key === "last_sent_at" || key === "last_success_at" || key === "next_refresh_at" || key === "next_report_at" || key === "received_at" || key === "revoked_at" || key === "until_date" || key === "updated_at" || key === "valuation_date")) {
         return new Date(value);
     }
     return value;

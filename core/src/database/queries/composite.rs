@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use tokio_postgres::Client;
+use tokio_postgres::{Client, GenericClient};
 
 use crate::{
     database::{
@@ -223,11 +223,7 @@ pub async fn add_trade_to_db(user_id: &crate::database::models::auth::UserId, tr
         )
     };
 
-    client.execute(
-        "INSERT INTO trade (user_id, hash, date, units, avg_price_per_unit, eur_avg_price_per_unit, security_type, direction, currency, isin, broker, date_added, fees, withholding_tax, withholding_tax_currency) values ($1, $2, $3, $4, $5, $6, $7,$8, $9, $10, $11, $12, $13, $14, $15) ON CONFLICT(user_id,hash) DO NOTHING",
-        &[&user_id.as_str(), &hash, &trade.date, &trade.units, &trade.avg_price_per_unit, &trade.eur_avg_price_per_unit, &trade.security_type, &trade.direction, &trade.currency, &trade.isin, &trade.broker, &Utc::now(), &trade.fees, &trade.withholding_tax, &trade.withholding_tax_currency],
-        )
-    .await?;
+    insert_trade_with_id(user_id, &client, &hash, &trade).await?;
 
     println!("✅ Trade added: {:?}", trade);
 
@@ -242,6 +238,19 @@ pub async fn add_trade_to_db(user_id: &crate::database::models::auth::UserId, tr
     .await?;
 
     Ok(())
+}
+
+pub async fn insert_trade_with_id(
+    user_id: &crate::database::models::auth::UserId,
+    db: &(impl GenericClient + Sync),
+    id: &str,
+    trade: &Trade,
+) -> anyhow::Result<bool> {
+    let inserted = db.execute(
+        "INSERT INTO trade (user_id, hash, date, units, avg_price_per_unit, eur_avg_price_per_unit, security_type, direction, currency, isin, broker, date_added, fees, withholding_tax, withholding_tax_currency) values ($1, $2, $3, $4, $5, $6, $7,$8, $9, $10, $11, $12, $13, $14, $15) ON CONFLICT(user_id,hash) DO NOTHING",
+        &[&user_id.as_str(), &id, &trade.date, &trade.units, &trade.avg_price_per_unit, &trade.eur_avg_price_per_unit, &trade.security_type, &trade.direction, &trade.currency, &trade.isin, &trade.broker, &Utc::now(), &trade.fees, &trade.withholding_tax, &trade.withholding_tax_currency],
+    ).await?;
+    Ok(inserted == 1)
 }
 
 pub async fn get_active_years(user_id: &crate::database::models::auth::UserId, ) -> anyhow::Result<Vec<i32>> {

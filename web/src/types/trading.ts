@@ -127,3 +127,110 @@ export interface PieResult {
 }
 export interface PieApprovalInput { confirm_empty_pie: boolean }
 export interface TradingInstrument { ticker: string; name: string; currency: string; isin: string }
+
+export interface T212SyncAccount {
+  id: string;
+  environment: 'demo' | 'live';
+  broker_account_id: string;
+  currency: string;
+  schedule_enabled: boolean;
+  next_run_at: string | null;
+  backfill_cursor: string;
+  backfill_complete: boolean;
+  synced_through: string | null;
+  last_success_at: string | null;
+}
+
+export interface T212SyncRun {
+  id: string;
+  account_id: string;
+  trigger: 'scheduled' | 'sync_now' | 'full_history';
+  status: 'queued' | 'running' | 'waiting' | 'needs_review' | 'succeeded' | 'failed' | 'cancelled';
+  phase: 'request_report' | 'poll_report' | 'download_report' | 'import_report' | 'history_orders' | 'history_dividends' | 'history_transactions';
+  range_from: string;
+  range_to: string;
+  cursor: string;
+  report_from: string | null;
+  report_to: string | null;
+  report_id: string | null;
+  next_attempt_at: string;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  error_code: string | null;
+  error_message: string | null;
+  inserted_count: number;
+  matched_count: number;
+  review_count: number;
+  skipped_count: number;
+}
+
+export interface T212ImportBatchSummary {
+  id: string;
+  account_id: string | null;
+  sync_run_id: string | null;
+  statement_job_id: string | null;
+  source: 'trading212_api' | 'statement_csv';
+  status: 'staged' | 'needs_review' | 'applied' | 'failed';
+  report_from: string | null;
+  report_to: string | null;
+  created_at: string;
+  applied_at: string | null;
+  inserted_count: number;
+  matched_count: number;
+  review_count: number;
+  skipped_count: number;
+  skipped_actions: Record<string, number>;
+}
+
+export interface T212SyncStatus {
+  available: boolean;
+  unavailable_reason: string | null;
+  current_account_id: string | null;
+  accounts: T212SyncAccount[];
+  runs: T212SyncRun[];
+  review_batches: T212ImportBatchSummary[];
+}
+
+export interface T212ReviewCandidate {
+  kind: string;
+  ledger_id: string;
+  event_id: string | null;
+  account_id: string | null;
+  import_source: string | null;
+  imported_at: string | null;
+  native: Record<string, unknown>;
+  recorded: Record<string, unknown>;
+  values_differ: boolean;
+}
+
+export interface T212ReviewItem {
+  batch_id: string;
+  row_number: number;
+  version: number;
+  source: string;
+  account_id: string | null;
+  raw_id: string | null;
+  raw_action: string;
+  kind: string;
+  native: Record<string, unknown>;
+  normalized: Record<string, unknown>;
+  reason: string;
+  candidates: T212ReviewCandidate[];
+}
+
+export interface T212ReviewPage {
+  items: T212ReviewItem[];
+  next_cursor: number | null;
+}
+
+interface T212ReviewLocation {
+  batch_id: string;
+  row_number: number;
+  version: number;
+  account_id: string | null;
+}
+export type T212ReviewDecision = T212ReviewLocation & (
+  | { action: 'import_new' }
+  | { action: 'match_existing'; kind: string; ledger_id: string; accept_recorded_values: boolean }
+);

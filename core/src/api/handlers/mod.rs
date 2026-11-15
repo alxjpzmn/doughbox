@@ -12,6 +12,7 @@ pub mod taxation;
 pub mod timeline;
 pub mod trades;
 pub mod trading;
+pub mod trading_sync;
 
 use axum::{
     extract::{Request, State},
