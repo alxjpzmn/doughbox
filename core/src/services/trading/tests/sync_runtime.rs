@@ -7,7 +7,7 @@ use std::sync::{Arc,Mutex};
 struct Env(Vec<(&'static str,Option<std::ffi::OsString>)>);
 impl Drop for Env {fn drop(&mut self){provider::set_test_broker_url(None).unwrap();set_test_download_url(None).unwrap();for(k,v) in self.0.drain(..){match v{Some(v)=>std::env::set_var(k,v),None=>std::env::remove_var(k)}}}}
 #[derive(Default)]
-struct BrokerState {request:Option<Value>,posts:usize,reads:usize,download_origin:String,lost_ack:bool,missing:bool,reject_range:bool,rate_once:bool,forbidden:bool,forbidden_body:Option<String>,history_fill:Option<String>,report_status:Option<&'static str>,csv:Vec<u8>}
+struct BrokerState {request:Option<Value>,posts:usize,reads:usize,download_origin:String,lost_ack:bool,missing:bool,reject_range:bool,rate_once:bool,forbidden:bool,forbidden_body:Option<String>,reports_forbidden:bool,history_fill:Option<String>,history_transaction:Option<Value>,report_status:Option<&'static str>,csv:Vec<u8>}
 #[derive(Clone,Default)]
 struct Stub(Arc<Mutex<BrokerState>>);
 async fn create(State(stub):State<Stub>,Json(request):Json<Value>)->Response {
@@ -16,16 +16,20 @@ async fn create(State(stub):State<Stub>,Json(request):Json<Value>)->Response {
         let body=state.forbidden_body.clone().unwrap_or_else(|| r#"{"detail":"Scope(history:orders) missing for API key"}"#.to_owned());
         return (StatusCode::FORBIDDEN,body).into_response();
     }
+    if state.reject_range {return StatusCode::BAD_REQUEST.into_response();}
     if state.rate_once {state.rate_once=false;return (StatusCode::TOO_MANY_REQUESTS,[("retry-after","120")]).into_response();}
     if state.lost_ack {state.lost_ack=false;return StatusCode::SERVICE_UNAVAILABLE.into_response();}
     Json(json!({"reportId":9007199254740993_i64})).into_response()
 }
-async fn reports(State(stub):State<Stub>)->Json<Value>{
+async fn reports(State(stub):State<Stub>)->Response{
     let mut state=stub.0.lock().unwrap();state.reads+=1;
-    if state.missing{return Json(json!([]));}
-    let Some(request)=state.request.as_ref() else{return Json(json!([]));};
+    if state.reports_forbidden {
+        return (StatusCode::FORBIDDEN,state.forbidden_body.clone().unwrap_or_else(|| r#"{"detail":"Scope(history:orders) missing for API key"}"#.to_owned())).into_response();
+    }
+    if state.missing{return Json(json!([])).into_response();}
+    let Some(request)=state.request.as_ref() else{return Json(json!([])).into_response();};
     let status=state.report_status.unwrap_or(match state.reads {1=>"Queued",2=>"Processing",_=>"Finished"});
-    Json(json!([{"reportId":9007199254740993_i64,"timeFrom":request["timeFrom"],"timeTo":request["timeTo"],"dataIncluded":request["dataIncluded"],"status":status,"downloadLink":format!("{}/report.csv?signed=fixture",state.download_origin)}]))
+    Json(json!([{"reportId":9007199254740993_i64,"timeFrom":request["timeFrom"],"timeTo":request["timeTo"],"dataIncluded":request["dataIncluded"],"status":status,"downloadLink":format!("{}/report.csv?signed=fixture",state.download_origin)}])).into_response()
 }
 async fn download(State(stub):State<Stub>,headers:axum::http::HeaderMap)->Response {
     assert!(!headers.contains_key("authorization"));assert!(!headers.contains_key("cookie"));
@@ -41,6 +45,10 @@ async fn order_history(State(stub):State<Stub>)->Json<Value>{
     Json(json!({"items":[{"fill":{"filledAt":time,"id":42,"price":10,"quantity":2,"type":"TRADE","walletImpact":{"currency":"EUR","fxRate":1,"taxes":[]}},"order":{"id":7,"side":"BUY","ticker":"AAPL_US_EQ","instrument":{"isin":"US0378331005","currency":"EUR","ticker":"AAPL_US_EQ","name":"Apple"}}}],"nextPagePath":null}))
 }
 async fn empty_history()->Json<Value>{Json(json!({"items":[]}))}
+async fn transaction_history(State(stub):State<Stub>)->Json<Value>{
+    let state=stub.0.lock().unwrap();
+    Json(json!({"items":state.history_transaction.iter().collect::<Vec<_>>()}))
+}
 struct Fixture {db:tokio_postgres::Client,schema:String,user:UserId,account:String,stub:Stub,server:tokio::task::JoinHandle<()>,_env:Env}
 impl Fixture {
     async fn new()->Self {
@@ -65,7 +73,7 @@ impl Fixture {
         let app=Router::new().route("/api/v0/equity/history/exports",get(reports).post(create)).route("/report.csv",get(download))
             .route("/api/v0/equity/account/summary",get(summary)).route("/api/v0/equity/positions",get(positions))
             .route("/api/v0/equity/metadata/instruments",get(catalog)).route("/api/v0/equity/orders",get(pending))
-            .route("/api/v0/equity/history/orders",get(order_history)).route("/api/v0/equity/history/dividends",get(empty_history)).route("/api/v0/equity/history/transactions",get(empty_history)).route("/api/v0/equity/pies",get(positions)).with_state(stub.clone());
+            .route("/api/v0/equity/history/orders",get(order_history)).route("/api/v0/equity/history/dividends",get(empty_history)).route("/api/v0/equity/history/transactions",get(transaction_history)).route("/api/v0/equity/pies",get(positions)).with_state(stub.clone());
         let server=tokio::spawn(async move{axum::serve(listener,app).await.unwrap()});
         provider::set_test_broker_url(Some(format!("http://{addr}/api/v0"))).unwrap();set_test_download_url(Some(format!("http://{addr}/"))).unwrap();
         Self{db,schema,user,account,stub,server,_env:env}
@@ -404,22 +412,113 @@ async fn demo_connection_syncs_its_own_activity() {
 #[tokio::test]
 #[ignore = "Requires an isolated PostgreSQL 17 TEST_POSTGRES_URL"]
 async fn refused_csv_export_uses_authorized_history_access() {
-    let f=Fixture::new().await;
-    let time=(Utc::now()-TimeDelta::days(2)).to_rfc3339();
-    {
-        let mut state=f.stub.0.lock().unwrap();
-        state.forbidden=true;
-        state.forbidden_body=Some(r#"{"type":"/api-errors/not-available-in-demo-account"}"#.to_owned());
-        state.history_fill=Some(time);
+    for lost_ack in [false,true] {
+        let f=Fixture::new().await;
+        f.db.execute("UPDATE trading_connection SET environment='demo' WHERE user_id=$1",&[&f.user.as_str()]).await.unwrap();
+        f.db.execute("UPDATE t212_sync_account SET environment='demo' WHERE user_id=$1",&[&f.user.as_str()]).await.unwrap();
+        let run=service::request_run(&f.user,false).await.unwrap();
+        {
+            let mut state=f.stub.0.lock().unwrap();
+            state.lost_ack=lost_ack;
+            state.forbidden=!lost_ack;
+            state.forbidden_body=Some(r#"{"type":"/api-errors/not-available-in-demo-account"}"#.to_owned());
+            state.history_fill=Some((run.run.range_from+TimeDelta::seconds(1)).to_rfc3339());
+        }
+        f.step().await;
+        if lost_ack {
+            assert_eq!(service::status(&f.user).await.unwrap().runs[0].error_code.as_deref(),Some("request_unconfirmed"));
+            f.stub.0.lock().unwrap().reports_forbidden=true;
+            f.ready().await;f.step().await;
+        }
+        for phase in ["history_orders","history_dividends","history_transactions"] {
+            let status=service::status(&f.user).await.unwrap();
+            assert_eq!(status.runs[0].phase,phase);
+            assert_eq!(status.runs[0].cursor,run.run.cursor);
+            assert!(status.accounts[0].synced_through.is_none());
+            f.ready().await;f.step().await;
+        }
+        let status=service::status(&f.user).await.unwrap();
+        assert_eq!(status.runs[0].status,"succeeded");
+        assert_eq!(status.runs[0].cursor,run.run.range_to);
+        assert_eq!(status.accounts[0].synced_through,Some(run.run.range_to));
+        assert_eq!(status.accounts[0].environment,"demo");
+        assert_eq!(f.stub.0.lock().unwrap().posts,1);
+        assert_eq!(f.stub.0.lock().unwrap().reads,usize::from(lost_ack));
+        assert_eq!(f.db.query_one("SELECT count(*) FROM trade",&[]).await.unwrap().get::<_,i64>(0),1);
+        let environments:Vec<String>=f.db.query("SELECT DISTINCT environment FROM trading_rate_limit",&[]).await.unwrap().into_iter().map(|row|row.get(0)).collect();
+        assert_eq!(environments,vec!["demo".to_string()]);
+        f.cleanup().await;
     }
-    service::request_run(&f.user,false).await.unwrap();
-    for _ in 0..6 {
+}
+
+#[tokio::test]
+#[ignore="Requires isolated PostgreSQL 17 TEST_POSTGRES_URL"]
+async fn history_preparation_cancels_blocked_fx_before_releasing_session() {
+    for fault in ["shutdown","session_loss"] {
+        let f=Fixture::new().await;
+        let run=service::request_run(&f.user,false).await.unwrap();
+        {
+            let mut state=f.stub.0.lock().unwrap();
+            state.forbidden=true;
+            state.forbidden_body=Some(r#"{"type":"/api-errors/not-available-in-demo-account"}"#.to_owned());
+            state.history_transaction=Some(json!({"dateTime":(run.run.range_from+TimeDelta::seconds(1)).to_rfc3339(),"type":"INTEREST_ON_FREE_CASH","amount":1.2,"currency":"USD","reference":"blocked-history-interest"}));
+        }
+        f.db.execute("INSERT INTO fx_rate(hash,date,rate,currency_from,currency_to) VALUES('history-parser-usd','1970-01-01',1.2,'EUR','USD')",&[]).await.unwrap();
+        for _ in 0..3 {f.ready().await;f.step().await;}
+        assert_eq!(service::status(&f.user).await.unwrap().runs[0].phase,"history_transactions");
+        f.ready().await;
+        let mut blocker=super::super::reconciliation::connect_schema(&f.schema).await;
+        let blocked=blocker.transaction().await.unwrap();
+        blocked.batch_execute("LOCK TABLE fx_rate IN ACCESS EXCLUSIVE MODE").await.unwrap();
+        let user=f.user.clone();let account=f.account.clone();
+        let (stop,rx)=tokio::sync::watch::channel(false);
+        let worker=tokio::spawn(async move {service::run_test_session(&user,&account,rx).await});
+        let parser_pid=tokio::time::timeout(std::time::Duration::from_secs(5),async {
+            loop {
+                if let Some(row)=f.db.query_opt("SELECT pid FROM pg_locks WHERE relation='fx_rate'::regclass AND mode='AccessShareLock' AND NOT granted",&[]).await.unwrap() {break row.get::<_,i32>(0);}
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        }).await.expect("history parser must reach blocked FX enrichment");
+        if fault=="shutdown" {
+            stop.send(true).unwrap();
+        } else {
+            let lock=format!("doughbox:t212-sync:{}:{}",f.user.as_str(),f.account);
+            let worker_pid:i32=f.db.query_one("SELECT pid FROM pg_locks WHERE locktype='advisory' AND granted AND objsubid=1 AND classid=((hashtextextended($1,0)>>32)&4294967295)::oid AND objid=(hashtextextended($1,0)&4294967295)::oid",&[&lock]).await.unwrap().get(0);
+            assert_ne!(worker_pid,parser_pid);
+            assert!(f.db.query_one("SELECT pg_terminate_backend($1)",&[&worker_pid]).await.unwrap().get::<_,bool>(0));
+        }
+        let result=tokio::time::timeout(std::time::Duration::from_secs(5),worker).await.expect("cancellation must join history preparation while FX remains blocked").unwrap();
+        assert_eq!(result.is_err(),fault=="session_loss");
+        let state=service::status(&f.user).await.unwrap();
+        assert_eq!(state.runs[0].cursor,run.run.cursor);
+        assert_eq!(state.runs[0].phase,"history_transactions");
+        assert!(state.accounts[0].synced_through.is_none());
+        assert_eq!(f.db.query_one("SELECT count(*) FROM interest",&[]).await.unwrap().get::<_,i64>(0),0);
+        assert_eq!(f.db.query_one("SELECT count(*) FROM t212_import_batch",&[]).await.unwrap().get::<_,i64>(0),0);
+        blocked.rollback().await.unwrap();
         f.ready().await;f.step().await;
-        if f.db.query_one("SELECT count(*) FROM trade",&[]).await.unwrap().get::<_, i64>(0)==1 {break;}
+        let state=service::status(&f.user).await.unwrap();
+        assert_eq!(state.runs[0].status,"succeeded");
+        assert_eq!(state.accounts[0].synced_through,Some(run.run.range_to));
+        assert_eq!(f.db.query_one("SELECT amount_eur FROM interest",&[]).await.unwrap().get::<_,rust_decimal::Decimal>(0),rust_decimal_macros::dec!(1));
+        drop(blocker);f.cleanup().await;
     }
-    let status=service::status(&f.user).await.unwrap();
-    assert_ne!(status.runs[0].error_code.as_deref(), Some("missing_history_access"));
-    assert!(!status.runs[0].error_message.as_deref().unwrap_or("").contains("Enable history report export"));
-    assert_eq!(f.db.query_one("SELECT count(*),sum(units) FROM trade",&[]).await.unwrap().get::<_, i64>(0), 1);
+}
+
+#[tokio::test]
+#[ignore="Requires isolated PostgreSQL 17 TEST_POSTGRES_URL"]
+async fn lost_ack_missing_named_history_scope_remains_terminal() {
+    let f=Fixture::new().await;
+    f.stub.0.lock().unwrap().lost_ack=true;
+    let run=service::request_run(&f.user,false).await.unwrap();
+    f.step().await;
+    f.stub.0.lock().unwrap().reports_forbidden=true;
+    f.ready().await;f.step().await;
+    let state=service::status(&f.user).await.unwrap();
+    assert_eq!(state.runs[0].status,"failed");
+    assert_eq!(state.runs[0].error_code.as_deref(),Some("missing_scope"));
+    assert_eq!(state.runs[0].cursor,run.run.cursor);
+    assert!(state.accounts[0].synced_through.is_none());
+    assert_eq!(f.stub.0.lock().unwrap().posts,1);
     f.cleanup().await;
 }

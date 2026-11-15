@@ -5,7 +5,7 @@ pub(crate) use prepare::{
     canonical_decimal, canonical_timestamp, fingerprint_native, prepare_trading212_csv,
     PreparedT212Batch, PreparedT212Row, T212Financial,
 };
-pub(crate) use reconcile::{apply_trading212_batch, candidates_for_rows, create_event, insert_financial, legacy_income_key_matches, Candidate};
+pub(crate) use reconcile::{apply_trading212_batch, candidates_for_rows, create_event, evidence_conflicts, insert_financial, legacy_income_key_matches, withholding_reported, Candidate};
 
 use crate::{
     database::{db_client, models::auth::UserId},

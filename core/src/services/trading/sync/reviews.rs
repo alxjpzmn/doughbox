@@ -17,8 +17,8 @@ use crate::{
     services::{
         auth::AuthError,
         importers::trading212::{
-            candidates_for_rows, canonical_timestamp, create_event, fingerprint_native,
-            insert_financial, legacy_income_key_matches, Candidate, PreparedT212Row, T212Financial,
+            candidates_for_rows, canonical_timestamp, create_event, evidence_conflicts, fingerprint_native,
+            insert_financial, legacy_income_key_matches, withholding_reported, Candidate, PreparedT212Row, T212Financial,
         },
         shared::util::hash_string,
     },
@@ -219,27 +219,10 @@ fn financial_equal(a: &T212Financial, b: &T212Financial) -> bool {
     }
 }
 
-fn native_evidence_equal(a: &Value, b: &Value) -> bool {
-    [("fees", "fees_currency"), ("withholding_tax", "withholding_tax_currency")].into_iter().all(|(key, currency)| {
-        let amount = |value: &Value| -> Option<Decimal> {
-            match value.get(key) {
-                None => Some(Decimal::ZERO),
-                Some(value) => value.as_str()?.parse().ok(),
-            }
-        };
-        match (amount(a), amount(b)) {
-            (Some(a_amount), Some(b_amount)) if a_amount == b_amount => {
-                a_amount.is_zero() || a.get(currency) == b.get(currency)
-            }
-            _ => false,
-        }
-    })
-}
 
 fn values_differ(row: &PreparedT212Row, candidate: &Candidate) -> bool {
     !financial_equal(&row.financial, &candidate.financial)
-        || (!candidate.observations.is_empty() && !candidate.observations.iter()
-            .any(|(_, native)| native_evidence_equal(&row.native_payload, native)))
+        || evidence_conflicts(row, candidate)
 }
 
 /// SQL-only, owner-scoped pagination over unresolved rows, including CLI batches
@@ -492,7 +475,7 @@ pub async fn resolve(
                     id.clone()
                 } else {
                     let id = uuid::Uuid::new_v4().to_string();
-                    create_event(user_id, &tx, &id, account.as_deref(), kind, &candidate.fingerprint, "legacy", ledger_id).await?;
+                    create_event(user_id, &tx, &id, account.as_deref(), kind, &candidate.fingerprint, "legacy", ledger_id, true).await?;
                     id
                 };
                 if account.is_some() {
@@ -508,7 +491,7 @@ pub async fn resolve(
                 let id = uuid::Uuid::new_v4().to_string();
                 let ledger_id = format!("t212:{id}");
                 insert_financial(user_id, &tx, &ledger_id, &row.financial).await?;
-                create_event(user_id, &tx, &id, account.as_deref(), row.financial.kind(), &row.fingerprint, &sources[batch_id], &ledger_id).await?;
+                create_event(user_id, &tx, &id, account.as_deref(), row.financial.kind(), &row.fingerprint, &sources[batch_id], &ledger_id, withholding_reported(row)).await?;
                 (id, "inserted")
             }
         };
@@ -647,6 +630,7 @@ mod tests {
             event_id: Some("event".into()), account_id: Some("account".into()),
             fingerprint: recorded.fingerprint, financial: recorded.financial,
             observed_fingerprints: HashSet::new(),
+            withholding_tax_reported: true, accepted_financial: Vec::new(),
             observations: vec![(recorded.raw_id, recorded.native_payload)],
         };
         assert!(evidence_backed(&incoming, &candidate));
@@ -665,6 +649,7 @@ mod tests {
             event_id: None, account_id: None,
             fingerprint: incoming.fingerprint.clone(), financial: incoming.financial.clone(),
             observed_fingerprints: HashSet::new(),
+            withholding_tax_reported: true, accepted_financial: Vec::new(),
             observations: Vec::new(),
         };
         assert!(evidence_backed(&incoming, &candidate));

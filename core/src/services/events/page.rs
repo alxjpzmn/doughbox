@@ -165,7 +165,7 @@ async fn query_selected_rows(
         0 => "SELECT i.date, i.amount, i.currency, i.principal, i.withholding_tax, \
               i.withholding_tax_currency, i.amount_eur, i.broker, i.asset_id, \
               i.tax_treatment, a.name, a.unit_label, i.id, i.id AS page_source_id, \
-              provenance.created_via AS import_source, provenance.imported_at \
+              provenance.created_via AS import_source, provenance.imported_at, provenance.withholding_tax_reported \
               FROM interest i LEFT JOIN asset a ON a.user_id = i.user_id AND a.id = i.asset_id \
               LEFT JOIN t212_activity_event provenance ON provenance.user_id = i.user_id AND provenance.interest_id = i.id \
               WHERE i.user_id = $1 AND i.id = ANY($2)",
@@ -182,7 +182,7 @@ async fn query_selected_rows(
         }
         2 => "SELECT d.date, d.amount, d.currency, d.isin, d.withholding_tax, d.withholding_tax_currency, \
               d.amount_eur, d.broker, d.id, d.id AS page_source_id, \
-              provenance.created_via AS import_source, provenance.imported_at FROM dividend d \
+              provenance.created_via AS import_source, provenance.imported_at, provenance.withholding_tax_reported FROM dividend d \
               LEFT JOIN t212_activity_event provenance ON provenance.user_id = d.user_id AND provenance.dividend_id = d.id \
               WHERE d.user_id = $1 AND d.id = ANY($2)",
         3 => "SELECT t.date, t.units, t.avg_price_per_unit, t.currency, t.isin, t.direction, t.withholding_tax, \

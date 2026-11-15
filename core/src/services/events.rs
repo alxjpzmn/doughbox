@@ -89,6 +89,14 @@ fn import_provenance(row: &Row) -> anyhow::Result<(Option<String>, Option<DateTi
     }
 }
 
+fn withholding_reported(row: &Row) -> anyhow::Result<bool> {
+    if row.columns().iter().any(|column| column.name() == "withholding_tax_reported") {
+        Ok(row.try_get::<_, Option<bool>>("withholding_tax_reported")?.unwrap_or(true))
+    } else {
+        Ok(true)
+    }
+}
+
 /// Build an owner's timeline; shared OeKB cache rows enter only for that
 /// portfolio's canonical used ISINs, while retaining upstream report IDs.
 pub async fn get_events(
@@ -150,7 +158,7 @@ async fn query_interest(
             "SELECT i.date, i.amount, i.currency, i.principal, i.withholding_tax, \
              i.withholding_tax_currency, i.amount_eur, i.broker, i.asset_id, \
              i.tax_treatment, a.name, a.unit_label, i.id, \
-             provenance.created_via AS import_source, provenance.imported_at \
+             provenance.created_via AS import_source, provenance.imported_at, provenance.withholding_tax_reported \
              FROM interest i LEFT JOIN asset a ON a.user_id = i.user_id AND a.id = i.asset_id \
              LEFT JOIN t212_activity_event provenance ON provenance.user_id = i.user_id AND provenance.interest_id = i.id \
              WHERE i.user_id = $1 AND i.date >= $2 AND i.date < $3",
@@ -259,7 +267,7 @@ async fn query_dividends(
     Ok(client
         .query(
             "SELECT d.date, d.amount, d.currency, d.isin, d.withholding_tax, d.withholding_tax_currency, \
-             d.amount_eur, d.broker, d.id, provenance.created_via AS import_source, provenance.imported_at \
+             d.amount_eur, d.broker, d.id, provenance.created_via AS import_source, provenance.imported_at, provenance.withholding_tax_reported \
              FROM dividend d LEFT JOIN t212_activity_event provenance \
                ON provenance.user_id = d.user_id AND provenance.dividend_id = d.id \
              WHERE d.user_id = $1 AND d.date >= $2 AND d.date < $3",
@@ -391,11 +399,12 @@ async fn process_interest_rows(
         let withholding_tax_currency =
             withholding_tax_currency.unwrap_or_else(|| event_currency.clone());
 
-        let (applied_fx_rate, withholding_tax_percent) = if tax_supported {
+        let (applied_fx_rate, mut withholding_tax_percent) = if tax_supported {
             income_tax_values(amount, withholding_tax, &event_currency, &withholding_tax_currency, date, read_only_client).await?
         } else {
             (None, None)
         };
+        if !withholding_reported(row)? { withholding_tax_percent = None; }
 
         let (import_source, imported_at) = import_provenance(row)?;
         let event = PortfolioEvent {
@@ -503,8 +512,9 @@ async fn process_dividend_rows(
         let withholding_tax_currency =
             withholding_tax_currency.unwrap_or_else(|| event_currency.clone());
 
-        let (applied_fx_rate, withholding_tax_percent) =
+        let (applied_fx_rate, mut withholding_tax_percent) =
             income_tax_values(amount, withholding_tax, &event_currency, &withholding_tax_currency, date, read_only_client).await?;
+        if !withholding_reported(row)? { withholding_tax_percent = None; }
 
         let (import_source, imported_at) = import_provenance(row)?;
         let event = PortfolioEvent {

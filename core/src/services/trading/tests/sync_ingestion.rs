@@ -214,3 +214,151 @@ async fn trading212_sync_digest_assignment_checks_reviewed_identity_aliases() {
     assert_eq!(f.db.query_one("SELECT sum(amount) FROM interest WHERE user_id=$1",&[&f.owner.as_str()]).await.unwrap().get::<_,rust_decimal::Decimal>(0),dec!(3.4));
     f.cleanup().await;
 }
+
+fn with_column(bytes: &[u8], name: &str, value: &str) -> Vec<u8> {
+    let mut reader = csv::Reader::from_reader(bytes);
+    let mut headers = reader.headers().unwrap().clone();
+    headers.push_field(name);
+    let mut writer = csv::Writer::from_writer(Vec::new());
+    writer.write_record(&headers).unwrap();
+    for record in reader.records() {
+        let mut record = record.unwrap();
+        record.push_field(value);
+        writer.write_record(&record).unwrap();
+    }
+    writer.into_inner().unwrap()
+}
+
+#[tokio::test]
+#[ignore="Requires isolated PostgreSQL 17 TEST_POSTGRES_URL"]
+async fn trading212_sync_authoritative_withholding_enriches_only_unknown_income() {
+    let mut f=IngestionFixture::new().await;
+    let rows="Dividend (Ordinary),2026-10-16 12:00:00,US0378331005,2,3,EUR,6,EUR,dividend-tax,0,1,,,\
+\nInterest on cash,2026-10-17 12:00:00,,,,,1.20,EUR,interest-tax,0,1,,,\n";
+    let history=with_column(&csv(rows),"Withholding tax reported","false");
+    let api=f.api().await;
+    assert_eq!(f.apply(&history,&api).await.inserted_count,2);
+    let before:Vec<(String,String,Option<chrono::DateTime<Utc>>)>=f.db.query(
+        "SELECT id,created_via,imported_at FROM t212_activity_event WHERE user_id=$1 ORDER BY id",
+        &[&f.owner.as_str()]).await.unwrap().iter().map(|r|(r.get(0),r.get(1),r.get(2))).collect();
+    let events=crate::services::events::get_events(&f.owner,"2026-10-01T00:00:00Z".parse().unwrap(),"2026-11-01T00:00:00Z".parse().unwrap()).await.unwrap();
+    assert_eq!(events.len(),2);assert!(events.iter().all(|event|event.withholding_tax_percent.is_none()));
+    let page=crate::services::events::get_events_page(&f.owner,&crate::services::events::EventPageFilter {
+        from_date:"2026-10-01T00:00:00Z".parse().unwrap(),until_date:"2026-11-01T00:00:00Z".parse().unwrap(),
+        isin:None,broker:None,event_type:None,limit:10,offset:0,
+    }).await.unwrap();
+    assert_eq!(page.len(),2);assert!(page.iter().all(|event|event.withholding_tax_percent.is_none()));
+    let manual=f.manual();
+    let authority=csv("Dividend (Ordinary),2026-10-16 12:00:00,US0378331005,2,3,EUR,5,EUR,dividend-tax,0,1,1,USD,\
+\nInterest on cash,2026-10-17 12:00:00,,,,,1.20,EUR,interest-tax,0,1,0.24,EUR,\n");
+    let applied=f.apply(&authority,&manual).await;
+    assert_eq!((applied.inserted_count,applied.matched_count,applied.review_count),(0,2,0));
+    assert_eq!((f.count("dividend").await,f.count("interest").await),(1,1));
+    let dividend=f.db.query_one("SELECT amount,withholding_tax,withholding_tax_currency FROM dividend WHERE user_id=$1",&[&f.owner.as_str()]).await.unwrap();
+    assert_eq!(dividend.get::<_,rust_decimal::Decimal>(0),dec!(6));
+    assert_eq!(dividend.get::<_,rust_decimal::Decimal>(1),dec!(1));
+    assert_eq!(dividend.get::<_,String>(2),"USD");
+    assert_eq!(f.db.query_one("SELECT withholding_tax FROM interest WHERE user_id=$1",&[&f.owner.as_str()]).await.unwrap().get::<_,rust_decimal::Decimal>(0),dec!(0.24));
+    assert_eq!(f.db.query_one("SELECT count(*) FROM t212_activity_event WHERE user_id=$1 AND withholding_tax_reported",&[&f.owner.as_str()]).await.unwrap().get::<_,i64>(0),2);
+    let after:Vec<(String,String,Option<chrono::DateTime<Utc>>)>=f.db.query(
+        "SELECT id,created_via,imported_at FROM t212_activity_event WHERE user_id=$1 ORDER BY id",
+        &[&f.owner.as_str()]).await.unwrap().iter().map(|r|(r.get(0),r.get(1),r.get(2))).collect();
+    assert_eq!(before,after);
+    let api=f.api().await;assert_eq!(f.apply(&history,&api).await.matched_count,2);
+    let conflict=f.apply(&csv("Interest on cash,2026-10-17 12:00:00,,,,,1.20,EUR,interest-tax,0,1,0.48,EUR,\n"),&manual).await;
+    assert_eq!((conflict.inserted_count,conflict.review_count),(0,1));
+    assert_eq!(f.db.query_one("SELECT withholding_tax FROM interest WHERE user_id=$1",&[&f.owner.as_str()]).await.unwrap().get::<_,rust_decimal::Decimal>(0),dec!(0.24));
+    f.cleanup().await;
+
+    let mut f=IngestionFixture::new().await;let manual=f.manual();
+    assert_eq!(f.apply(&csv("Interest on cash,2026-10-17 12:00:00,,,,,1.20,EUR,known-zero,0,1,0,EUR,\n"),&manual).await.inserted_count,1);
+    let tax=f.apply(&csv("Interest on cash,2026-10-17 12:00:00,,,,,1.20,EUR,known-zero,0,1,0.24,EUR,\n"),&manual).await;
+    assert_eq!((tax.inserted_count,tax.review_count),(0,1));
+    let events=crate::services::events::get_events(&f.owner,"2026-10-01T00:00:00Z".parse().unwrap(),"2026-11-01T00:00:00Z".parse().unwrap()).await.unwrap();
+    assert_eq!(events[0].withholding_tax_percent,Some(dec!(0)));
+    f.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore="Requires isolated PostgreSQL 17 TEST_POSTGRES_URL"]
+async fn trading212_sync_review_keeps_unknown_tax_and_timestamp_aliases_replay() {
+    let mut f=IngestionFixture::new().await;let api=f.api().await;
+    let history=with_column(&csv("Interest on cash,2026-10-17 12:00:00,,,,,1.20,EUR,corrected-income,0,1,,,\n"),"Withholding tax reported","false");
+    assert_eq!(f.apply(&history,&api).await.inserted_count,1);
+    let manual=f.manual();
+    let correction=f.apply(&csv("Interest on cash,2026-10-18 12:00:00,,,,,2.20,EUR,corrected-income,0,1,0.44,EUR,\n"),&manual).await;
+    assert_eq!(correction.review_count,1);
+    let page=crate::services::trading::sync::reviews::list(&f.owner,&correction.batch_id,None,50).await.unwrap();
+    let row=&page.items[0];assert_eq!(row.candidates.len(),1);assert!(row.candidates[0].values_differ);
+    let decision=serde_json::from_value(json!({"action":"match_existing","batch_id":row.batch_id,"row_number":row.row_number,"version":row.version,"account_id":f.account,"kind":row.kind,"ledger_id":row.candidates[0].ledger_id,"accept_recorded_values":true})).unwrap();
+    crate::services::trading::sync::reviews::resolve(&f.owner,vec![decision]).await.unwrap();
+    let retained=f.db.query_one("SELECT i.amount,i.withholding_tax,e.withholding_tax_reported FROM interest i JOIN t212_activity_event e ON e.user_id=i.user_id AND e.interest_id=i.id WHERE i.user_id=$1",&[&f.owner.as_str()]).await.unwrap();
+    assert_eq!(retained.get::<_,rust_decimal::Decimal>(0),dec!(1.2));assert_eq!(retained.get::<_,rust_decimal::Decimal>(1),dec!(0));assert!(!retained.get::<_,bool>(2));
+    // Neither the retained timestamp nor the original source ID can discover
+    // this row; the accepted correction fingerprint must find its ledger event.
+    let replay=f.apply(&csv("Interest on cash,2026-10-18 12:00:00,,,,,2.20,EUR,,0,1,0.44,EUR,\n"),&manual).await;
+    assert_eq!((replay.inserted_count,replay.matched_count,replay.review_count),(0,1,0));
+    let changed_id=f.apply(&csv("Interest on cash,2026-10-18 12:00:00,,,,,2.20,EUR,new-source-id,0,1,0.44,EUR,\n"),&manual).await;
+    assert_eq!((changed_id.inserted_count,changed_id.review_count),(0,1));
+    let page=crate::services::trading::sync::reviews::list(&f.owner,&changed_id.batch_id,None,50).await.unwrap();assert_eq!(page.items[0].candidates.len(),1);
+    assert_eq!(f.count("interest").await,1);
+    f.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore="Requires isolated PostgreSQL 17 TEST_POSTGRES_URL"]
+async fn trading212_sync_shared_id_extension_requires_each_identical_occurrence() {
+    let mut f=IngestionFixture::new().await;
+    let execution="Market buy,2026-10-15 12:00:00,US0378331005,1,10,EUR,10,EUR,shared-identical,0,1,0,EUR,\n";
+    let changed="Market buy,2026-10-15 12:00:00,US0378331005,2,11,EUR,22,EUR,shared-identical,0,1,0,EUR,\n";
+    let api=f.api().await;assert_eq!(f.apply(&csv(&format!("{execution}{execution}")),&api).await.inserted_count,2);
+    let api=f.api().await;let correction=f.apply(&csv(&format!("{execution}{changed}")),&api).await;
+    assert_eq!((correction.inserted_count,correction.matched_count,correction.review_count),(0,1,1));
+    assert_eq!(f.count("trade").await,2);
+    // A corrected report is paused for review. Cancel that run before a fresh
+    // report establishes all prior occurrences plus the additional execution.
+    f.db.execute("UPDATE t212_sync_run SET status='cancelled',finished_at=clock_timestamp() WHERE user_id=$1 AND id=$2",
+        &[&f.owner.as_str(),&api.sync_run_id]).await.unwrap();
+    let api=f.api().await;let extension=f.apply(&csv(&format!("{execution}{execution}{changed}")),&api).await;
+    assert_eq!((extension.inserted_count,extension.matched_count,extension.review_count),(1,2,0));
+    assert_eq!(f.count("trade").await,3);
+    f.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore="Requires isolated PostgreSQL 17 TEST_POSTGRES_URL"]
+async fn trading212_sync_mixed_currency_execution_fees_match_normalized_statement_fees() {
+    let mut f=IngestionFixture::new().await;
+    let execution=csv("Market buy,2026-10-15 12:00:00,US0378331005,1,10,EUR,10,EUR,fee-components,0,1,0,EUR,\n");
+    let components=with_column(&execution,"Execution fees",r#"[{"amount":"0.6","currency":"USD","name":"STAMP_DUTY"},{"amount":"0.2","currency":"EUR","name":"FINRA_FEE"}]"#);
+    let api=f.api().await;assert_eq!(f.apply(&components,&api).await.inserted_count,1);
+    let retained=f.db.query_one("SELECT fees,withholding_tax FROM trade WHERE user_id=$1",&[&f.owner.as_str()]).await.unwrap();
+    assert_eq!(retained.get::<_,rust_decimal::Decimal>(0),dec!(0.7));assert_eq!(retained.get::<_,rust_decimal::Decimal>(1),dec!(0));
+    let manual=f.manual();
+    let scalar=f.apply(&csv("Market buy,2026-10-15 12:00:00,US0378331005,1,10,EUR,10,EUR,fee-components,0.7,1,0,EUR,\n"),&manual).await;
+    assert_eq!((scalar.inserted_count,scalar.matched_count,scalar.review_count),(0,1,0));
+    let changed=f.apply(&csv("Market buy,2026-10-15 12:00:00,US0378331005,1,10,EUR,10,EUR,fee-components,0.8,1,0,EUR,\n"),&manual).await;
+    assert_eq!((changed.inserted_count,changed.review_count),(0,1));
+    assert_eq!(f.count("trade").await,1);
+    f.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore="Requires isolated PostgreSQL 17 TEST_POSTGRES_URL"]
+async fn trading212_sync_legacy_history_interest_recovers_only_exact_page_digest() {
+    let mut f=IngestionFixture::new().await;let api=f.api().await;
+    let old_header="Action,Time,ISIN,No. of shares,Price / share,Currency (Price / share),Total,Currency (Total),ID,Currency conversion fee,Exchange rate,Withholding tax,Currency (Withholding tax)\n";
+    let old=format!("{old_header}Interest on cash,2026-10-17T12:00:00Z,,0,0,,1.2,EUR,legacy-history,0,1,,\n");
+    assert_eq!(f.apply(old.as_bytes(),&api).await.inserted_count,1);
+    let manual=f.manual();
+    let authority=f.apply(&csv("Interest on cash,2026-10-17 12:00:00,,,,,1.20,EUR,legacy-history,0,1,0.24,EUR,\n"),&manual).await;
+    assert_eq!((authority.inserted_count,authority.matched_count,authority.review_count),(0,1,0));
+    assert_eq!(f.db.query_one("SELECT withholding_tax FROM interest WHERE user_id=$1",&[&f.owner.as_str()]).await.unwrap().get::<_,rust_decimal::Decimal>(0),dec!(0.24));
+    assert_eq!(f.count("interest").await,1);
+    let api=f.api().await;assert_eq!(f.apply(old.as_bytes(),&api).await.matched_count,1);
+    // Replaying the old bytes must not turn their blank withholding into a
+    // reported-zero alias that could bypass protection on a different file.
+    let zero=f.apply(&csv("Interest on cash,2026-10-17 12:00:00,,,,,1.20,EUR,legacy-history,0,1,0,EUR,\n"),&manual).await;
+    assert_eq!((zero.inserted_count,zero.review_count),(0,1));
+    f.cleanup().await;
+}

@@ -84,18 +84,19 @@ export function Trading212SyncSummary() {
   return (
     <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3">
       <div className="min-w-0 space-y-1">
-        <p className="text-sm font-medium">Trading 212 live history</p>
+        <p className="text-sm font-medium">{account ? `Trading 212 ${account.environment === 'demo' ? 'demo' : 'live'} history` : 'Trading 212 history'}</p>
         <p className="text-xs text-muted-foreground">
-          {!online ? 'Offline — live sync status is not current.'
+          {!online ? 'Offline — sync status is not current.'
             : error ? 'Sync status could not be refreshed.'
             : !data ? 'Loading sync status…'
             : !account ? 'No verified Trading 212 account is connected.'
+            : !data.available ? data.unavailable_reason || 'Trading 212 sync is unavailable.'
             : account.schedule_enabled ? `Daily sync ${account.next_run_at && new Date(account.next_run_at) <= new Date() ? 'due now' : `next ${when(account.next_run_at)}`}` : 'Daily sync paused'}
           {review > 0 ? ` · ${review} match${review === 1 ? '' : 'es'} to review` : ''}
           {financialRefreshError && <span role="alert"> · {financialRefreshError}</span>}
         </p>
       </div>
-      <Button asChild variant="outline" size="sm"><Link href={setupHref}>Manage live sync</Link></Button>
+      <Button asChild variant="outline" size="sm"><Link href={setupHref}>Manage sync</Link></Button>
     </div>
   );
 }

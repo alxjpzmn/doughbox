@@ -131,6 +131,8 @@ struct Columns {
     exchange_rate: usize,
     withholding: Option<usize>,
     withholding_currency: Option<usize>,
+    withholding_reported: Option<usize>,
+    execution_fees: Option<usize>,
     notes: Option<usize>,
     from_amount: Option<usize>,
     to_amount: Option<usize>,
@@ -160,6 +162,8 @@ impl Columns {
             exchange_rate: required("Exchange rate")?,
             withholding: optional("Withholding tax"),
             withholding_currency: optional("Currency (Withholding tax)"),
+            withholding_reported: optional("Withholding tax reported"),
+            execution_fees: optional("Execution fees"),
             notes: optional("Notes"),
             from_amount: optional("Currency conversion from amount"),
             to_amount: optional("Currency conversion to amount"),
@@ -205,7 +209,17 @@ struct Evidence {
     fees: Decimal,
     fees_currency: String,
     withholding: Decimal,
+    withholding_reported: bool,
+    execution_fees: Vec<ExecutionFee>,
     withholding_currency: String,
+}
+
+#[derive(Deserialize, Serialize)]
+struct ExecutionFee {
+    #[serde(with = "rust_decimal::serde::str")]
+    amount: Decimal,
+    currency: String,
+    name: String,
 }
 
 enum NativeFinancial {
@@ -265,10 +279,17 @@ fn parse_supported_row(record: &StringRecord, columns: &Columns, row_number: i32
     let original_timestamp = required_text(record, columns.timestamp, "timestamp")?.to_owned();
     let date = truncate_timestamp(parse_timestamp(&original_timestamp)?);
     let mut payload = json!({"version": 1, "kind": kind, "timestamp": canonical_timestamp(date)});
+    let withholding_reported = optional_field(record, columns.withholding_reported)
+        .map(str::parse::<bool>).transpose().context("Invalid withholding reporting status")?.unwrap_or(true);
+    let execution_fees: Vec<ExecutionFee> = optional_field(record, columns.execution_fees)
+        .map(serde_json::from_str).transpose().context("Invalid execution fees")?.unwrap_or_default();
+    for fee in &execution_fees { valid_currency(&fee.currency)?; }
     let mut evidence = Evidence {
         fees: optional_decimal(record, Some(columns.fees)),
         fees_currency: String::new(),
         withholding: optional_decimal(record, columns.withholding),
+        withholding_reported,
+        execution_fees,
         withholding_currency: String::new(),
     };
     let native = match kind {
@@ -364,10 +385,19 @@ fn parse_supported_row(record: &StringRecord, columns: &Columns, row_number: i32
     if kind == "trade" || kind == "fx" {
         payload["fees"] = json!(canonical_decimal(evidence.fees));
         payload["fees_currency"] = json!(evidence.fees_currency);
+        if !evidence.execution_fees.is_empty() {
+            payload["execution_fees"] = serde_json::to_value(&evidence.execution_fees)?;
+        }
     }
     if kind != "fx" {
         payload["withholding_tax"] = json!(canonical_decimal(evidence.withholding));
         payload["withholding_tax_currency"] = json!(evidence.withholding_currency);
+        if !evidence.withholding_reported {
+            if evidence.withholding != Decimal::ZERO {
+                bail!("Unreported withholding cannot include a reported tax amount");
+            }
+            payload["withholding_tax_reported"] = json!(false);
+        }
     }
     let fingerprint = fingerprint_native(&payload)?;
     let raw_id = record.get(columns.id).filter(|id| !id.trim().is_empty()).map(str::to_owned);
@@ -387,7 +417,11 @@ impl PendingRow {
                 let eur_avg_price_per_unit = convert_amount(
                     unit_price / exchange_rate, &date.date_naive(), &total_currency, "EUR",
                 ).await?;
-                let fees = convert_amount(evidence.fees, &date.date_naive(), &evidence.fees_currency, "EUR").await?;
+                let mut fees = convert_amount(evidence.fees, &date.date_naive(), &evidence.fees_currency, "EUR").await?;
+                for fee in &evidence.execution_fees {
+                    let amount = convert_amount(fee.amount, &date.date_naive(), &fee.currency, "EUR").await?;
+                    fees = fees.checked_add(amount).ok_or_else(|| anyhow!("Execution fees exceed decimal precision"))?;
+                }
                 T212Financial::Trade(Trade {
                     broker, date, units, avg_price_per_unit: unit_price, eur_avg_price_per_unit,
                     security_type: "Equity".to_owned(), direction, currency, isin,

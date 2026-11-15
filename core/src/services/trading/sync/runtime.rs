@@ -99,7 +99,14 @@ async fn perform_step(user_id:&UserId,db:&mut Client,step:&mut store::Step,broke
     }
     if step.run.phase=="request_report" {
         if step.requested_at.is_some() {
-            let Some(reports)=read_reports(user_id,db,step,broker,stop,lost).await? else{return Ok(())};
+            let reports=match read_reports(user_id,db,step,broker,stop,lost).await {
+                Ok(Some(reports))=>reports,
+                Ok(None)=>return Ok(()),
+                Err(error) if error.downcast_ref::<HistoryHttpError>().is_some_and(HistoryHttpError::allows_history_list_fallback)=>{
+                    return store::switch_to_history(user_id,db,step).await;
+                }
+                Err(error)=>return Err(error),
+            };
             let matching:Vec<_>=reports.iter().filter(|r|r.matches(from,to)).collect();
             if matching.len()==1 {
                 publish_report(user_id,db,step,&matching[0].report_id).await?;return Ok(());
@@ -174,9 +181,9 @@ async fn history_lists(user_id:&UserId,db:&mut Client,step:&mut store::Step,brok
     let path=step.run.report_id.as_deref().filter(|id| id.starts_with("/equity/history/")).map(str::to_owned).unwrap_or_else(|| format!("/equity/history/{feed}?limit=50"));
     let page=cancelable(broker.history_activity_page(&path),stop,lost).await?;
     let instruments=db.query_one("SELECT instruments FROM trading_connection WHERE user_id=$1 AND generation=$2",&[&user_id.as_str(),&step.generation]).await?.get::<_, serde_json::Value>(0);
-    let csv=activity::history_csv(feed,&page.items,from,to,&instruments);
+    let csv=activity::history_csv(feed,&page.items,from,to,&instruments)?;
     if csv.lines().nth(1).is_some() {
-        let prepared=prepare_trading212_csv(user_id,&csv.into_bytes()).await?;
+        let prepared=prepare_owned(user_id.clone(),csv.into_bytes(),stop.clone(),lost.clone()).await?;
         if *stop.borrow() || *lost.borrow(){anyhow::bail!("Sync stopped before financial application");}
         apply_trading212_batch(user_id,db,prepared,&T212ImportContext{source:T212ImportSource::Trading212Api,account_id:Some(step.run.account_id.clone()),sync_run_id:Some(step.run.id.clone()),statement_job_id:None}).await?;
     }
