@@ -7,6 +7,8 @@ pub mod provider;
 pub mod pies;
 pub mod account;
 mod store;
+pub mod sync;
+pub mod rate_limits;
 
 use anyhow::{ensure, Context};
 use chrono::{DateTime, Utc};
@@ -23,6 +25,18 @@ use crate::{
     services::auth::AuthError,
 };
 use provider::{BrokerClient, Credentials, Instrument, SubmitError};
+use rate_limits::{AdmissionMode, BrokerAccess, BrokerRequestContext};
+
+async fn broker_client(
+    environment: &str,
+    credentials: Credentials,
+    account: &Value,
+    mode: AdmissionMode,
+    access: BrokerAccess,
+) -> anyhow::Result<BrokerClient> {
+    let scope = rate_limits::connection_scope(environment, account, &credentials).await?;
+    BrokerClient::new(environment, credentials, BrokerRequestContext { scope, mode, access })
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, ToSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -145,12 +159,12 @@ pub fn check_setup() -> anyhow::Result<()> {
 
 pub async fn state(user_id: &UserId) -> anyhow::Result<TradingState> {
     store::recover_interrupted(user_id).await?;
-    let client = db_client().await?;
+    let mut client = db_client().await?;
     let row = client.query_one("SELECT * FROM trading_connection WHERE user_id=$1", &[&user_id.as_str()]).await?;
     let rows = client.query("SELECT * FROM trading_proposals WHERE user_id=$1 AND (status IN ('pending', 'executing') OR id IN (SELECT id FROM trading_proposals WHERE user_id=$1 AND status IN ('completed', 'discarded') ORDER BY created_at DESC LIMIT 50)) ORDER BY created_at DESC", &[&user_id.as_str()]).await?;
     let mut proposals = rows.iter().map(Proposal::from_row).collect::<anyhow::Result<Vec<_>>>()?;
     if let (Some(environment), Some(credentials)) = (row.get::<_, Option<String>>("environment"), row.get::<_, Option<String>>("credentials")) {
-        if let Err(error) = reconcile_orders(user_id, &client, &environment, &credentials, &mut proposals).await {
+        if let Err(error) = reconcile_orders(user_id, &mut client, &environment, &credentials, &row.get::<_, String>("generation"), &row.get::<_, Option<Value>>("account").context("Saved broker account is missing; reconnect Trading 212.")?, &mut proposals).await {
             tracing::warn!(%error, "Trading 212 order status poll failed");
         }
     }
@@ -170,12 +184,12 @@ fn tracked(status: &str) -> bool {
     matches!(status, "submitted" | "open" | "partial")
 }
 
-async fn reconcile_orders(user_id: &UserId, client: &tokio_postgres::Client, environment: &str, credentials: &str, proposals: &mut [Proposal]) -> anyhow::Result<()> {
+async fn reconcile_orders(user_id: &UserId, client: &mut tokio_postgres::Client, environment: &str, credentials: &str, generation: &str, account: &Value, proposals: &mut [Proposal]) -> anyhow::Result<()> {
     let watching = proposals.iter().any(|proposal| proposal.status != "executing" && matches!(&proposal.content, ProposalContent::Trades { trades } if trades.iter().any(|trade| tracked(&trade.status) && trade.broker_order_id.is_some())));
-    if !watching || !store::claim_poll(user_id, client, "last_pending_poll_at", "6 seconds").await? {
+    if !watching {
         return Ok(());
     }
-    let broker = BrokerClient::new(environment, provider::decrypt_credentials(credentials)?)?;
+    let broker = broker_client(environment, provider::decrypt_credentials(credentials)?, account, AdmissionMode::Try, BrokerAccess::Owner { user_id: user_id.clone(), generation: generation.to_owned() }).await?;
     let pending = broker.pending_order_statuses().await?;
     let pending_ids: std::collections::HashSet<_> = pending.iter().map(|(id, _)| id.clone()).collect();
     let pending_status: std::collections::HashMap<_, _> = pending.into_iter().collect();
@@ -193,9 +207,9 @@ async fn reconcile_orders(user_id: &UserId, client: &tokio_postgres::Client, env
                 missing = true;
             }
         }
-        if !updates.is_empty() { *proposal = store::reconcile_order_statuses(user_id, client, &proposal.id, &updates).await?; }
+        if !updates.is_empty() { *proposal = reconcile_current_statuses(user_id, client, generation, &proposal.id, &updates).await?; }
     }
-    if !missing || !store::claim_poll(user_id, client, "last_history_poll_at", "6 seconds").await? {
+    if !missing {
         return Ok(());
     }
     let history: std::collections::HashMap<_, _> = broker.historical_order_statuses().await?.into_iter().collect();
@@ -210,9 +224,24 @@ async fn reconcile_orders(user_id: &UserId, client: &tokio_postgres::Client, env
                 if trade.status != *status { updates.insert(id.clone(), status.clone()); }
             }
         }
-        if !updates.is_empty() { *proposal = store::reconcile_order_statuses(user_id, client, &proposal.id, &updates).await?; }
+        if !updates.is_empty() { *proposal = reconcile_current_statuses(user_id, client, generation, &proposal.id, &updates).await?; }
     }
     Ok(())
+}
+
+async fn reconcile_current_statuses(
+    user_id: &UserId,
+    client: &mut tokio_postgres::Client,
+    generation: &str,
+    id: &str,
+    updates: &std::collections::HashMap<String, String>,
+) -> anyhow::Result<Proposal> {
+    let tx = client.transaction().await?;
+    let connection = store::browser_connection(user_id, &tx).await?;
+    ensure!(connection.get::<_, &str>("generation") == generation, "Trading connection changed during order status reconciliation.");
+    let proposal = store::reconcile_order_statuses(user_id, &tx, id, updates).await?;
+    tx.commit().await?;
+    Ok(proposal)
 }
 
 pub async fn connect(user_id: &UserId, input: ConnectInput) -> anyhow::Result<TradingState> {
@@ -234,8 +263,22 @@ pub async fn connect(user_id: &UserId, input: ConnectInput) -> anyhow::Result<Tr
         api_secret: input.api_secret,
     };
     let encrypted = provider::encrypt_credentials(&credentials)?;
-    let broker = BrokerClient::new(&input.environment, credentials)?;
+    let expected_generation = {
+        let mut client = db_client().await?;
+        let tx = client.transaction().await?;
+        crate::database::queries::trading212_import::lock_owner(user_id, &tx).await?;
+        let row = tx.query_one("SELECT generation FROM trading_connection WHERE user_id=$1 FOR UPDATE", &[&user_id.as_str()]).await?;
+        let generation: String = row.get("generation");
+        tx.commit().await?;
+        generation
+    };
+    let scope = rate_limits::setup_scope(&input.environment, &credentials).await?;
+    let mut broker = BrokerClient::new(&input.environment, credentials, BrokerRequestContext {
+        scope, mode: AdmissionMode::Try,
+        access: BrokerAccess::ConnectionSetup { user_id: user_id.clone(), expected_generation: expected_generation.clone() },
+    })?;
     let account = broker.account().await?;
+    broker.identify_account(account.get("id").and_then(Value::as_str).filter(|id| !id.trim().is_empty()).context("Trading 212 returned no account identifier.")?).await?;
     let instruments = broker.instruments().await?;
     ensure!(
         !instruments.is_empty(),
@@ -246,12 +289,12 @@ pub async fn connect(user_id: &UserId, input: ConnectInput) -> anyhow::Result<Tr
         &encrypted,
         &account,
         &serde_json::to_value(instruments)?,
-    )))
+    )), Some(&expected_generation))
     .await?;
     state(user_id).await
 }
 pub async fn disconnect(user_id: &UserId) -> anyhow::Result<TradingState> {
-    store::replace_connection(user_id, None).await?;
+    store::replace_connection(user_id, None, None).await?;
     state(user_id).await
 }
 
@@ -447,6 +490,7 @@ async fn execute_locked(user_id: &UserId, client: &mut tokio_postgres::Client, i
     );
     store::recover_on(user_id, &client).await?;
     let tx = client.transaction().await?;
+    crate::database::queries::trading212_import::lock_owner(user_id, &tx).await?;
     let connection = tx
         .query_one(
             "SELECT * FROM trading_connection WHERE user_id=$1 FOR UPDATE",
@@ -481,7 +525,7 @@ async fn execute_locked(user_id: &UserId, client: &mut tokio_postgres::Client, i
     let encrypted: Option<String> = connection.get("credentials");
     let credentials =
         provider::decrypt_credentials(&encrypted.context("Connect Trading 212 first.")?)?;
-    let broker = BrokerClient::new(&proposal.environment, credentials)?;
+    let broker = broker_client(&proposal.environment, credentials, &connection.get::<_, Option<Value>>("account").context("Saved broker account is missing; reconnect Trading 212.")?, AdmissionMode::Wait, BrokerAccess::Approved { user_id: user_id.clone(), generation: generation.clone() }).await?;
     tx.execute(
         "UPDATE trading_proposals SET status='executing' WHERE user_id=$1 AND id=$2",
         &[&user_id.as_str(), &id],
@@ -505,7 +549,6 @@ async fn execute_locked(user_id: &UserId, client: &mut tokio_postgres::Client, i
                 store::save_trades(user_id, client, id, trades).await?;
             } else {
                 for index in 0..trades.len() {
-        store::pace_submission(user_id, &client).await?;
         trades[index].status = "submitting".into();
         store::save_trades(user_id, &client, id, trades).await?;
         let trade = &trades[index].trade;
@@ -518,7 +561,6 @@ async fn execute_locked(user_id: &UserId, client: &mut tokio_postgres::Client, i
                 &trade.time_validity,
             )
             .await;
-        store::mark_submission(user_id, &client).await?;
         let stop = match outcome {
             Ok(broker_id) => {
                 trades[index].status = "submitted".into();
@@ -528,6 +570,7 @@ async fn execute_locked(user_id: &UserId, client: &mut tokio_postgres::Client, i
             Err(error) => {
                 let (status, message) = match error {
                     SubmitError::Rejected(message) => ("failed", message),
+                    SubmitError::NotSent(error) => ("failed", error.to_string()),
                     SubmitError::Unknown(message) => ("unknown", message),
                 };
                 trades[index].status = status.into();
@@ -565,6 +608,7 @@ mod tests {
     use super::*;
     mod reconciliation;
     mod pies;
+    mod sync;
     #[test]
     fn approved_amounts_cannot_round_or_change_sign() {
         for invalid in [

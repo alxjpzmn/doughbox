@@ -4,6 +4,7 @@ use crate::services::{
     market_data::prices::{config::PriceConfig, shutdown_signal, PriceRuntime},
     statement_imports::StatementImportRuntime,
     telegram_reports::TelegramReportRuntime,
+    trading::sync::T212SyncRuntime,
 };
 use routes::create_router;
 use std::net::SocketAddr;
@@ -26,10 +27,12 @@ pub async fn api(auth: std::sync::Arc<crate::services::auth::AuthService>) -> an
     let calculation_runtime = CalculationRuntime::start();
     let statement_runtime = StatementImportRuntime::start();
     let telegram_runtime = TelegramReportRuntime::start();
+    let t212_sync_runtime = T212SyncRuntime::start();
     let result = axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>())
         .with_graceful_shutdown(shutdown_signal())
         .await;
     auth_maintenance.shutdown().await;
+    t212_sync_runtime.shutdown().await;
     statement_runtime.shutdown().await;
     telegram_runtime.shutdown().await;
     import_runtime.shutdown().await;

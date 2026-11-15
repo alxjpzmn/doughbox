@@ -164,8 +164,10 @@ async fn query_selected_rows(
     let sql = match source {
         0 => "SELECT i.date, i.amount, i.currency, i.principal, i.withholding_tax, \
               i.withholding_tax_currency, i.amount_eur, i.broker, i.asset_id, \
-              i.tax_treatment, a.name, a.unit_label, i.id, i.id AS page_source_id \
+              i.tax_treatment, a.name, a.unit_label, i.id, i.id AS page_source_id, \
+              provenance.created_via AS import_source, provenance.imported_at, provenance.withholding_tax_reported \
               FROM interest i LEFT JOIN asset a ON a.user_id = i.user_id AND a.id = i.asset_id \
+              LEFT JOIN t212_activity_event provenance ON provenance.user_id = i.user_id AND provenance.interest_id = i.id \
               WHERE i.user_id = $1 AND i.id = ANY($2)",
         1 => {
             // Reports have numeric upstream IDs. Keep their indexed comparison
@@ -178,14 +180,21 @@ async fn query_selected_rows(
                 &[&report_ids],
             ).await?);
         }
-        2 => "SELECT date, amount, currency, isin, withholding_tax, withholding_tax_currency, \
-              amount_eur, broker, id, id AS page_source_id FROM dividend \
-              WHERE user_id = $1 AND id = ANY($2)",
-        3 => "SELECT date, units, avg_price_per_unit, currency, isin, direction, withholding_tax, \
-              withholding_tax_currency, eur_avg_price_per_unit, broker, hash, hash AS page_source_id \
-              FROM trade WHERE user_id = $1 AND hash = ANY($2)",
-        4 => "SELECT date, from_amount, to_amount, from_currency, to_currency, broker, id, \
-              id AS page_source_id FROM fx_conversion WHERE user_id = $1 AND id = ANY($2)",
+        2 => "SELECT d.date, d.amount, d.currency, d.isin, d.withholding_tax, d.withholding_tax_currency, \
+              d.amount_eur, d.broker, d.id, d.id AS page_source_id, \
+              provenance.created_via AS import_source, provenance.imported_at, provenance.withholding_tax_reported FROM dividend d \
+              LEFT JOIN t212_activity_event provenance ON provenance.user_id = d.user_id AND provenance.dividend_id = d.id \
+              WHERE d.user_id = $1 AND d.id = ANY($2)",
+        3 => "SELECT t.date, t.units, t.avg_price_per_unit, t.currency, t.isin, t.direction, t.withholding_tax, \
+              t.withholding_tax_currency, t.eur_avg_price_per_unit, t.broker, t.hash, t.hash AS page_source_id, \
+              provenance.created_via AS import_source, provenance.imported_at FROM trade t \
+              LEFT JOIN t212_activity_event provenance ON provenance.user_id = t.user_id AND provenance.trade_hash = t.hash \
+              WHERE t.user_id = $1 AND t.hash = ANY($2)",
+        4 => "SELECT f.date, f.from_amount, f.to_amount, f.from_currency, f.to_currency, f.broker, f.id, \
+              f.id AS page_source_id, provenance.created_via AS import_source, provenance.imported_at \
+              FROM fx_conversion f LEFT JOIN t212_activity_event provenance \
+                ON provenance.user_id = f.user_id AND provenance.fx_conversion_id = f.id \
+              WHERE f.user_id = $1 AND f.id = ANY($2)",
         5 => "SELECT t.id AS event_id, t.date, t.units, t.price_per_unit, t.eur_price_per_unit, \
               t.currency, t.direction, t.broker, a.id AS asset_id, a.name, a.unit_label, \
               t.id AS page_source_id FROM asset_trade t \

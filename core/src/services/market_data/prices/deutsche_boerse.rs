@@ -14,11 +14,13 @@ use reqwest::{
 use rust_decimal::Decimal;
 use serde::Deserialize;
 
+use crate::services::shared::http::limited_body;
+
 #[cfg(test)]
 use super::http::http_client;
 use super::{
     config::Feed,
-    http::{check_status, limited_body, RateLimited, RequestLimiter},
+    http::{check_status, RateLimited, RequestLimiter},
     types::{Download, PriceReport, SourceFile},
 };
 

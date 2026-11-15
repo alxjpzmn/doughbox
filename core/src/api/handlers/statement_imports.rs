@@ -28,6 +28,8 @@ pub struct StatementUploadRequest {
     /// multipart request, including boundaries and headers, is limited to 100 MiB.
     #[schema(value_type = Vec<String>, format = Binary)]
     files: Vec<Vec<u8>>,
+    /// Optional owned Trading 212 account, applied only to detected Trading 212 CSVs.
+    trading212_account_id: Option<String>,
 }
 
 fn invalid_upload(message: &str) -> ErrorResponse {
@@ -62,7 +64,7 @@ fn filename(value: Option<&str>) -> Result<String, ErrorResponse> {
     Ok(name.to_owned())
 }
 
-async fn read_upload(payload: Result<Multipart, MultipartRejection>) -> Result<Vec<StatementImportFile>, ErrorResponse> {
+async fn read_upload(payload: Result<Multipart, MultipartRejection>) -> Result<(Vec<StatementImportFile>, Option<String>), ErrorResponse> {
     let mut multipart = payload.map_err(|rejection| {
         ErrorResponse::new(
             rejection.status(), "InvalidStatementUpload",
@@ -70,9 +72,29 @@ async fn read_upload(payload: Result<Multipart, MultipartRejection>) -> Result<V
         )
     })?;
     let mut files = Vec::new();
+    let mut trading212_account_id = None;
     while let Some(mut field) = multipart.next_field().await.map_err(multipart_error)? {
-        if field.name() != Some("files") {
-            return Err(invalid_upload("Every multipart field must be named files"));
+        match field.name() {
+            Some("trading212_account_id") => {
+                if trading212_account_id.is_some() || field.file_name().is_some() {
+                    return Err(invalid_upload("Send trading212_account_id once as a text field"));
+                }
+                let mut value = Vec::new();
+                while let Some(chunk) = field.chunk().await.map_err(multipart_error)? {
+                    if chunk.len() > 128 - value.len() {
+                        return Err(invalid_upload("trading212_account_id must not exceed 128 bytes"));
+                    }
+                    value.extend_from_slice(&chunk);
+                }
+                let value = String::from_utf8(value).map_err(|_| invalid_upload("trading212_account_id must be UTF-8 text"))?;
+                if value.trim().is_empty() {
+                    return Err(invalid_upload("trading212_account_id must not be blank"));
+                }
+                trading212_account_id = Some(value);
+                continue;
+            }
+            Some("files") => {}
+            _ => return Err(invalid_upload("Only files and trading212_account_id multipart fields are supported")),
         }
         if files.len() == MAX_FILES {
             return Err(invalid_upload("Upload at most 100 files in one request"));
@@ -88,12 +110,24 @@ async fn read_upload(payload: Result<Multipart, MultipartRejection>) -> Result<V
         if contents.is_empty() {
             return Err(invalid_upload("Statement files must not be empty"));
         }
-        files.push(StatementImportFile { filename, contents });
+        files.push(StatementImportFile { filename, contents, trading212_account_id: None });
     }
     if files.is_empty() {
         return Err(invalid_upload("Select at least one PDF or CSV file"));
     }
-    Ok(files)
+    if let Some(account_id) = &trading212_account_id {
+        for file in &mut files {
+            if file.filename.rsplit_once('.').is_some_and(|(_, extension)| extension.eq_ignore_ascii_case("csv")) {
+                let mut reader = csv::ReaderBuilder::new().from_reader(file.contents.as_slice());
+                if let Ok(header) = reader.headers() {
+                    if matches!(crate::services::parsers::detect_broker_from_csv_header(header), Ok(Some(crate::services::parsers::Broker::Trading212))) {
+                        file.trading212_account_id = Some(account_id.clone());
+                    }
+                }
+            }
+        }
+    }
+    Ok((files, trading212_account_id))
 }
 
 #[utoipa::path(
@@ -117,7 +151,7 @@ pub async fn get_statement_imports(
 #[utoipa::path(
     post, path = "/api/statement-imports", tag = "portfolio",
     request_body(content = StatementUploadRequest, content_type = "multipart/form-data",
-        description = "Repeated files fields, 1–100 PDF/CSV files (case-insensitive extensions), up to 25 MiB each and 100 MiB total multipart body. Validation and durable enqueue are all-or-nothing. Imports run one at a time across API replicas. Import failures can leave partially written records; review them before retrying. Ambiguous transactions require the interactive CLI importer."),
+        description = "Repeated files fields, 1–100 PDF/CSV files (case-insensitive extensions), up to 25 MiB each and 100 MiB total multipart body. Optional trading212_account_id selects an owned account for detected Trading 212 CSVs only. Validation and durable enqueue are all-or-nothing. Imports run one at a time across API replicas. Trading 212 overlaps can require durable review; other import failures can leave partially written records."),
     responses(
         (status = 202, description = "Entire batch durably queued; returns the accepted jobs in upload order", body = StatementImportsStatus),
         (status = 400, description = "Missing, empty, unsupported, too many, or malformed multipart files; no files queued", body = ErrorResponse),
@@ -131,10 +165,19 @@ pub async fn upload_statement_imports(
     Extension(current): Extension<CurrentUser>,
     payload: Result<Multipart, MultipartRejection>,
 ) -> Result<impl IntoResponse, ErrorResponse> {
-    let files = read_upload(payload).await?;
+    let (files, selected_account) = read_upload(payload).await?;
+    if let Some(account) = selected_account {
+        let db = crate::database::db_client().await.map_err(|_| internal_error("StatementImportQueueError", "Could not validate statement account"))?;
+        if db.query_opt("SELECT 1 FROM t212_sync_account WHERE user_id=$1 AND id=$2",
+            &[&current.id.as_str(), &account]).await.map_err(|_| internal_error("StatementImportQueueError", "Could not validate statement account"))?.is_none() {
+            return Err(ErrorResponse::new(StatusCode::NOT_FOUND, "Trading212AccountNotFound", "Trading 212 account not found; no files were accepted", None));
+        }
+    }
     let accepted = statement_imports::enqueue(&current.id, &files).await.map_err(|error| {
         if let Some(auth) = error.downcast_ref::<crate::services::auth::AuthError>() {
             ErrorResponse::new(auth.status(), auth.code(), auth.message(), None)
+        } else if error.downcast_ref::<crate::database::queries::statement_import::InvalidTrading212Account>().is_some() {
+            ErrorResponse::new(StatusCode::NOT_FOUND, "Trading212AccountNotFound", "Trading 212 account not found; no files were accepted", None)
         } else {
             internal_error("StatementImportQueueError", "Could not queue statement files; no files were accepted")
         }
@@ -155,7 +198,7 @@ mod tests {
     use tower::ServiceExt;
 
     async fn validate(payload: Result<Multipart, MultipartRejection>) -> Result<Json<Vec<String>>, ErrorResponse> {
-        Ok(Json(read_upload(payload).await?.into_iter().map(|file| file.filename).collect()))
+        Ok(Json(read_upload(payload).await?.0.into_iter().map(|file| file.filename).collect()))
     }
 
     fn part(name: &str, filename: Option<&str>, contents: &str) -> String {
@@ -188,6 +231,9 @@ mod tests {
             format!("{}--upload--\r\n", part("files", Some("report.txt"), "bad")),
             format!("{}--upload--\r\n", part("other", Some("report.csv"), "bad")),
             format!("{}--upload--\r\n", part("files", None, "bad")),
+            format!("{}{}--upload--\r\n", part("trading212_account_id", None, "a"), part("trading212_account_id", None, "b")),
+            format!("{}--upload--\r\n", part("trading212_account_id", None, &"a".repeat(129))),
+            format!("{}--upload--\r\n", part("trading212_account_id", None, "")),
             format!("{}{}--upload--\r\n", part("files", Some("good.csv"), "valid"), part("files", Some("bad.txt"), "bad")),
             format!("{}--upload--\r\n", part("files", Some("report.csv"), "x").repeat(MAX_FILES + 1)),
             "--upload\r\nmalformed".to_owned(),
@@ -212,5 +258,25 @@ mod tests {
         assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
         let body = to_bytes(response.into_body(), 1024).await.unwrap();
         assert_eq!(serde_json::from_slice::<serde_json::Value>(&body).unwrap()["error"], "StatementUploadTooLarge");
+    }
+    #[tokio::test]
+    async fn statement_upload_account_is_applied_only_to_detected_trading212_csvs() {
+        async fn contexts(payload: Result<Multipart, MultipartRejection>) -> Result<Json<Vec<Option<String>>>, ErrorResponse> {
+            Ok(Json(read_upload(payload).await?.0.into_iter().map(|file| file.trading212_account_id).collect()))
+        }
+        for account_first in [true, false] {
+            let account = part("trading212_account_id", None, "owned-account");
+            let files = format!("{}{}{}", part("files", Some("t212.CSV"), "Action,ISIN\n"),
+                part("files", Some("other.csv"), "Date,Reference\n"), part("files", Some("statement.pdf"), "pdf"));
+            let body = if account_first { format!("{account}{files}--upload--\r\n") } else { format!("{files}{account}--upload--\r\n") };
+            let response = Router::new().route("/", post(contexts))
+                .oneshot(Request::builder().method("POST").uri("/")
+                    .header("content-type", "multipart/form-data; boundary=upload")
+                    .body(Body::from(body)).unwrap()).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = to_bytes(response.into_body(), 1024).await.unwrap();
+            assert_eq!(serde_json::from_slice::<Vec<Option<String>>>(&body).unwrap(),
+                vec![Some("owned-account".to_owned()), None, None]);
+        }
     }
 }

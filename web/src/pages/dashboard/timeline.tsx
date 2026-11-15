@@ -25,6 +25,7 @@ import { CalendarIcon } from "@phosphor-icons/react";
 import { BASE_URL, fetcher } from "@/lib/http";
 import InvestmentActivityChart from "@/components/charts/investment-activity-chart";
 import { StatementImportsPanel } from "@/components/composite/statement-imports";
+import { Trading212SyncSummary } from "@/components/composite/trading212-sync";
 
 export const Timeline = () => {
   const [selectedDate, setSelectedDate] = useState<Date>(
@@ -38,6 +39,7 @@ export const Timeline = () => {
 
   return (
     <>
+      <Trading212SyncSummary />
       <StatementImportsPanel />
       <Card className="w-full flex flex-col justify-start mb-6">
         <CardHeader>

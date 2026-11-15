@@ -1,3 +1,5 @@
+use tokio_postgres::GenericClient;
+
 use crate::{
     database::{
         db_client,
@@ -6,13 +8,6 @@ use crate::{
     },
     services::{instruments::identifiers::get_changed_identifier, shared::util::hash_string},
 };
-
-/// Check if a dividend with the given hash already exists in the database
-pub async fn dividend_exists_by_hash(user_id: &crate::database::models::auth::UserId, hash: &str) -> anyhow::Result<bool> { let client = db_client().await?;
-let row = client
-    .query_opt("SELECT 1 FROM dividend WHERE user_id = $1 AND id = $2", &[&user_id.as_str(), &hash])
-    .await?;
-Ok(row.is_some()) }
 
 /// Add dividend to database, returns true if inserted, false if duplicate
 pub async fn add_dividend_to_db(user_id: &crate::database::models::auth::UserId, dividend: Dividend,
@@ -37,19 +32,20 @@ let hash = if let Some(tx_id) = transaction_id {
     )
 };
 
-// Check if already exists
-if dividend_exists_by_hash(user_id, &hash).await? {
-    return Ok(false);
-}
+insert_with_id(user_id, &client, &hash, &dividend).await }
 
-let result = client.execute(
+pub async fn insert_with_id(
+    user_id: &crate::database::models::auth::UserId,
+    db: &(impl GenericClient + Sync),
+    id: &str,
+    dividend: &Dividend,
+) -> anyhow::Result<bool> {
+    let inserted = db.execute(
         "INSERT INTO dividend (user_id, id, isin, date, amount, broker, currency, amount_eur, withholding_tax, withholding_tax_currency) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT(user_id,id) DO NOTHING",
-        &[&user_id.as_str(), &hash, &dividend.isin, &dividend.date, &dividend.amount, &dividend.broker, &dividend.currency, &dividend.amount_eur, &dividend.withholding_tax, &dividend.withholding_tax_currency],
-    )
-.await?;
-
-// Return true if a row was actually inserted
-Ok(result == 1) }
+        &[&user_id.as_str(), &id, &dividend.isin, &dividend.date, &dividend.amount, &dividend.broker, &dividend.currency, &dividend.amount_eur, &dividend.withholding_tax, &dividend.withholding_tax_currency],
+    ).await?;
+    Ok(inserted == 1)
+}
 
 pub async fn get_dividends(user_id: &crate::database::models::auth::UserId, filter: QueryFilter) -> anyhow::Result<Vec<Dividend>> { let client = db_client().await?;
 let listing_changes = get_listing_changes().await?;

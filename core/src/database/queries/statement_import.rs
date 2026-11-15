@@ -17,12 +17,24 @@ const LOCK_NAMESPACE: i32 = 0x44425349;
 const LOCK_KEY: i32 = 1;
 
 pub const INTERRUPTED_ERROR: &str = "Statement import interrupted before completion. Some records may already have been imported; review them before uploading the file again.";
+#[derive(Debug)]
+pub struct InvalidTrading212Account;
+
+impl std::fmt::Display for InvalidTrading212Account {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Unknown Trading 212 account")
+    }
+}
+
+impl std::error::Error for InvalidTrading212Account {}
+
 
 pub(crate) struct ClaimedStatementImport {
     pub user_id: UserId,
     pub id: i64,
     pub filename: String,
     pub contents: Vec<u8>,
+    pub trading212_account_id: Option<String>,
 }
 
 fn job_from_row(row: Row) -> anyhow::Result<StatementImportJob> {
@@ -43,6 +55,11 @@ fn job_from_row(row: Row) -> anyhow::Result<StatementImportJob> {
         started_at: row.get("started_at"),
         finished_at: row.get("finished_at"),
         error: row.get("error"),
+        t212_batch_id: row.get("t212_batch_id"),
+        inserted_count: row.get("inserted_count"),
+        matched_count: row.get("matched_count"),
+        review_count: row.get("review_count"),
+        skipped_count: row.get("skipped_count"),
     })
 }
 
@@ -56,15 +73,27 @@ pub async fn enqueue(
     if !auth::lock_user(user_id, &transaction).await?.fully_enrolled() {
         return Err(AuthError::Unauthenticated.into());
     }
+    for file in files {
+        if let Some(account_id) = &file.trading212_account_id {
+            if transaction.query_opt(
+                "SELECT id FROM t212_sync_account WHERE user_id = $1 AND id = $2 FOR KEY SHARE",
+                &[&user_id.as_str(), account_id],
+            ).await?.is_none() {
+                return Err(InvalidTrading212Account.into());
+            }
+        }
+    }
     let mut jobs = Vec::with_capacity(files.len());
     for file in files {
         let size_bytes = i64::try_from(file.contents.len())?;
         let row = transaction
             .query_one(
-                "INSERT INTO statement_import_job (user_id, filename, size_bytes, contents)
-                 VALUES ($1, $2, $3, $4)
-                 RETURNING id, filename, size_bytes, status, queued_at, started_at, finished_at, error",
-                &[&user_id.as_str(), &file.filename, &size_bytes, &file.contents],
+                "INSERT INTO statement_import_job (user_id, filename, size_bytes, contents, trading212_account_id)
+                 VALUES ($1, $2, $3, $4, $5)
+                 RETURNING id, filename, size_bytes, status, queued_at, started_at, finished_at, error,
+                   NULL::text AS t212_batch_id, NULL::integer AS inserted_count,
+                   NULL::integer AS matched_count, NULL::integer AS review_count, NULL::integer AS skipped_count",
+                &[&user_id.as_str(), &file.filename, &size_bytes, &file.contents, &file.trading212_account_id],
             )
             .await?;
         jobs.push(job_from_row(row)?);
@@ -76,12 +105,16 @@ pub async fn enqueue(
 pub async fn list(user_id: &UserId, db: &Client) -> anyhow::Result<StatementImportsStatus> {
     let rows = db
         .query(
-            "SELECT id, filename, size_bytes, status, queued_at, started_at, finished_at, error
-             FROM statement_import_job
-             WHERE user_id = $1 AND (status IN ('queued', 'running') OR id IN (
+            "SELECT job.id, job.filename, job.size_bytes, job.status, job.queued_at,
+                    job.started_at, job.finished_at, job.error, batch.id AS t212_batch_id,
+                    batch.inserted_count, batch.matched_count, batch.review_count, batch.skipped_count
+             FROM statement_import_job job
+             LEFT JOIN t212_import_batch batch ON batch.user_id = job.user_id
+               AND batch.statement_job_id = job.id::text
+             WHERE job.user_id = $1 AND (job.status IN ('queued', 'running') OR job.id IN (
                  SELECT id FROM statement_import_job WHERE user_id = $1 AND status IN ('succeeded', 'failed')
                  ORDER BY id DESC LIMIT 100
-             )) ORDER BY id DESC",
+             )) ORDER BY job.id DESC",
             &[&user_id.as_str()],
         )
         .await?;
@@ -126,7 +159,7 @@ pub(crate) async fn claim_next_locked(db: &Client) -> anyhow::Result<Option<Clai
              )
              UPDATE statement_import_job SET status = 'running', started_at = clock_timestamp()
              WHERE id = (SELECT id FROM next_job)
-             RETURNING user_id, id, filename, contents",
+             RETURNING user_id, id, filename, contents, trading212_account_id",
             &[],
         )
         .await?;
@@ -135,6 +168,7 @@ pub(crate) async fn claim_next_locked(db: &Client) -> anyhow::Result<Option<Clai
         id: row.get("id"),
         filename: row.get("filename"),
         contents: row.get("contents"),
+        trading212_account_id: row.get("trading212_account_id"),
     }))
 }
 
@@ -188,6 +222,7 @@ mod tests {
         StatementImportFile {
             filename: filename.to_owned(),
             contents: b"date,amount\n".to_vec(),
+            trading212_account_id: None,
         }
     }
 
@@ -228,9 +263,22 @@ mod tests {
             .await
             .unwrap();
         let user_id = active_owner(&mut first, "statement-alice").await;
+        let foreign_owner = active_owner(&mut first, "statement-foreign").await;
+        first.execute(
+            "INSERT INTO t212_sync_account (user_id, id, environment, broker_account_id, currency)
+             VALUES ($1, 'foreign-account', 'live', 'foreign-broker-account', 'EUR')",
+            &[&foreign_owner.as_str()],
+        ).await.unwrap();
+        for account_id in ["missing-account", "foreign-account"] {
+            let mut selected = file("selected.csv");
+            selected.trading212_account_id = Some(account_id.to_owned());
+            let error = enqueue(&user_id, &mut first, &[file("valid.csv"), selected]).await.unwrap_err();
+            assert!(error.downcast_ref::<InvalidTrading212Account>().is_some());
+            assert!(list(&user_id, &second).await.unwrap().jobs.is_empty());
+        }
 
         // A rejected insert rolls back the whole batch, not just its final file.
-        let invalid = StatementImportFile { filename: "empty.csv".to_owned(), contents: vec![] };
+        let invalid = StatementImportFile { filename: "empty.csv".to_owned(), contents: vec![], trading212_account_id: None };
         assert!(enqueue(&user_id, &mut first, &[file("valid.csv"), invalid]).await.is_err());
         assert!(list(&user_id, &second).await.unwrap().jobs.is_empty());
         let accepted = enqueue(&user_id, &mut first, &[file("one.CSV"), file("two.pdf"), file("three.csv")])

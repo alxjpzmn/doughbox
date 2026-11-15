@@ -1,12 +1,16 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import useSWR, { useSWRConfig } from 'swr';
-import { CheckCircleIcon, ClockIcon, SpinnerGapIcon, UploadSimpleIcon, XCircleIcon } from '@phosphor-icons/react';
+import { Link } from 'wouter';
+import { CheckCircleIcon, ClockIcon, SpinnerGapIcon, UploadSimpleIcon, WarningCircleIcon, XCircleIcon } from '@phosphor-icons/react';
 import { BASE_URL, fetcher, getPrivateRequestEpoch, isCurrentPrivateRequestEpoch, type HttpError } from '@/lib/http';
+import { isImportedFinancialCacheKey } from '@/lib/import-cache';
+import { tradingAccountLabel, useTradingSync } from '@/components/composite/trading212-sync';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 interface StatementImportJob {
   id: string;
@@ -17,6 +21,12 @@ interface StatementImportJob {
   started_at: string | null;
   finished_at: string | null;
   error: string | null;
+  t212_batch_id: string | null;
+  inserted_count: number | null;
+  matched_count: number | null;
+  review_count: number | null;
+  skipped_count: number | null;
+
 }
 
 interface StatementImportsResponse {
@@ -26,11 +36,7 @@ interface StatementImportsResponse {
 const importsUrl = `${BASE_URL}/statement-imports`;
 const maxFileBytes = 25 * 1024 * 1024;
 const maxBatchBytes = 100 * 1024 * 1024;
-const affectedEndpoints = [
-  'timeline', 'instruments', 'brokers', 'prices', 'portfolio', 'positions', 'trades',
-  'buy-ins', 'dividends', 'interest', 'fx-conversions', 'performance',
-  'performance_overview', 'past_performance', 'taxation', 'data-imports',
-].map(endpoint => `${BASE_URL}/${endpoint}`);
+
 const errorMessage = (error: unknown) => error && typeof error === 'object' && 'message' in error
   && typeof error.message === 'string' ? error.message : 'A network error occurred. Please try again.';
 const states = {
@@ -45,6 +51,7 @@ export const StatementImportsPanel = () => {
   const { data, error, isLoading, mutate } = useSWR<StatementImportsResponse, HttpError>(importsUrl, fetcher, {
     refreshInterval: current => current?.jobs.some(job => job.status === 'queued' || job.status === 'running') ? 2_000 : 60_000,
   });
+  const sync = useTradingSync();
   const input = useRef<HTMLInputElement>(null);
   const submitting = useRef(false);
   const mounted = useRef(false);
@@ -54,6 +61,7 @@ export const StatementImportsPanel = () => {
   }, []);
   const completions = useRef<Map<string, string | null> | null>(null);
   const [files, setFiles] = useState<File[]>([]);
+  const [accountId, setAccountId] = useState('');
   const [uploading, setUploading] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -77,12 +85,7 @@ export const StatementImportsPanel = () => {
     // Failed imports can have written records before the error, so refresh those too.
     const epoch = getPrivateRequestEpoch();
     setRefreshError(null);
-    void mutateCache(key => {
-      if (Array.isArray(key)) return key[0] === 'positions';
-      if (typeof key !== 'string') return false;
-      const path = key.split('?')[0];
-      return affectedEndpoints.some(endpoint => path === endpoint || path.startsWith(`${endpoint}/`));
-    }).catch((error: unknown) => {
+    void mutateCache(isImportedFinancialCacheKey).catch((error: unknown) => {
       if (!mounted.current || !isCurrentPrivateRequestEpoch(epoch)) return;
       setRefreshError(`Import status is current, but portfolio data could not be refreshed. Reload to see current data. ${errorMessage(error)}`);
     });
@@ -113,6 +116,7 @@ export const StatementImportsPanel = () => {
     try {
       const body = new FormData();
       for (const file of files) body.append('files', file);
+      if (accountId) body.append('trading212_account_id', accountId);
       const accepted: StatementImportsResponse = await fetcher(importsUrl, { method: 'POST', body, cache: 'no-store' });
       if (!mounted.current || !isCurrentPrivateRequestEpoch(epoch)) return;
       setFiles([]);
@@ -195,6 +199,17 @@ export const StatementImportsPanel = () => {
                 }} />
             </div>
             <p id="statement-import-limits" className="text-xs text-muted-foreground">Up to 100 files, 25 MiB per file, 99 MiB combined per upload. Supported brokers are detected automatically.</p>
+            <div className="space-y-2 text-left">
+              <Label htmlFor="statement-import-account">Trading 212 account for these statements</Label>
+              <Select value={accountId || 'unassigned'} disabled={uploading} onValueChange={value => setAccountId(value === 'unassigned' ? '' : value)}>
+                <SelectTrigger id="statement-import-account"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="unassigned">Unassigned — review overlapping matches</SelectItem>
+                  {(sync.data?.accounts ?? []).map(account => <SelectItem key={account.id} value={account.id}>{tradingAccountLabel(account, 'currency unavailable')}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">Applies only to detected Trading 212 CSVs and must match the account that produced the statements. Other brokers ignore it.</p>
+            </div>
           </div>
           {files.length > 0 && <ul aria-label="Selected statement files" className="max-h-32 overflow-y-auto text-xs text-muted-foreground">
             {files.map((file, index) => <li className="break-all" key={index}>{file.name} · {(file.size / 1024).toLocaleString(undefined, { maximumFractionDigits: 1 })} KiB</li>)}
@@ -216,13 +231,18 @@ export const StatementImportsPanel = () => {
           {data.jobs.length === 0 ? <p className="text-sm text-muted-foreground">No statement imports yet.</p> :
             <ul aria-label="Statement import queue" className="max-h-96 space-y-2 overflow-y-auto">
               {data.jobs.map(job => {
-                const { label, Icon, color } = states[job.status];
+                const reviewRequired = (job.review_count ?? 0) > 0;
+                const { label, Icon, color } = reviewRequired
+                  ? { label: 'Review required', Icon: WarningCircleIcon, color: 'border-amber-200 bg-amber-100 text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-100' }
+                  : states[job.status];
                 return <li key={job.id} className="min-w-0 space-y-2 rounded-lg border p-3">
                   <div className="flex flex-wrap items-start justify-between gap-2">
                     <p className="min-w-0 flex-1 break-all text-sm font-medium">{job.filename}</p>
-                    <Badge className={color}><Icon aria-hidden="true" className={job.status === 'running' ? 'animate-spin' : undefined} />{label}</Badge>
+                    <Badge className={color}><Icon aria-hidden="true" className={job.status === 'running' && !reviewRequired ? 'animate-spin' : undefined} />{label}</Badge>
                   </div>
                   <p className="text-xs text-muted-foreground">Queued {new Date(job.queued_at).toLocaleString()}{job.finished_at ? ` · Finished ${new Date(job.finished_at).toLocaleString()}` : job.started_at ? ` · Started ${new Date(job.started_at).toLocaleString()}` : ''}</p>
+                  {job.t212_batch_id && <p className="text-xs text-muted-foreground">{job.inserted_count ?? 0} inserted · {job.matched_count ?? 0} already imported · {job.review_count ?? 0} review · {job.skipped_count ?? 0} skipped</p>}
+                  {reviewRequired && <Button asChild variant="outline" size="sm"><Link href="~/dashboard/trading?section=setup#t212-history-sync">Review matches</Link></Button>}
                   {job.error && <details className="text-sm text-red-700 dark:text-red-300">
                     <summary className="cursor-pointer">Error details</summary>
                     <p className="mt-2 whitespace-pre-wrap break-words">{job.error}</p>

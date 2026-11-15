@@ -133,7 +133,7 @@ All new saved reports use that per-user directory. Missing own saved reports ret
 
 ### Agent-assisted trading
 
-Trading has three sections, ordered **Orders**, **Pies**, **Setup**. Orders contains pending approvals and recent history; Pies let's your view and approve pending Trading 212 Pie changes proposed by your agent; Setup contains the Trading 212 connection and agent access.
+Trading has three sections, ordered **Orders**, **Pies**, **Setup**. Orders contains pending approvals and recent history; Pies let's your view and approve pending Trading 212 Pie changes proposed by your agent; Setup contains the Trading 212 connection, live history sync and agent access.
 
 To set up agent-assisted trading:
 
@@ -234,13 +234,13 @@ After partial batch success, submitted/open orders remain active at Trading 212;
 
 If a mutation succeeds but the following status refresh fails, the trading tab pauses further mutations instead of restoring an actionable stale state. Use **Retry / refresh status** to reconcile without repeating the mutation. A newly created token remains in tab memory while paused and is shown again after a successful refresh; rotating it resets the token's copy acknowledgement. Definite connection-validation rejections leave the form editable.
 
-Replacing/disconnecting the broker discards pending proposals and revokes agent access, but never cancels existing broker orders. Token rotation alone preserves proposals. Recent history tracks broker-reported order status; manage cancellations in Trading 212 and continue importing statements for portfolio/tax accounting. The tab shows all pending proposals plus the latest 50 processed/discarded proposals; older records remain in PostgreSQL.
+Replacing/disconnecting the broker discards pending proposals and revokes agent access, but never cancels existing broker orders. Token rotation alone preserves proposals. Recent history tracks broker-reported order status; manage cancellations in Trading 212 and use statement imports or live history sync for portfolio/tax accounting. The tab shows all pending proposals plus the latest 50 processed/discarded proposals; older records remain in PostgreSQL.
 
 `Open` is checked against Trading 212's [pending orders API](https://docs.trading212.com/api/orders/orders) (`GET /api/v0/equity/orders`); it is not inferred from successful submission. Orders no longer present there are checked against the latest 50 historical orders. The page refreshes every 10 seconds while idle, with broker status requests spaced at least 6 seconds apart. Order-status reconciliation skips submitting batches and updates only matched orders after the batch finishes; approved amounts and broker order IDs are preserved. Failed polls preserve the last-known state, and absence from both responses is not treated as a fill or cancellation. Grant the broker key order-read and order-history permissions as well as placement access.
 
 #### Trading 212 Pie lifecycle
 
-**Pies reflect your pie status on Trading 212, not Doughbox's imported portfolio.** Creation and duplication do not fund a Pie. Allocation/settings edits do not buy or sell shares, including holdings for removed targets. Continue importing statements for portfolio analysis.
+**Pies reflect your pie status on Trading 212, not Doughbox's imported portfolio.** Creation and duplication do not fund a Pie. Allocation/settings edits do not buy or sell shares, including holdings for removed targets. Use manual statement imports or opt-in live history sync for portfolio analysis.
 
 Trading 212 documents the [Pie endpoints as deprecated but still operational](<https://docs.trading212.com/api/pies-(deprecated).md>), with no further support/updates promised.
 
@@ -321,6 +321,28 @@ curl -H "Authorization: Bearer $DOUGHBOX_PERSONAL_WRITE_TOKEN" \
   -F 'files=@statement.csv' -F 'files=@statement.pdf' \
   http://localhost:8084/api/statement-imports
 ```
+
+#### Trading 212 CSV and daily live history
+
+**Trading → Setup → Live history sync** reuses the verified demo or live connection and persistent `TRADING_MASTER_KEY`. It imports activity from that connected environment only. CSV export is not offered on demo accounts; when export is refused without a named missing history-list scope, sync reads the history list endpoints instead, including when recovering an interrupted report request. Enable **Daily (every 24 hours)** and select **Save schedule**. The first run is due immediately and continues without the browser. **Sync now** starts/coalesces an immediate run without moving the daily deadline. Pausing stops future scheduled claims, not work already started. After downtime, one overdue catch-up run is claimed, not one per missed day.
+
+History lists do not provide currency-conversion events or income withholding. Missing withholding is retained as **unreported**, not a reported zero. A later CSV assigned to the same account can fill only previously unreported withholding when the retained transaction economics match; it does not duplicate income, change creation attribution, or overwrite already reported tax. Review's **keep recorded amounts** choice remains non-mutating. Older imports without this provenance remain conservative unless their original generated history page can be identified exactly; ambiguous old zeros are not automatically reclassified.
+
+Initial CSV sync requests all API-accessible history from the Unix epoch in conservative 365-day chunks. The history-list fallback pages each feed over the remaining run interval, advancing coverage only after all feeds and reviews complete. Completed work survives restarts. Subsequent runs overlap the last seven days. **Rescan all history** is the recovery control for older missing activity or corrections; the overlap cannot discover arbitrarily late changes. Connection key rotation for the same account preserves settings/history, while disconnecting or switching accounts pauses the old schedule and cancels old-generation work.
+
+The shared CSV importer records executed trades, gross dividends/withholding, signed cash and share-lending interest, and FX conversions. History fill charges—including conversion fees, stamp duty, and commissions—are execution fees, enriched in their original currencies before summing in EUR, not income-tax withholding. Malformed history timestamps fail the page before coverage advances. Deposits, withdrawals, transfers, card activity and standalone cash fees are counted as skipped actions, not invented cash holdings. API and manual CSV observations reconcile to the same ledger while preserving separate legitimate occurrences. Shared broker IDs require one-to-one execution cardinality; accepted timestamp corrections remain discoverable through their recorded observation fingerprints.
+
+In **Timeline → Import**, **Trading 212 account for these statements** defaults to **Unassigned — review overlapping matches**. Select an account only when it produced those CSVs; the selection does not affect other brokers. Multipart clients may send one optional `trading212_account_id` text field (maximum 128 bytes). Completed T212 jobs include their batch ID and inserted/already-imported/review/skipped counts. A parsed file with unresolved matches is shown as **Review required**, not fully imported.
+
+Use **Review matches** for ambiguous legacy/account associations and conflicting broker IDs or financial evidence. Explicitly select **Same transaction — keep recorded amounts**, **Separate transaction**, or leave unresolved. Linking never overwrites recorded amounts; differing values require the unchecked **Keep the recorded amounts** acknowledgment. Suggested exact legacy matches can be selected together, but still need explicit confirmation and account association. Review remains available for staged own data after disconnecting; old income already collapsed by content hashing cannot be reconstructed uniquely without source evidence.
+
+Timeline cards show **Auto-imported** only when the API importer originally created that ledger event, with its original import time in the tooltip. New manual events show **CSV import**. Reconciling pre-feature history leaves its original IDs and unknown import time intact; later CSV/API observations never change creation attribution. Portfolio, performance and tax calculation refreshes remain separate operations, as with statement imports.
+
+The history-list fallback requires `history:orders`, `history:dividends`, and `history:transactions` in addition to existing trading reads. A `403` names a missing scope only when the broker response identifies it; a refused CSV export is not by itself evidence that history access is missing. Working trading access is not disconnected. Account-scoped admission is shared across users, keys, trading and sync, with persistent broker-directed cooldowns. Status/review reads never request broker exports. Sync management (`GET /api/trading/sync`, `PUT /scheduler`, `POST /runs`, and `GET`/`POST /reviews` beneath that path) is owner-local and browser-only; personal REST and MCP tokens cannot manage it.
+
+Offline or stale-status views disable broker/review mutations rather than replaying them. Reconnection and explicit status refresh read persisted state; connection replacement immediately refreshes sync eligibility and clears connection-specific drafts.
+
+**Compatibility limit:** isolated fixtures verify the workflow, not Trading 212's live export format, signed-download host or earliest/maximum historical range. Those broker details require an authorized read-only live compatibility check. A rejected/unknown interval remains failed, never silently treated as empty or as complete history.
 
 ### REST API
 

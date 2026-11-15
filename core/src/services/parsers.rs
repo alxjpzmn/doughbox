@@ -114,18 +114,24 @@ pub fn extract_pdf_text(file: &[u8]) -> anyhow::Result<String> {
     Ok(re.replace_all(&cleaned_text, " ").to_string())
 }
 
+#[derive(Debug, Default)]
+pub struct StatementImportContext {
+    pub statement_job_id: Option<String>,
+    pub trading212_account_id: Option<String>,
+}
+
 pub async fn parse_file_for_import(user_id: &crate::database::models::auth::UserId, file: &[u8], file_path: &Path) -> anyhow::Result<()> {
-    parse_file(user_id, file, file_path, InteractionMode::Interactive).await
+    parse_file(user_id, file, file_path, InteractionMode::Interactive, &StatementImportContext::default()).await
 }
 
 /// Imports uploaded statements without ever prompting on standard input.
-pub async fn parse_file_for_upload(user_id: &crate::database::models::auth::UserId, file: &[u8], file_path: &Path) -> anyhow::Result<()> {
-    parse_file(user_id, file, file_path, InteractionMode::NonInteractive).await
+pub async fn parse_file_for_upload(user_id: &crate::database::models::auth::UserId, file: &[u8], file_path: &Path, context: &StatementImportContext) -> anyhow::Result<()> {
+    parse_file(user_id, file, file_path, InteractionMode::NonInteractive, context).await
 }
 
 async fn parse_file(user_id: &crate::database::models::auth::UserId, file: &[u8],
 file_path: &Path,
-interaction: InteractionMode,) -> anyhow::Result<()> { // File extensions accepted by uploads are case-insensitive.
+interaction: InteractionMode, context: &StatementImportContext) -> anyhow::Result<()> { // File extensions accepted by uploads are case-insensitive.
 let format_path = match file_path.extension().and_then(|extension| extension.to_str()) {
     Some(extension) if extension.eq_ignore_ascii_case("pdf") => Path::new("statement.pdf"),
     Some(extension) if extension.eq_ignore_ascii_case("csv") => Path::new("statement.csv"),
@@ -174,7 +180,15 @@ match file_format {
 
         match broker {
             Some(Broker::Trading212) => {
-                extract_trading212_record(user_id, file_content).await?;
+                let outcome = extract_trading212_record(user_id, file_content, &crate::services::trading::sync::T212ImportContext {
+                    source: crate::services::trading::sync::T212ImportSource::StatementCsv,
+                    account_id: context.trading212_account_id.clone(),
+                    sync_run_id: None,
+                    statement_job_id: context.statement_job_id.clone(),
+                }).await?;
+                if outcome.review_count > 0 {
+                    println!("Trading 212 review required: batch {}", outcome.batch_id);
+                }
             }
             Some(Broker::Revolut) => {
                 extract_revolut_record(user_id, file_content).await?;
@@ -280,7 +294,7 @@ mod tests {
             (b"%PDF-1.7\nmalformed".as_slice(), "statement.PDF"),
             (b"unknown,header\nsome,value\n".as_slice(), "statement.CSV"),
         ] {
-            assert!(parse_file_for_upload(user_id, file, Path::new(filename)).await.is_err());
+            assert!(parse_file_for_upload(user_id, file, Path::new(filename), &StatementImportContext::default()).await.is_err());
         }
     }
 
@@ -288,7 +302,7 @@ mod tests {
     async fn upload_recognizes_case_insensitive_csv_extension() {
     let owner = crate::database::models::auth::UserId::from_database("parser-test-owner".to_owned());
     let user_id = &owner;
-        let error = parse_file_for_upload(user_id, b"unknown,header\n", Path::new("statement.CSV"))
+        let error = parse_file_for_upload(user_id, b"unknown,header\n", Path::new("statement.CSV"), &StatementImportContext::default())
             .await
             .unwrap_err();
         assert!(error.to_string().contains("No recognized broker"));

@@ -71,12 +71,13 @@ pub(super) async fn recover_on(user_id: &UserId, client: &Client) -> anyhow::Res
 pub(super) async fn replace_connection(
     user_id: &UserId,
     connection: Option<(&str, &str, &Value, &Value)>,
+    expected_generation: Option<&str>,
 ) -> anyhow::Result<()> {
     let mut client = db_client().await?;
     ensure!(execution_lock(user_id, &client).await?, "A proposal is executing. Wait before changing the connection.");
     recover_on(user_id, &client).await?;
     let tx = client.transaction().await?;
-    replace_connection_on(user_id, &tx, connection).await?;
+    replace_connection_on(user_id, &tx, connection, expected_generation).await?;
     tx.commit().await?;
     Ok(())
 }
@@ -86,8 +87,16 @@ pub(super) async fn replace_connection_on(
     user_id: &UserId,
     tx: &Transaction<'_>,
     connection: Option<(&str, &str, &Value, &Value)>,
+    expected_generation: Option<&str>,
 ) -> anyhow::Result<()> {
-    tx.query_one("SELECT user_id FROM trading_connection WHERE user_id=$1 FOR UPDATE", &[&user_id.as_str()]).await?;
+    crate::database::queries::trading212_import::lock_owner(user_id, tx).await?;
+    let current = tx.query_one("SELECT generation FROM trading_connection WHERE user_id=$1 FOR UPDATE", &[&user_id.as_str()]).await?;
+    if let Some(expected) = expected_generation {
+        ensure!(current.get::<_, &str>("generation") == expected, "Trading connection changed during verification. Connect again.");
+    }
+    crate::database::queries::trading212_import::connection_changed(
+        user_id, tx, connection.map(|(environment, _, account, _)| (environment, account)),
+    ).await?;
     for row in tx.query(
         "SELECT * FROM trading_proposals WHERE user_id=$1 AND status='pending' FOR UPDATE",
         &[&user_id.as_str()],
@@ -103,7 +112,7 @@ pub(super) async fn replace_connection_on(
     let generation = uuid::Uuid::new_v4().to_string();
     match connection {
         Some((environment, credentials, account, instruments)) => {
-            tx.execute("UPDATE trading_connection SET generation=$2,environment=$3,credentials=$4,account=$5,instruments=$6,agent_token_hash=NULL,agent_auth_version=NULL,last_instruments_request_at=clock_timestamp() WHERE user_id=$1", &[&user_id.as_str(),&generation,&environment,&credentials,&account,&instruments]).await?;
+            tx.execute("UPDATE trading_connection SET generation=$2,environment=$3,credentials=$4,account=$5,instruments=$6,agent_token_hash=NULL,agent_auth_version=NULL WHERE user_id=$1", &[&user_id.as_str(),&generation,&environment,&credentials,&account,&instruments]).await?;
         }
         None => {
             tx.execute("UPDATE trading_connection SET generation=$2,environment=NULL,credentials=NULL,account=NULL,instruments='[]',agent_token_hash=NULL,agent_auth_version=NULL WHERE user_id=$1", &[&user_id.as_str(),&generation]).await?;
@@ -203,30 +212,9 @@ pub(super) async fn save_trades(user_id: &UserId, client: &Client, id: &str, tra
     Ok(())
 }
 
-pub(super) async fn pace_submission(user_id: &UserId, client: &Client) -> anyhow::Result<()> {
-    // Three seconds leaves margin over the documented 1 request / 2s window.
-    let delay: f64 = client.query_one("SELECT GREATEST(0, 3 - EXTRACT(EPOCH FROM (clock_timestamp()-last_submission_at)))::float8 FROM trading_connection WHERE user_id=$1", &[&user_id.as_str()]).await?.get(0);
-    tokio::time::sleep(std::time::Duration::from_secs_f64(delay.min(3.0))).await;
-    Ok(())
-}
-
-pub(super) async fn mark_submission(user_id: &UserId, client: &Client) -> anyhow::Result<()> {
-    client.execute("UPDATE trading_connection SET last_submission_at=clock_timestamp() WHERE user_id=$1", &[&user_id.as_str()]).await?;
-    Ok(())
-}
-
-pub(super) async fn claim_poll(user_id: &UserId, client: &Client, column: &str, interval: &str) -> anyhow::Result<bool> {
-    // Both interpolations are fixed literals, never request data.
-    let claimed = client.query_opt(
-        &format!("UPDATE trading_connection SET {column}=clock_timestamp() WHERE user_id=$1 AND {column} <= clock_timestamp() - interval '{interval}' RETURNING 1"),
-        &[&user_id.as_str()],
-    ).await?;
-    Ok(claimed.is_some())
-}
-
 pub(super) async fn reconcile_order_statuses(
     user_id: &UserId,
-    client: &Client,
+    client: &(impl tokio_postgres::GenericClient + Sync),
     id: &str,
     statuses: &std::collections::HashMap<String, String>,
 ) -> anyhow::Result<Proposal> {
@@ -267,40 +255,6 @@ pub(super) async fn browser_connection(user_id: &UserId, tx: &Transaction<'_>) -
     tx.query_opt("SELECT * FROM trading_connection WHERE user_id=$1 AND credentials IS NOT NULL AND environment IS NOT NULL FOR UPDATE", &[&user_id.as_str()]).await?.context("Connect Trading 212 first.")
 }
 
-#[derive(Clone, Copy)]
-pub(super) enum PieBucket { List, Request }
-impl PieBucket {
-    fn column(self) -> &'static str {
-        match self { Self::List => "pie_list_next_at", Self::Request => "pie_request_next_at" }
-    }
-    fn seconds(self) -> i64 { match self { Self::List => 31, Self::Request => 6 } }
-}
-
-pub(super) async fn claim_pie_request(user_id: &UserId, client: &Client, generation: &str, bucket: PieBucket) -> anyhow::Result<()> {
-    let column = bucket.column();
-    let seconds = bucket.seconds();
-    let claimed = client.query_opt(
-        &format!("UPDATE trading_connection SET {column}=clock_timestamp()+$3::bigint*interval '1 second' WHERE user_id=$1 AND generation=$2 AND credentials IS NOT NULL AND {column}<=clock_timestamp() RETURNING 1"),
-        &[&user_id.as_str(), &generation, &seconds],
-    ).await?;
-    if claimed.is_some() { return Ok(()); }
-    let row = client.query_opt(
-        &format!("SELECT GREATEST(1,CEIL(EXTRACT(EPOCH FROM ({column}-clock_timestamp()))))::bigint AS retry FROM trading_connection WHERE user_id=$1 AND generation=$2 AND credentials IS NOT NULL"),
-        &[&user_id.as_str(), &generation],
-    ).await?.context("Trading connection changed.")?;
-    Err(super::pies::PieRateLimited { retry_after_seconds: row.get::<_, i64>("retry") as u64 }.into())
-}
-
-pub(super) async fn extend_pie_rate_limit(user_id: &UserId, client: &Client, generation: &str, bucket: PieBucket, delay: u64) -> anyhow::Result<()> {
-    let seconds = i64::try_from(delay).context("Broker rate-limit delay is too large.")?;
-    let column = bucket.column();
-    client.execute(
-        &format!("UPDATE trading_connection SET {column}=GREATEST({column},clock_timestamp()+$3::bigint*interval '1 second') WHERE user_id=$1 AND generation=$2 AND credentials IS NOT NULL"),
-        &[&user_id.as_str(), &generation, &seconds],
-    ).await?;
-    Ok(())
-}
-
 pub(super) async fn save_pie(user_id: &UserId, client: &Client, id: &str, pie: &super::pies::PieResult) -> anyhow::Result<()> {
     // Only execution evidence is writable after approval. SQL preserves immutable intent.
     let value = serde_json::to_value(pie)?;
@@ -311,36 +265,3 @@ pub(super) async fn save_pie(user_id: &UserId, client: &Client, id: &str, pie: &
     Ok(())
 }
 
-#[derive(Clone, Copy)]
-pub(super) enum BrokerReadBucket { Account, Positions }
-impl BrokerReadBucket {
-    fn column(self) -> &'static str {
-        match self { Self::Account => "account_next_at", Self::Positions => "positions_next_at" }
-    }
-    fn seconds(self) -> i64 { match self { Self::Account => 6, Self::Positions => 2 } }
-}
-
-pub(super) async fn claim_broker_read(user_id: &UserId, client: &Client, generation: &str, bucket: BrokerReadBucket) -> anyhow::Result<()> {
-    let column = bucket.column();
-    let seconds = bucket.seconds();
-    let claimed = client.query_opt(
-        &format!("UPDATE trading_connection SET {column}=clock_timestamp()+$3::bigint*interval '1 second' WHERE user_id=$1 AND generation=$2 AND credentials IS NOT NULL AND {column}<=clock_timestamp() RETURNING 1"),
-        &[&user_id.as_str(), &generation, &seconds],
-    ).await?;
-    if claimed.is_some() { return Ok(()); }
-    let row = client.query_opt(
-        &format!("SELECT GREATEST(1,CEIL(EXTRACT(EPOCH FROM ({column}-clock_timestamp()))))::bigint AS retry FROM trading_connection WHERE user_id=$1 AND generation=$2 AND credentials IS NOT NULL"),
-        &[&user_id.as_str(), &generation],
-    ).await?.context("Trading connection changed.")?;
-    Err(super::pies::PieRateLimited { retry_after_seconds: row.get::<_, i64>("retry") as u64 }.into())
-}
-
-pub(super) async fn extend_broker_read(user_id: &UserId, client: &Client, generation: &str, bucket: BrokerReadBucket, delay: u64) -> anyhow::Result<()> {
-    let seconds = i64::try_from(delay).context("Broker rate-limit delay is too large.")?;
-    let column = bucket.column();
-    client.execute(
-        &format!("UPDATE trading_connection SET {column}=GREATEST({column},clock_timestamp()+$3::bigint*interval '1 second') WHERE user_id=$1 AND generation=$2 AND credentials IS NOT NULL"),
-        &[&user_id.as_str(), &generation, &seconds],
-    ).await?;
-    Ok(())
-}

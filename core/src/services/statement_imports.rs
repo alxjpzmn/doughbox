@@ -17,7 +17,7 @@ use crate::{
         },
         queries::statement_import::{self, ClaimedStatementImport},
     },
-    services::parsers::parse_file_for_upload,
+    services::parsers::{parse_file_for_upload, StatementImportContext},
 };
 
 const PARTIAL_IMPORT_WARNING: &str = "Some records may already have been imported; review them before uploading the file again.";
@@ -169,10 +169,14 @@ fn spawn_parser(file: ClaimedStatementImport) -> ParserTask {
         };
         runtime.block_on(async {
             if *cancelled.borrow() { return ImportOutcome::Interrupted; }
+            let context = StatementImportContext {
+                statement_job_id: Some(file.id.to_string()),
+                trading212_account_id: file.trading212_account_id.clone(),
+            };
             tokio::select! {
                 biased;
                 _ = cancelled.changed() => ImportOutcome::Interrupted,
-                result = AssertUnwindSafe(parse_file_for_upload(&file.user_id, &file.contents, Path::new(&file.filename))).catch_unwind() => {
+                result = AssertUnwindSafe(parse_file_for_upload(&file.user_id, &file.contents, Path::new(&file.filename), &context)).catch_unwind() => {
                     match result {
                         Ok(Ok(())) => ImportOutcome::Succeeded,
                         Ok(Err(error)) => ImportOutcome::Failed(parser_error(error)),

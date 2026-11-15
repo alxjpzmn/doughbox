@@ -11,6 +11,8 @@ use tokio::{
     time::{sleep_until, Instant},
 };
 
+use crate::services::shared::http::limited_body;
+
 use super::types::{Download, SourceFile};
 
 const REQUEST_INTERVAL: Duration = Duration::from_secs(2);
@@ -106,27 +108,6 @@ pub(in crate::services::market_data) fn http_client() -> anyhow::Result<Client> 
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(60))
         .build()?)
-}
-
-pub(in crate::services::market_data) async fn limited_body(mut response: Response, limit: usize) -> anyhow::Result<Vec<u8>> {
-    let length = response.content_length();
-    ensure!(
-        length.is_none_or(|n| n <= limit as u64),
-        "Price response exceeds size limit"
-    );
-    let mut bytes = Vec::with_capacity(length.unwrap_or(0) as usize);
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|error| error.without_url())?
-    {
-        ensure!(
-            bytes.len() + chunk.len() <= limit,
-            "Price response exceeds size limit"
-        );
-        bytes.extend_from_slice(&chunk);
-    }
-    Ok(bytes)
 }
 
 fn rate_limited(response: &Response) -> RateLimited {

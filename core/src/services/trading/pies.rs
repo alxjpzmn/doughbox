@@ -269,32 +269,26 @@ pub struct PieApprovalInput {
     pub confirm_empty_pie: bool,
 }
 
-#[derive(Debug)]
-pub struct PieRateLimited {
-    pub retry_after_seconds: u64,
-}
-impl std::fmt::Display for PieRateLimited {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Trading Pie request rate limited; retry after {} seconds.",
-            self.retry_after_seconds
-        )
-    }
-}
-impl std::error::Error for PieRateLimited {}
-
 #[derive(Clone, Copy)]
 pub enum PieAccess<'a> {
     Browser,
     Agent(&'a str),
 }
 
+impl PieAccess<'_> {
+    pub(super) fn broker_access(self, user_id: &UserId, generation: &str) -> BrokerAccess {
+        match self {
+            Self::Browser => BrokerAccess::Owner { user_id: user_id.clone(), generation: generation.to_owned() },
+            Self::Agent(hash) => BrokerAccess::Agent { user_id: user_id.clone(), generation: generation.to_owned(), token_hash: hash.to_owned() },
+        }
+    }
+}
+
 pub(super) mod domain;
 
 use super::{
     provider::{self, pies::PieBrokerError, BrokerClient, Instrument},
-    store::{self, PieBucket},
+    rate_limits::{AdmissionMode, BrokerAccess, BrokerRateLimited}, store,
     Proposal, ProposalContent, SubmitOutcome,
 };
 use crate::{
@@ -308,6 +302,7 @@ struct Connection {
     generation: String,
     environment: String,
     encrypted: String,
+    account: Option<serde_json::Value>,
 }
 
 async fn connection_on(
@@ -326,6 +321,7 @@ fn snapshot(row: &Row) -> Connection {
         generation: row.get("generation"),
         environment: row.get("environment"),
         encrypted: row.get("credentials"),
+        account: row.get("account"),
     }
 }
 
@@ -364,61 +360,18 @@ async fn connection(
     Ok(current)
 }
 
-async fn gate(
-    user_id: &UserId,
-    client: &mut Client,
-    access: PieAccess<'_>,
-    generation: &str,
-    bucket: PieBucket,
-    wait: bool,
-) -> anyhow::Result<()> {
-    loop {
-        authorize(user_id, client, access, generation).await?;
-        match store::claim_pie_request(user_id, client, generation, bucket).await {
-            Ok(()) => {
-                authorize(user_id, client, access, generation).await?;
-                return Ok(());
-            }
-            Err(error) => {
-                if wait {
-                    if let Some(rate) = error.downcast_ref::<PieRateLimited>() {
-                        tokio::time::sleep(std::time::Duration::from_secs(
-                            rate.retry_after_seconds,
-                        ))
-                        .await;
-                        continue;
-                    }
-                }
-                return Err(error);
-            }
-        }
+impl Connection {
+    async fn broker(&self, user_id: &UserId, access: PieAccess<'_>) -> anyhow::Result<BrokerClient> {
+        super::broker_client(&self.environment, provider::decrypt_credentials(&self.encrypted)?, self.account.as_ref().context("Saved broker account is missing; reconnect Trading 212.")?, AdmissionMode::Try, access.broker_access(user_id, &self.generation)).await
     }
 }
 
-async fn read_error(
-    user_id: &UserId,
-    client: &Client,
-    generation: &str,
-    bucket: PieBucket,
-    error: PieBrokerError,
-) -> anyhow::Error {
-    if let PieBrokerError::RateLimited {
-        retry_after_seconds,
-        ..
-    } = error
-    {
-        if let Err(error) =
-            store::extend_pie_rate_limit(user_id, client, generation, bucket, retry_after_seconds)
-                .await
-        {
-            return error;
-        }
-        return PieRateLimited {
-            retry_after_seconds,
-        }
-        .into();
+fn read_error(error: PieBrokerError) -> anyhow::Error {
+    match error {
+        PieBrokerError::RateLimited { retry_after_seconds, .. } => BrokerRateLimited { retry_after_seconds }.into(),
+        PieBrokerError::NotSent(error) => error,
+        error => error.into(),
     }
-    error.into()
 }
 
 async fn read_detail(
@@ -428,17 +381,7 @@ async fn read_detail(
     generation: &str,
     broker: &BrokerClient,
     id: &str,
-    wait: bool,
 ) -> anyhow::Result<Option<PieDetail>> {
-    gate(
-        user_id,
-        client,
-        access,
-        generation,
-        PieBucket::Request,
-        wait,
-    )
-    .await?;
     let outcome = broker.pie(id).await;
     authorize(user_id, client, access, generation).await?;
     match outcome {
@@ -447,7 +390,7 @@ async fn read_detail(
             Ok(Some(detail))
         }
         Ok(None) => Ok(None),
-        Err(error) => Err(read_error(user_id, client, generation, PieBucket::Request, error).await),
+        Err(error) => Err(read_error(error)),
     }
 }
 
@@ -455,31 +398,12 @@ pub async fn list(user_id: &UserId, access: PieAccess<'_>) -> anyhow::Result<Pie
     super::check_setup()?;
     let mut client = db_client().await?;
     let current = connection(user_id, &mut client, access, None).await?;
-    let broker = BrokerClient::new(
-        &current.environment,
-        provider::decrypt_credentials(&current.encrypted)?,
-    )?;
-    gate(
-        user_id,
-        &mut client,
-        access,
-        &current.generation,
-        PieBucket::List,
-        false,
-    )
-    .await?;
+    let broker = current.broker(user_id, access).await?;
     let outcome = broker.pies().await;
     connection(user_id, &mut client, access, Some(&current.generation)).await?;
     match outcome {
         Ok(list) => Ok(list),
-        Err(error) => Err(read_error(
-            user_id,
-            &client,
-            &current.generation,
-            PieBucket::List,
-            error,
-        )
-        .await),
+        Err(error) => Err(read_error(error)),
     }
 }
 
@@ -492,10 +416,7 @@ pub async fn detail(
     domain::validate_id(pie_id)?;
     let mut client = db_client().await?;
     let current = connection(user_id, &mut client, access, None).await?;
-    let broker = BrokerClient::new(
-        &current.environment,
-        provider::decrypt_credentials(&current.encrypted)?,
-    )?;
+    let broker = current.broker(user_id, access).await?;
     read_detail(
         user_id,
         &mut client,
@@ -503,7 +424,6 @@ pub async fn detail(
         &current.generation,
         &broker,
         pie_id,
-        false,
     )
     .await?
     .ok_or_else(|| AuthError::NotFound.into())
@@ -540,16 +460,13 @@ pub async fn submit(
         .context("Saved instrument catalog is incomplete; reconnect Trading 212.")?;
     tx.commit().await?;
     domain::validate_operation(&input.operation, &instruments)?;
-    let broker = BrokerClient::new(
-        &current.environment,
-        provider::decrypt_credentials(&current.encrypted)?,
-    )?;
+    let broker = current.broker(user_id, access).await?;
     let source = match &input.operation {
         PieOperationInput::Create { .. } => None,
         PieOperationInput::Update { pie_id, .. }
         | PieOperationInput::Duplicate { pie_id, .. }
         | PieOperationInput::Delete { pie_id } => {
-            let mut source = read_detail(user_id, &mut client, access, &current.generation, &broker, pie_id, false).await?.context("Source Pie no longer exists.")?;
+            let mut source = read_detail(user_id, &mut client, access, &current.generation, &broker, pie_id).await?.context("Source Pie no longer exists.")?;
             domain::fill_missing_targets(&mut source)?;
             Some(source)
         }
@@ -618,7 +535,6 @@ async fn observe(
         generation,
         broker,
         &id,
-        true,
     )
     .await
     {
@@ -673,7 +589,6 @@ pub(super) async fn execute(
             generation,
             broker,
             &source_id,
-            true,
         )
         .await
         {
@@ -721,15 +636,6 @@ pub(super) async fn execute(
             return Ok(());
         }
     }
-    gate(
-        user_id,
-        client,
-        PieAccess::Browser,
-        generation,
-        PieBucket::Request,
-        true,
-    )
-    .await?;
     pie.status = PieStatus::Submitting;
     store::save_pie(user_id, client, id, pie).await?;
     // One dispatch only. A remote application can still race after preflight.
@@ -763,21 +669,6 @@ pub(super) async fn execute(
                 _ => PieStatus::Failed,
             };
             pie.error = Some(error.to_string());
-            if let PieBrokerError::RateLimited {
-                retry_after_seconds,
-                ..
-            } = error
-            {
-                // Never resend a mutation, including a definite HTTP 429 rejection.
-                store::extend_pie_rate_limit(
-                    user_id,
-                    client,
-                    generation,
-                    PieBucket::Request,
-                    retry_after_seconds,
-                )
-                .await?;
-            }
         }
     }
     store::save_pie(user_id, client, id, pie).await?;
@@ -820,10 +711,7 @@ pub async fn reconcile(user_id: &UserId, proposal_id: &str) -> anyhow::Result<Pr
                 ),
             "This Pie request has no dispatched outcome to check."
         );
-        let broker = BrokerClient::new(
-            &current.environment,
-            provider::decrypt_credentials(&current.encrypted)?,
-        )?;
+        let broker = current.broker(user_id, PieAccess::Browser).await?;
         observe(user_id, &mut client, &broker, &current.generation, pie).await?;
         store::save_pie(user_id, &client, proposal_id, pie).await?;
         Ok(proposal)

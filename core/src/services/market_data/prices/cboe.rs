@@ -13,6 +13,8 @@ use reqwest::{Client, Url};
 use rust_decimal::Decimal;
 use serde::Deserialize;
 
+use crate::services::shared::http::limited_body;
+
 use super::{
     config::Feed,
     http::{self, RequestLimiter},
@@ -172,7 +174,7 @@ pub async fn discover(client: &Client) -> anyhow::Result<Vec<SourceFile>> {
                 ]))
                 .await?;
             http::check_status(&response)?;
-            let bytes = http::limited_body(response, MAX_INDEX_BYTES).await?;
+            let bytes = limited_body(response, MAX_INDEX_BYTES).await?;
             let map: FileMap =
                 serde_json::from_slice(&bytes).context("Invalid Cboe file discovery schema")?;
             ensure!(

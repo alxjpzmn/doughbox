@@ -1,4 +1,4 @@
-use std::{future::Future, str::FromStr};
+use std::str::FromStr;
 
 use anyhow::{ensure, Context};
 use chrono::{DateTime, Utc};
@@ -9,10 +9,10 @@ use serde_json::{Number, Value};
 use utoipa::ToSchema;
 
 use super::{
-    pies::{self, PieAccess},
-    provider::{self, BrokerClient},
-    store::{self, BrokerReadBucket},
-    Instrument, TradeInput,
+    pies::PieAccess,
+    provider,
+    rate_limits::AdmissionMode,
+    store, Instrument, TradeInput,
 };
 use crate::database::{db_client, models::auth::UserId};
 
@@ -89,20 +89,20 @@ pub fn validate_trades(trades: &[TradeInput], instruments: &[Instrument], state:
 pub async fn load(user_id: &UserId, access: PieAccess<'_>, wait: bool) -> anyhow::Result<BrokerAccountState> {
     super::check_setup()?;
     let mut client = db_client().await?;
-    let (generation, environment, encrypted) = {
+    let (generation, environment, encrypted, account) = {
         let tx = client.transaction().await?;
         let row = match access {
             PieAccess::Browser => store::browser_connection(user_id, &tx).await?,
             PieAccess::Agent(hash) => store::agent_connection(user_id, &tx, hash).await?,
         };
-        let snapshot = (row.get::<_, String>("generation"), row.get::<_, String>("environment"), row.get::<_, String>("credentials"));
+        let snapshot = (row.get::<_, String>("generation"), row.get::<_, String>("environment"), row.get::<_, String>("credentials"), row.get::<_, Option<Value>>("account").context("Saved broker account is missing; reconnect Trading 212.")?);
         tx.commit().await?;
         snapshot
     };
-    let broker = BrokerClient::new(&environment, provider::decrypt_credentials(&encrypted)?)?;
-    let summary = paced(user_id, &client, &generation, BrokerReadBucket::Account, wait, broker.account_summary_value()).await?;
+    let broker = super::broker_client(&environment, provider::decrypt_credentials(&encrypted)?, &account, if wait { AdmissionMode::Wait } else { AdmissionMode::Try }, access.broker_access(user_id, &generation)).await?;
+    let summary = broker.account_summary_value().await?;
     let mut state = decode_summary(&summary, Utc::now())?;
-    let positions = paced(user_id, &client, &generation, BrokerReadBucket::Positions, wait, broker.positions_value()).await?;
+    let positions = broker.positions_value().await?;
     state.positions = decode_positions(&positions)?;
     let tx = client.transaction().await?;
     let row = match access {
@@ -112,35 +112,6 @@ pub async fn load(user_id: &UserId, access: PieAccess<'_>, wait: bool) -> anyhow
     ensure!(row.get::<_, String>("generation") == generation, "Trading connection changed. Read the broker account again.");
     tx.commit().await?;
     Ok(state)
-}
-
-async fn paced(user_id: &UserId, client: &tokio_postgres::Client, generation: &str, bucket: BrokerReadBucket, wait: bool, request: impl Future<Output = anyhow::Result<Value>>) -> anyhow::Result<Value> {
-    read_bucket(user_id, client, generation, bucket, wait).await?;
-    match request.await {
-        Ok(value) => Ok(value),
-        Err(error) => {
-            if let Some(rate) = error.downcast_ref::<pies::PieRateLimited>() {
-                store::extend_broker_read(user_id, client, generation, bucket, rate.retry_after_seconds).await?;
-            }
-            Err(error)
-        }
-    }
-}
-
-async fn read_bucket(user_id: &UserId, client: &tokio_postgres::Client, generation: &str, bucket: BrokerReadBucket, wait: bool) -> anyhow::Result<()> {
-    loop {
-        match store::claim_broker_read(user_id, client, generation, bucket).await {
-            Ok(()) => return Ok(()),
-            Err(error) if wait => {
-                if let Some(rate) = error.downcast_ref::<pies::PieRateLimited>() {
-                    tokio::time::sleep(std::time::Duration::from_secs(rate.retry_after_seconds)).await;
-                    continue;
-                }
-                return Err(error);
-            }
-            Err(error) => return Err(error),
-        }
-    }
 }
 
 fn number(value: Option<&Value>) -> anyhow::Result<Option<String>> {

@@ -22,6 +22,7 @@ pub mod tax_optimization;
 pub mod telegram_schedule;
 pub mod ticker_conversion;
 pub mod trade;
+pub mod trading212_import;
 
 use chrono::{DateTime, Utc};
 use tokio_postgres::types::ToSql;

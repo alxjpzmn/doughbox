@@ -15,6 +15,14 @@ const TaxStatus: React.FC<TimelineCardProps> = ({ timelineEvent }) =>
     <Badge variant="outline">Tax excluded</Badge>
   )
 
+function ImportAttribution({ timelineEvent }: TimelineCardProps) {
+  if (timelineEvent.import_source === 'trading212_api') {
+    const importedAt = timelineEvent.imported_at ? new Date(timelineEvent.imported_at).toLocaleString() : 'time unavailable';
+    return <Badge variant="outline" title={`Trading 212 API · ${importedAt}`}>Auto-imported</Badge>;
+  }
+  if (timelineEvent.import_source === 'statement_csv') return <Badge variant="outline">CSV import</Badge>;
+  return null;
+}
 const SkeletonCard: React.FC = () => {
   return (
     <Card>
@@ -56,6 +64,7 @@ const TradeCard: React.FC<TimelineCardProps> = ({ timelineEvent }) => {
           <p className='text-muted-foreground text-sm'>{formatDate(new Date(timelineEvent?.date))}</p>
           <div className="flex items-center gap-2">
             <TaxStatus timelineEvent={timelineEvent} />
+            <ImportAttribution timelineEvent={timelineEvent} />
             {timelineEvent.direction === TradeDirection.Buy ? <ArrowDownLeftIcon className='text-success-foreground' size={16} /> : <ArrowUpRightIcon className='text-destructive-foreground' size={16} />}
           </div>
         </div>
@@ -82,6 +91,7 @@ const InterestCard: React.FC<TimelineCardProps> = ({ timelineEvent }) => {
           <p className='text-muted-foreground text-sm'>{formatDate(new Date(timelineEvent?.date))}</p>
           <div className="flex items-center gap-2">
             <TaxStatus timelineEvent={timelineEvent} />
+            <ImportAttribution timelineEvent={timelineEvent} />
             <HandCoinsIcon size={16} className='text-indigo-400' />
           </div>
         </div>
@@ -110,6 +120,7 @@ const DividendCard: React.FC<TimelineCardProps> = ({ timelineEvent }) => {
           <p className='text-muted-foreground text-sm'>{formatDate(new Date(timelineEvent?.date))}</p>
           <div className="flex items-center gap-2">
             <TaxStatus timelineEvent={timelineEvent} />
+            <ImportAttribution timelineEvent={timelineEvent} />
             <ScrollIcon size={16} className='text-indigo-400' />
           </div>
         </div>
@@ -136,6 +147,7 @@ const FxCard: React.FC<TimelineCardProps> = ({ timelineEvent }) => {
           <p className='text-muted-foreground text-sm'>{formatDate(new Date(timelineEvent?.date))}</p>
           <div className="flex items-center gap-2">
             <TaxStatus timelineEvent={timelineEvent} />
+            <ImportAttribution timelineEvent={timelineEvent} />
             <ArrowsDownUpIcon size={16} className='text-pink-400' />
           </div>
         </div>

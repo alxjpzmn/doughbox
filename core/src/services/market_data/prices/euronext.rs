@@ -28,6 +28,8 @@ use reqwest::{
 };
 use rust_decimal::Decimal;
 
+use crate::services::shared::http::limited_body;
+
 use super::{
     config::Feed,
     http::{self, RequestLimiter},
@@ -118,7 +120,7 @@ pub async fn download(
         .get(ETAG)
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned);
-    let bytes = http::limited_body(response, MAX_ZIP_BYTES).await?;
+    let bytes = limited_body(response, MAX_ZIP_BYTES).await?;
     Ok(Some(Download { bytes, etag }))
 }
 

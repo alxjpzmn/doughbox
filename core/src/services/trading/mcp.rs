@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-use super::{approval, SubmitInput, pies::{self, PieAccess, PieRateLimited, SubmitPieInput}};
+use super::{approval, SubmitInput, rate_limits::BrokerRateLimited, pies::{self, PieAccess, SubmitPieInput}};
 use crate::{
     database::models::auth::UserId,
     services::{auth::AuthError, notifications::{self, Notification}, shared::{env::get_env_variable, urls::parse_public_origin}},
@@ -84,7 +84,7 @@ fn result<T: Serialize>(result: anyhow::Result<T>) -> CallToolResult {
     }
 }
 fn tool_error(error: anyhow::Error) -> CallToolResult {
-    if let Some(rate) = error.downcast_ref::<PieRateLimited>() {
+    if let Some(rate) = error.downcast_ref::<BrokerRateLimited>() {
         return CallToolResult::structured_error(json!({
             "code":"TradingRateLimited", "message":rate.to_string(),
             "retry_after_seconds":rate.retry_after_seconds,

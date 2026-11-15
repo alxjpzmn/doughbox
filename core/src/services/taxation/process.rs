@@ -290,6 +290,7 @@ mod tests {
             identifier: Some("US0378331005".into()), name: Some("Apple".into()), unit_label: None, currency: "USD".into(),
             units, price_unit: price, direction: Some(direction), applied_fx_rate: Some(fx), withholding_tax_percent: None,
             total: units * price, total_currency: "USD".into(), broker: broker.into(), tax_supported: true,
+            import_source: None, imported_at: None,
         }
     }
 
